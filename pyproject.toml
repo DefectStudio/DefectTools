@@ -1,0 +1,8 @@
+﻿[project]
+name = "portable-pipe-tools"
+version = "0.1.0"
+description = "Portable external Python tools for animation pipeline workflows."
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]

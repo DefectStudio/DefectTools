@@ -1,0 +1,11 @@
+﻿__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.log
+
+# Local user config / secrets
+local_config/
+*.local.json
+*_token*.json
