@@ -21,10 +21,12 @@ SHOT_MANAGER_SAVE_FILENAME = "shot_manager_local_save.json"
 LOCAL_SAVE_SCHEMA_VERSION = 2
 CHECKED_BOX = "☑"
 UNCHECKED_BOX = "☐"
+MOVE_DISPLAY = "▲  ▼"
 RENDER_CONTEXT_SEGMENTS = ("lite", "unreal", "_output")
 HERO_MP4_SUFFIX = "_heroMP4s"
 
 COLUMN_TITLES = {
+    "move": "Move",
     "order": "Order",
     "is_active": "Is Active?",
     "sequence": "Sequence",
@@ -535,6 +537,7 @@ class ShotManagerApp:
         columns = tuple(COLUMN_TITLES)
         self.shots_tree = ttk.Treeview(listing_frame, columns=columns, show="headings", selectmode="browse")
         self._refresh_column_headings()
+        self.shots_tree.column("move", width=70, minwidth=60, stretch=False, anchor="center")
         self.shots_tree.column("order", width=70, minwidth=60, stretch=False, anchor="center")
         self.shots_tree.column("is_active", width=95, minwidth=90, stretch=False, anchor="center")
         self.shots_tree.column("sequence", width=100, minwidth=80, stretch=False, anchor="center")
@@ -680,6 +683,8 @@ class ShotManagerApp:
         self._set_status(f"Showing {len(self.current_shot_rows)} shot(s) {where}; {active_count} active, {inactive_count} inactive; loaded {sequence_manifest_count} sequence manifest(s); {manifest_status}.")
 
     def _sort_shots_by(self, column_key: str) -> None:
+        if column_key == "move":
+            return
         if column_key == self.shot_sort_column:
             self.shot_sort_reverse = not self.shot_sort_reverse
         else:
@@ -693,7 +698,7 @@ class ShotManagerApp:
     def _refresh_column_headings(self) -> None:
         for column_key, column_title in COLUMN_TITLES.items():
             heading_text = column_title
-            if column_key == self.shot_sort_column:
+            if column_key == self.shot_sort_column and column_key != "move":
                 heading_text = f"{column_title} {'▼' if self.shot_sort_reverse else '▲'}"
             self.shots_tree.heading(column_key, text=heading_text, command=lambda key=column_key: self._sort_shots_by(key))
 
@@ -728,6 +733,52 @@ class ShotManagerApp:
 
         self._render_shot_rows()
         self._set_status(f"Fixed {len(fixed_rows)} shot order value(s) and saved {saved_manifest_count} manifest file(s).")
+
+    def _move_shot_order(self, shot_row: ShotRow, direction: int) -> None:
+        if any(row.order <= 0 for row in self.current_shot_rows):
+            messagebox.showwarning("Shot Manager", "Please run Fix 0 Orders before moving shots.")
+            self._set_status("Run Fix 0 Orders before moving shots so every shot has a valid order number.")
+            return
+
+        ordered_rows = sorted(
+            self.current_shot_rows,
+            key=lambda row: (row.order, row.sequence.lower(), row.section_number, row.shot_number, row.shot_name.lower()),
+        )
+        current_index = next((index for index, row in enumerate(ordered_rows) if row is shot_row), -1)
+        if current_index < 0:
+            return
+
+        target_index = current_index + direction
+        if target_index < 0:
+            self._set_status(f"{shot_row.shot_name} is already at the top of the current listing.")
+            return
+        if target_index >= len(ordered_rows):
+            self._set_status(f"{shot_row.shot_name} is already at the bottom of the current listing.")
+            return
+
+        target_row = ordered_rows[target_index]
+        original_order = shot_row.order
+        target_order = target_row.order
+        shot_row.order = target_order
+        target_row.order = original_order
+
+        try:
+            saved_manifest_count = save_order_updates_to_manifests([shot_row, target_row])
+        except Exception as error:
+            shot_row.order = original_order
+            target_row.order = target_order
+            self._set_status(f"Error saving shot order move: {error}")
+            messagebox.showerror("Shot Manager Error", str(error))
+            return
+
+        self.shot_sort_column = "order"
+        self.shot_sort_reverse = False
+        self._refresh_column_headings()
+        self._render_shot_rows()
+        direction_text = "up" if direction < 0 else "down"
+        self._set_status(
+            f"Moved {shot_row.shot_name} {direction_text}; swapped order {original_order} with {target_row.shot_name} order {target_order}. Saved {saved_manifest_count} manifest file(s)."
+        )
 
     def _gather_show_mp4s(self) -> None:
         show_path = self._get_selected_show_path()
@@ -799,18 +850,34 @@ class ShotManagerApp:
     def _on_shots_tree_click(self, event: tk.Event) -> str | None:
         if self.shots_tree.identify_region(event.x, event.y) != "cell":
             return None
-        if self._get_tree_column_key(event.x) != "is_active":
-            return None
+        column_key = self._get_tree_column_key(event.x)
         item_id = self.shots_tree.identify_row(event.y)
         if not item_id:
             return None
         shot_row = self.shot_rows_by_item_id.get(item_id)
         if shot_row is None:
             return None
+
+        if column_key == "move":
+            return self._handle_move_cell_click(event, item_id, shot_row)
+
+        if column_key != "is_active":
+            return None
+
         shot_row.is_active = not shot_row.is_active
         self._render_shot_rows()
         state_text = "active" if shot_row.is_active else "inactive"
         self._set_status(f"Set {shot_row.shot_name} to {state_text} in the Shot Manager view.")
+        return "break"
+
+    def _handle_move_cell_click(self, event: tk.Event, item_id: str, shot_row: ShotRow) -> str:
+        column_id = self._get_tree_column_id("move")
+        cell_bounds = self.shots_tree.bbox(item_id, column_id)
+        if not cell_bounds:
+            return "break"
+        cell_x, _cell_y, cell_width, _cell_height = cell_bounds
+        direction = -1 if event.x - cell_x < cell_width / 2 else 1
+        self._move_shot_order(shot_row, direction)
         return "break"
 
     def _get_tree_column_key(self, x_position: int) -> str:
@@ -826,10 +893,29 @@ class ShotManagerApp:
             return ""
         return str(columns[column_index])
 
+    def _get_tree_column_id(self, column_key: str) -> str:
+        columns = tuple(self.shots_tree["columns"])
+        try:
+            column_index = columns.index(column_key) + 1
+        except ValueError:
+            return ""
+        return f"#{column_index}"
+
     def _render_shot_rows(self) -> None:
         self._clear_shots()
         for shot_row in self._get_sorted_shot_rows():
-            item_id = self.shots_tree.insert("", "end", values=(shot_row.order, _active_display(shot_row.is_active), shot_row.sequence, shot_row.shot_name, str(shot_row.shot_path)))
+            item_id = self.shots_tree.insert(
+                "",
+                "end",
+                values=(
+                    MOVE_DISPLAY,
+                    shot_row.order,
+                    _active_display(shot_row.is_active),
+                    shot_row.sequence,
+                    shot_row.shot_name,
+                    str(shot_row.shot_path),
+                ),
+            )
             self.shot_rows_by_item_id[item_id] = shot_row
 
     def _get_sorted_shot_rows(self) -> list[ShotRow]:
