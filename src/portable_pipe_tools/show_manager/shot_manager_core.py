@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 import tkinter as tk
@@ -8,6 +9,11 @@ from tkinter import filedialog, messagebox, ttk
 
 
 ALL_SEQUENCES_LABEL = "All Sequences"
+SHOW_MANIFEST_FILENAME = "_show_manifest.json"
+LOCAL_SAVE_FOLDER_NAME = "LocalSaveFiles"
+SHOT_MANAGER_SAVE_FILENAME = "shot_manager_local_save.json"
+LOCAL_SAVE_SCHEMA_VERSION = 1
+
 COLUMN_TITLES = {
     "order": "Order",
     "sequence": "Sequence",
@@ -17,6 +23,20 @@ COLUMN_TITLES = {
 SHOT_NAME_RE = re.compile(
     r"^(?P<sequence>[A-Za-z0-9]{3})_(?P<section>\d{3})_(?P<shot>\d{4,})$"
 )
+
+
+@dataclass(frozen=True)
+class ShowFolderInfo:
+    show_root: Path
+    show_manifest: Path | None
+
+    @property
+    def name(self) -> str:
+        return self.show_root.name
+
+    @property
+    def has_show_manifest(self) -> bool:
+        return self.show_manifest is not None
 
 
 @dataclass(frozen=True)
@@ -31,6 +51,59 @@ class ShotRow:
 
 def _as_path(path_text: str | Path) -> Path:
     return Path(path_text).expanduser()
+
+
+def _get_repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def get_local_save_folder() -> Path:
+    return _get_repo_root() / LOCAL_SAVE_FOLDER_NAME
+
+
+def get_local_save_file_path() -> Path:
+    return get_local_save_folder() / SHOT_MANAGER_SAVE_FILENAME
+
+
+def load_saved_dropbox_folder() -> str:
+    local_save_file = get_local_save_file_path()
+
+    if not local_save_file.exists():
+        return ""
+
+    try:
+        data = json.loads(local_save_file.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    if not isinstance(data, dict):
+        return ""
+
+    return str(data.get("dropbox_folder") or "").strip()
+
+
+def save_dropbox_folder(dropbox_folder: str | Path) -> None:
+    local_save_folder = get_local_save_folder()
+    local_save_folder.mkdir(parents=True, exist_ok=True)
+
+    data = {
+        "schema_version": LOCAL_SAVE_SCHEMA_VERSION,
+        "dropbox_folder": str(dropbox_folder),
+    }
+
+    get_local_save_file_path().write_text(
+        json.dumps(data, indent=4, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def get_show_manifest(show_root: str | Path) -> Path | None:
+    show_manifest = _as_path(show_root) / SHOW_MANIFEST_FILENAME
+
+    if show_manifest.is_file():
+        return show_manifest
+
+    return None
 
 
 def _is_sequence_folder(folder_path: Path) -> bool:
@@ -58,7 +131,7 @@ def _parse_shot_folder_name(folder_name: str) -> tuple[str, int, int] | None:
     )
 
 
-def find_show_folders(dropbox_root: str | Path) -> list[Path]:
+def find_show_folders(dropbox_root: str | Path) -> list[ShowFolderInfo]:
     """
     A show folder is any direct child of the Dropbox/root folder that has
     a child folder named 'sequences'.
@@ -71,13 +144,24 @@ def find_show_folders(dropbox_root: str | Path) -> list[Path]:
     if not root.is_dir():
         raise NotADirectoryError(f"Dropbox folder is not a folder: {root}")
 
-    show_folders = [
-        child
-        for child in root.iterdir()
-        if child.is_dir() and (child / "sequences").is_dir()
-    ]
+    show_folders: list[ShowFolderInfo] = []
 
-    return sorted(show_folders, key=lambda path: path.name.lower())
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+
+        if not (child / "sequences").is_dir():
+            continue
+
+        show_manifest = get_show_manifest(child)
+        show_folders.append(
+            ShowFolderInfo(
+                show_root=child,
+                show_manifest=show_manifest,
+            )
+        )
+
+    return sorted(show_folders, key=lambda show_info: show_info.name.lower())
 
 
 def find_sequence_folders(show_root: str | Path) -> list[Path]:
@@ -166,12 +250,15 @@ class ShotManagerApp:
         self.status_var = tk.StringVar(value="Choose a Dropbox folder to begin.")
 
         self.show_folders_by_name: dict[str, Path] = {}
+        self.show_manifests_by_name: dict[str, Path | None] = {}
         self.sequence_folders_by_name: dict[str, Path] = {}
+        self.show_manifest: Path | None = None
         self.current_shot_rows: list[ShotRow] = []
         self.shot_sort_column = "order"
         self.shot_sort_reverse = False
 
         self._build_ui()
+        self._load_saved_dropbox_folder()
 
     def run(self) -> None:
         self.root.mainloop()
@@ -299,6 +386,18 @@ class ShotManagerApp:
         )
         status.pack(fill="x", pady=(8, 0))
 
+    def _load_saved_dropbox_folder(self) -> None:
+        saved_dropbox_folder = load_saved_dropbox_folder()
+        if not saved_dropbox_folder:
+            return
+
+        self.dropbox_root_var.set(saved_dropbox_folder)
+
+        if Path(saved_dropbox_folder).is_dir():
+            self._refresh_shows(save_local_file=False)
+        else:
+            self._set_status(f"Saved Dropbox folder was not found: {saved_dropbox_folder}")
+
     def _browse_dropbox_folder(self) -> None:
         selected = filedialog.askdirectory(
             title="Choose local Dropbox folder for shows",
@@ -309,7 +408,7 @@ class ShotManagerApp:
         self.dropbox_root_var.set(selected)
         self._refresh_shows()
 
-    def _refresh_shows(self) -> None:
+    def _refresh_shows(self, save_local_file: bool = True) -> None:
         dropbox_root = self.dropbox_root_var.get().strip()
 
         if not dropbox_root:
@@ -321,17 +420,24 @@ class ShotManagerApp:
 
         try:
             show_folders = find_show_folders(dropbox_root)
+            if save_local_file:
+                save_dropbox_folder(dropbox_root)
         except Exception as error:
             self._set_status(f"Error: {error}")
             messagebox.showerror("Shot Manager Error", str(error))
             return
 
         self.show_folders_by_name = {
-            show_path.name: show_path
-            for show_path in show_folders
+            show_info.name: show_info.show_root
+            for show_info in show_folders
+        }
+        self.show_manifests_by_name = {
+            show_info.name: show_info.show_manifest
+            for show_info in show_folders
         }
 
         show_names = list(self.show_folders_by_name)
+        manifest_count = sum(1 for show_info in show_folders if show_info.has_show_manifest)
 
         self.show_combo.configure(values=show_names)
 
@@ -340,11 +446,14 @@ class ShotManagerApp:
             selected_show = current_show if current_show in show_names else show_names[0]
             self.show_select_var.set(selected_show)
             self._refresh_sequences()
-            self._set_status(f"Found {len(show_names)} show folder(s).")
+            self._set_status(
+                f"Found {len(show_names)} show folder(s). Found {manifest_count} show manifest file(s)."
+            )
         else:
             self.show_select_var.set("")
             self.sequence_select_var.set(ALL_SEQUENCES_LABEL)
             self.sequence_combo.configure(values=[ALL_SEQUENCES_LABEL])
+            self.show_manifest = None
             self.current_shot_rows = []
             self._render_shot_rows()
             self._set_status("No show folders found. A show folder must contain a 'sequences' subfolder.")
@@ -357,6 +466,7 @@ class ShotManagerApp:
 
     def _refresh_sequences(self) -> None:
         show_path = self._get_selected_show_path()
+        self.show_manifest = self._get_selected_show_manifest()
 
         if show_path is None:
             self.sequence_folders_by_name = {}
@@ -400,13 +510,14 @@ class ShotManagerApp:
 
         self._render_shot_rows()
 
+        manifest_status = "show manifest found" if self.show_manifest else "show manifest missing"
         if selected_sequence == ALL_SEQUENCES_LABEL:
             self._set_status(
-                f"Showing {len(self.current_shot_rows)} shot folder(s) across all sequences."
+                f"Showing {len(self.current_shot_rows)} shot folder(s) across all sequences; {manifest_status}."
             )
         else:
             self._set_status(
-                f"Showing {len(self.current_shot_rows)} shot folder(s) in sequence {selected_sequence}."
+                f"Showing {len(self.current_shot_rows)} shot folder(s) in sequence {selected_sequence}; {manifest_status}."
             )
 
     def _sort_shots_by(self, column_key: str) -> None:
@@ -492,6 +603,13 @@ class ShotManagerApp:
             return None
 
         return self.show_folders_by_name.get(selected_show)
+
+    def _get_selected_show_manifest(self) -> Path | None:
+        selected_show = self.show_select_var.get().strip()
+        if not selected_show:
+            return None
+
+        return self.show_manifests_by_name.get(selected_show)
 
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
