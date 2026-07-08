@@ -288,9 +288,10 @@ def gather_show_mp4s_for_active_shots(show_root: Path, shot_rows: list[ShotRow])
             missing_beauty_mp4s.append(f"{shot_row.sequence}:{shot_row.shot_name}")
             continue
 
+        destination_file_name = f"{shot_row.order:03d}_{latest_mp4_path.name}"
         dest_path = _build_unique_dest_path(
             dump_folder,
-            latest_mp4_path.name,
+            destination_file_name,
             shot_row.sequence,
             shot_row.shot_name,
         )
