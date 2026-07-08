@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "portable-pipe-tools"
 version = "0.1.0"
 description = "Portable external Python tools for animation pipeline workflows."
