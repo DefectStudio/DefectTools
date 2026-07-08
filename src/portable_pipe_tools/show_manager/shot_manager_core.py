@@ -307,13 +307,17 @@ def gather_show_mp4s_for_active_shots(show_root: Path, shot_rows: list[ShotRow])
     )
 
 
-def save_order_updates_to_manifests(shot_rows: list[ShotRow]) -> int:
+def _group_manifest_rows(shot_rows: list[ShotRow]) -> dict[Path, list[ShotRow]]:
     rows_by_manifest: dict[Path, list[ShotRow]] = {}
     for shot_row in shot_rows:
         if shot_row.manifest_path is None:
             continue
         rows_by_manifest.setdefault(shot_row.manifest_path, []).append(shot_row)
+    return rows_by_manifest
 
+
+def save_order_updates_to_manifests(shot_rows: list[ShotRow]) -> int:
+    rows_by_manifest = _group_manifest_rows(shot_rows)
     saved_paths: set[Path] = set()
 
     for manifest_path, manifest_rows in rows_by_manifest.items():
@@ -370,6 +374,84 @@ def save_order_updates_to_manifests(shot_rows: list[ShotRow]) -> int:
             new_order = order_by_sequence_and_shot[key]
             if _coerce_optional_int(shot_data.get("order")) != new_order:
                 shot_data["order"] = new_order
+                changed = True
+
+        if changed:
+            _write_json_file(all_sequences_manifest_path, manifest_data)
+            saved_paths.add(all_sequences_manifest_path)
+
+    return len(saved_paths)
+
+
+def _set_shot_active_fields(shot_data: dict, is_active: bool) -> bool:
+    changed = False
+    active_value = 1 if is_active else 0
+
+    if _coerce_bool(shot_data.get("is_active"), default=False) != is_active or "is_active" not in shot_data:
+        shot_data["is_active"] = is_active
+        changed = True
+
+    if _coerce_optional_int(shot_data.get("is_active_value")) != active_value or "is_active_value" not in shot_data:
+        shot_data["is_active_value"] = active_value
+        changed = True
+
+    return changed
+
+
+def save_active_updates_to_manifests(shot_rows: list[ShotRow]) -> int:
+    rows_by_manifest = _group_manifest_rows(shot_rows)
+    saved_paths: set[Path] = set()
+
+    for manifest_path, manifest_rows in rows_by_manifest.items():
+        manifest_data = _read_json_file(manifest_path)
+        shots = manifest_data.get("shots") or []
+        if not isinstance(shots, list):
+            raise ValueError(f"Manifest 'shots' field must be a list: {manifest_path}")
+
+        active_by_shot_name = {shot_row.shot_name: shot_row.is_active for shot_row in manifest_rows}
+        changed = False
+
+        for shot_data in shots:
+            if not isinstance(shot_data, dict):
+                continue
+            shot_name = str(shot_data.get("shot_name") or "").strip()
+            if shot_name not in active_by_shot_name:
+                continue
+            if _set_shot_active_fields(shot_data, active_by_shot_name[shot_name]):
+                changed = True
+
+        if changed:
+            _write_json_file(manifest_path, manifest_data)
+            saved_paths.add(manifest_path)
+
+    all_sequence_manifest_paths = {
+        _get_all_sequences_manifest_path_from_sequence_manifest(manifest_path)
+        for manifest_path in rows_by_manifest
+    }
+    active_by_sequence_and_shot = {
+        (shot_row.sequence.upper(), shot_row.shot_name): shot_row.is_active
+        for shot_row in shot_rows
+        if shot_row.manifest_path is not None
+    }
+
+    for all_sequences_manifest_path in all_sequence_manifest_paths:
+        if not all_sequences_manifest_path.is_file():
+            continue
+        manifest_data = _read_json_file(all_sequences_manifest_path)
+        shots = manifest_data.get("shots") or []
+        if not isinstance(shots, list):
+            continue
+
+        changed = False
+        for shot_data in shots:
+            if not isinstance(shot_data, dict):
+                continue
+            sequence_name = str(shot_data.get("sequence_name") or "").strip().upper()
+            shot_name = str(shot_data.get("shot_name") or "").strip()
+            key = (sequence_name, shot_name)
+            if key not in active_by_sequence_and_shot:
+                continue
+            if _set_shot_active_fields(shot_data, active_by_sequence_and_shot[key]):
                 changed = True
 
         if changed:
@@ -536,6 +618,7 @@ class ShotManagerApp:
         self.sequence_combo = ttk.Combobox(controls, textvariable=self.sequence_select_var, state="readonly", values=[ALL_SEQUENCES_LABEL])
         self.sequence_combo.grid(row=2, column=1, columnspan=3, sticky="ew", pady=4)
         self.sequence_combo.bind("<<ComboboxSelected>>", self._on_sequence_selected)
+
         listing_frame = ttk.LabelFrame(outer, text="Shots Listing Window", padding=10)
         listing_frame.pack(fill="both", expand=True)
         listing_frame.rowconfigure(0, weight=1)
@@ -560,6 +643,7 @@ class ShotManagerApp:
         x_scroll = ttk.Scrollbar(listing_frame, orient="horizontal", command=self._on_tree_x_scroll)
         x_scroll.grid(row=1, column=0, sticky="ew")
         self.shots_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+
         actions_frame = ttk.Frame(outer)
         actions_frame.pack(fill="x", pady=(8, 0))
         ttk.Button(actions_frame, text="Fix 0 Orders", command=self._fix_zero_orders).pack(side="left")
@@ -605,6 +689,7 @@ class ShotManagerApp:
             self._set_status(f"Error: {error}")
             messagebox.showerror("Shot Manager Error", str(error))
             return
+
         self.show_folders_by_name = {show_info.name: show_info.show_root for show_info in show_folders}
         self.show_manifests_by_name = {show_info.name: show_info.show_manifest for show_info in show_folders}
         show_names = list(self.show_folders_by_name)
@@ -654,6 +739,7 @@ class ShotManagerApp:
             self.current_shot_rows = []
             self._render_shot_rows()
             return
+
         sequence_folders = find_sequence_folders(show_path)
         self.sequence_folders_by_name = {sequence_path.name.upper(): sequence_path for sequence_path in sequence_folders}
         sequence_names = [ALL_SEQUENCES_LABEL, *self.sequence_folders_by_name.keys()]
@@ -888,11 +974,33 @@ class ShotManagerApp:
         if column_key != "is_active":
             return None
 
-        shot_row.is_active = not shot_row.is_active
+        self._toggle_shot_active_state(shot_row)
+        return "break"
+
+    def _toggle_shot_active_state(self, shot_row: ShotRow) -> None:
+        if shot_row.manifest_path is None:
+            self._set_status(f"Cannot save active state for {shot_row.shot_name}; no sequence manifest was loaded for this shot.")
+            messagebox.showwarning(
+                "Shot Manager",
+                "This shot was loaded from a folder scan, not from a manifest. Export the shot manifests first, then refresh Shot Manager.",
+            )
+            return
+
+        original_state = shot_row.is_active
+        shot_row.is_active = not original_state
+
+        try:
+            saved_manifest_count = save_active_updates_to_manifests([shot_row])
+        except Exception as error:
+            shot_row.is_active = original_state
+            self._render_shot_rows()
+            self._set_status(f"Error saving active state for {shot_row.shot_name}: {error}")
+            messagebox.showerror("Shot Manager Error", str(error))
+            return
+
         self._render_shot_rows()
         state_text = "active" if shot_row.is_active else "inactive"
-        self._set_status(f"Set {shot_row.shot_name} to {state_text} in the Shot Manager view.")
-        return "break"
+        self._set_status(f"Set {shot_row.shot_name} to {state_text} and saved {saved_manifest_count} manifest file(s).")
 
     def _handle_move_cell_click(self, event: tk.Event, item_id: str, shot_row: ShotRow) -> str:
         column_id = self._get_tree_column_id("move")
@@ -1005,6 +1113,7 @@ class ShotManagerApp:
             if self.shot_sort_column == "path":
                 return (str(shot_row.shot_path).lower(),)
             return (shot_row.order, shot_row.sequence.lower())
+
         return sorted(self.current_shot_rows, key=sort_key, reverse=self.shot_sort_reverse)
 
     def _clear_shots(self) -> None:
