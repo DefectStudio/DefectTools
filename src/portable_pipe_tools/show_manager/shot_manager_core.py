@@ -438,13 +438,14 @@ class ShotManagerApp:
         sequence_names = [ALL_SEQUENCES_LABEL, *self.sequence_folders_by_name.keys()]
         self.sequence_combo.configure(values=sequence_names)
         current_sequence = self.sequence_select_var.get().strip()
-        if current_sequence in sequence_names:
-            selected_sequence = current_sequence
-        elif self.saved_sequence_name in sequence_names:
+        if self.saved_sequence_name in sequence_names:
             selected_sequence = self.saved_sequence_name
+        elif current_sequence in sequence_names:
+            selected_sequence = current_sequence
         else:
             selected_sequence = ALL_SEQUENCES_LABEL
         self.sequence_select_var.set(selected_sequence)
+        self.saved_sequence_name = selected_sequence
         if save_local_file:
             self._save_current_selection()
         self._refresh_shots()
