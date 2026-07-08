@@ -12,7 +12,7 @@ SHOW_MANIFEST_FILENAME = "_show_manifest.json"
 SEQUENCE_MANIFEST_SUFFIX = "_sequence_shots_manifest.json"
 LOCAL_SAVE_FOLDER_NAME = "LocalSaveFiles"
 SHOT_MANAGER_SAVE_FILENAME = "shot_manager_local_save.json"
-LOCAL_SAVE_SCHEMA_VERSION = 1
+LOCAL_SAVE_SCHEMA_VERSION = 2
 CHECKED_BOX = "☑"
 UNCHECKED_BOX = "☐"
 
@@ -72,24 +72,49 @@ def get_local_save_file_path() -> Path:
     return get_local_save_folder() / SHOT_MANAGER_SAVE_FILENAME
 
 
-def load_saved_dropbox_folder() -> str:
+def load_local_save_data() -> dict:
     local_save_file = get_local_save_file_path()
     if not local_save_file.exists():
-        return ""
+        return {}
     try:
         data = json.loads(local_save_file.read_text(encoding="utf-8"))
     except Exception:
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    return str(data.get("dropbox_folder") or "").strip()
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_local_save_data(data: dict) -> None:
+    local_save_folder = get_local_save_folder()
+    local_save_folder.mkdir(parents=True, exist_ok=True)
+    data["schema_version"] = LOCAL_SAVE_SCHEMA_VERSION
+    get_local_save_file_path().write_text(
+        json.dumps(data, indent=4, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def update_local_save_data(**updates: object) -> None:
+    data = load_local_save_data()
+    for key, value in updates.items():
+        if value is not None:
+            data[key] = str(value)
+    save_local_save_data(data)
+
+
+def load_saved_dropbox_folder() -> str:
+    return str(load_local_save_data().get("dropbox_folder") or "").strip()
+
+
+def load_saved_selected_show() -> str:
+    return str(load_local_save_data().get("selected_show") or "").strip()
+
+
+def load_saved_selected_sequence() -> str:
+    return str(load_local_save_data().get("selected_sequence") or "").strip()
 
 
 def save_dropbox_folder(dropbox_folder: str | Path) -> None:
-    local_save_folder = get_local_save_folder()
-    local_save_folder.mkdir(parents=True, exist_ok=True)
-    data = {"schema_version": LOCAL_SAVE_SCHEMA_VERSION, "dropbox_folder": str(dropbox_folder)}
-    get_local_save_file_path().write_text(json.dumps(data, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+    update_local_save_data(dropbox_folder=dropbox_folder)
 
 
 def get_show_manifest(show_root: str | Path) -> Path | None:
@@ -264,6 +289,8 @@ class ShotManagerApp:
         self.show_select_var = tk.StringVar()
         self.sequence_select_var = tk.StringVar(value=ALL_SEQUENCES_LABEL)
         self.status_var = tk.StringVar(value="Choose a Dropbox folder to begin.")
+        self.saved_show_name = ""
+        self.saved_sequence_name = ""
         self.show_folders_by_name: dict[str, Path] = {}
         self.show_manifests_by_name: dict[str, Path | None] = {}
         self.sequence_folders_by_name: dict[str, Path] = {}
@@ -273,7 +300,7 @@ class ShotManagerApp:
         self.shot_sort_column = "order"
         self.shot_sort_reverse = False
         self._build_ui()
-        self._load_saved_dropbox_folder()
+        self._load_saved_local_state()
 
     def run(self) -> None:
         self.root.mainloop()
@@ -318,8 +345,11 @@ class ShotManagerApp:
         self.shots_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
         ttk.Label(outer, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(8, 0))
 
-    def _load_saved_dropbox_folder(self) -> None:
-        saved_dropbox_folder = load_saved_dropbox_folder()
+    def _load_saved_local_state(self) -> None:
+        local_save_data = load_local_save_data()
+        saved_dropbox_folder = str(local_save_data.get("dropbox_folder") or "").strip()
+        self.saved_show_name = str(local_save_data.get("selected_show") or "").strip()
+        self.saved_sequence_name = str(local_save_data.get("selected_sequence") or "").strip()
         if not saved_dropbox_folder:
             return
         self.dropbox_root_var.set(saved_dropbox_folder)
@@ -333,6 +363,13 @@ class ShotManagerApp:
         if selected:
             self.dropbox_root_var.set(selected)
             self._refresh_shows()
+
+    def _save_current_selection(self) -> None:
+        update_local_save_data(
+            dropbox_folder=self.dropbox_root_var.get().strip(),
+            selected_show=self.show_select_var.get().strip(),
+            selected_sequence=self.sequence_select_var.get().strip(),
+        )
 
     def _refresh_shows(self, save_local_file: bool = True) -> None:
         dropbox_root = self.dropbox_root_var.get().strip()
@@ -353,9 +390,17 @@ class ShotManagerApp:
         manifest_count = sum(1 for show_info in show_folders if show_info.has_show_manifest)
         self.show_combo.configure(values=show_names)
         if show_names:
-            current_show = self.show_select_var.get()
-            self.show_select_var.set(current_show if current_show in show_names else show_names[0])
-            self._refresh_sequences()
+            current_show = self.show_select_var.get().strip()
+            if current_show in show_names:
+                selected_show = current_show
+            elif self.saved_show_name in show_names:
+                selected_show = self.saved_show_name
+            else:
+                selected_show = show_names[0]
+            self.show_select_var.set(selected_show)
+            self._refresh_sequences(save_local_file=save_local_file)
+            if save_local_file:
+                self._save_current_selection()
             self._set_status(f"Found {len(show_names)} show folder(s). Found {manifest_count} show manifest file(s).")
         else:
             self.show_select_var.set("")
@@ -364,15 +409,21 @@ class ShotManagerApp:
             self.show_manifest = None
             self.current_shot_rows = []
             self._render_shot_rows()
+            if save_local_file:
+                self._save_current_selection()
             self._set_status("No show folders found. A show folder must contain a 'sequences' subfolder.")
 
     def _on_show_selected(self, _event: tk.Event) -> None:
-        self._refresh_sequences()
+        self.saved_show_name = self.show_select_var.get().strip()
+        self._refresh_sequences(save_local_file=True)
+        self._save_current_selection()
 
     def _on_sequence_selected(self, _event: tk.Event) -> None:
+        self.saved_sequence_name = self.sequence_select_var.get().strip()
         self._refresh_shots()
+        self._save_current_selection()
 
-    def _refresh_sequences(self) -> None:
+    def _refresh_sequences(self, save_local_file: bool = False) -> None:
         show_path = self._get_selected_show_path()
         self.show_manifest = self._get_selected_show_manifest()
         if show_path is None:
@@ -386,8 +437,16 @@ class ShotManagerApp:
         self.sequence_folders_by_name = {sequence_path.name.upper(): sequence_path for sequence_path in sequence_folders}
         sequence_names = [ALL_SEQUENCES_LABEL, *self.sequence_folders_by_name.keys()]
         self.sequence_combo.configure(values=sequence_names)
-        if self.sequence_select_var.get() not in sequence_names:
-            self.sequence_select_var.set(ALL_SEQUENCES_LABEL)
+        current_sequence = self.sequence_select_var.get().strip()
+        if current_sequence in sequence_names:
+            selected_sequence = current_sequence
+        elif self.saved_sequence_name in sequence_names:
+            selected_sequence = self.saved_sequence_name
+        else:
+            selected_sequence = ALL_SEQUENCES_LABEL
+        self.sequence_select_var.set(selected_sequence)
+        if save_local_file:
+            self._save_current_selection()
         self._refresh_shots()
 
     def _refresh_shots(self) -> None:
