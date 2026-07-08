@@ -503,6 +503,8 @@ class ShotManagerApp:
         self.show_manifest: Path | None = None
         self.current_shot_rows: list[ShotRow] = []
         self.shot_rows_by_item_id: dict[str, ShotRow] = {}
+        self.move_buttons_by_item_id: dict[str, tuple[ttk.Button, ttk.Button]] = {}
+        self.move_button_refresh_job: str | None = None
         self.shot_sort_column = "order"
         self.shot_sort_reverse = False
         self._build_ui()
@@ -537,17 +539,21 @@ class ShotManagerApp:
         columns = tuple(COLUMN_TITLES)
         self.shots_tree = ttk.Treeview(listing_frame, columns=columns, show="headings", selectmode="browse")
         self._refresh_column_headings()
-        self.shots_tree.column("move", width=70, minwidth=60, stretch=False, anchor="center")
+        self.shots_tree.column("move", width=78, minwidth=70, stretch=False, anchor="center")
         self.shots_tree.column("order", width=70, minwidth=60, stretch=False, anchor="center")
         self.shots_tree.column("is_active", width=95, minwidth=90, stretch=False, anchor="center")
         self.shots_tree.column("sequence", width=100, minwidth=80, stretch=False, anchor="center")
         self.shots_tree.column("shot", width=160, minwidth=130, stretch=False)
         self.shots_tree.column("path", width=700, minwidth=300, stretch=True)
         self.shots_tree.bind("<Button-1>", self._on_shots_tree_click)
+        self.shots_tree.bind("<Configure>", self._on_tree_configure, add="+")
+        self.shots_tree.bind("<MouseWheel>", self._on_tree_mousewheel, add="+")
+        self.shots_tree.bind("<Button-4>", self._on_tree_mousewheel, add="+")
+        self.shots_tree.bind("<Button-5>", self._on_tree_mousewheel, add="+")
         self.shots_tree.grid(row=0, column=0, sticky="nsew")
-        y_scroll = ttk.Scrollbar(listing_frame, orient="vertical", command=self.shots_tree.yview)
+        y_scroll = ttk.Scrollbar(listing_frame, orient="vertical", command=self._on_tree_y_scroll)
         y_scroll.grid(row=0, column=1, sticky="ns")
-        x_scroll = ttk.Scrollbar(listing_frame, orient="horizontal", command=self.shots_tree.xview)
+        x_scroll = ttk.Scrollbar(listing_frame, orient="horizontal", command=self._on_tree_x_scroll)
         x_scroll.grid(row=1, column=0, sticky="ew")
         self.shots_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
         actions_frame = ttk.Frame(outer)
@@ -681,6 +687,20 @@ class ShotManagerApp:
         inactive_count = len(self.current_shot_rows) - active_count
         where = "across all sequences" if selected_sequence == ALL_SEQUENCES_LABEL else f"in sequence {selected_sequence}"
         self._set_status(f"Showing {len(self.current_shot_rows)} shot(s) {where}; {active_count} active, {inactive_count} inactive; loaded {sequence_manifest_count} sequence manifest(s); {manifest_status}.")
+
+    def _on_tree_y_scroll(self, *args: object) -> None:
+        self.shots_tree.yview(*args)
+        self._schedule_move_buttons_refresh()
+
+    def _on_tree_x_scroll(self, *args: object) -> None:
+        self.shots_tree.xview(*args)
+        self._schedule_move_buttons_refresh()
+
+    def _on_tree_configure(self, _event: tk.Event) -> None:
+        self._schedule_move_buttons_refresh()
+
+    def _on_tree_mousewheel(self, _event: tk.Event) -> None:
+        self._schedule_move_buttons_refresh()
 
     def _sort_shots_by(self, column_key: str) -> None:
         if column_key == "move":
@@ -917,6 +937,55 @@ class ShotManagerApp:
                 ),
             )
             self.shot_rows_by_item_id[item_id] = shot_row
+        self._schedule_move_buttons_refresh()
+
+    def _schedule_move_buttons_refresh(self) -> None:
+        if self.move_button_refresh_job is not None:
+            try:
+                self.root.after_cancel(self.move_button_refresh_job)
+            except Exception:
+                pass
+        self.move_button_refresh_job = self.root.after_idle(self._refresh_move_buttons)
+
+    def _refresh_move_buttons(self) -> None:
+        self.move_button_refresh_job = None
+        self._destroy_move_buttons()
+        column_id = self._get_tree_column_id("move")
+        if not column_id:
+            return
+
+        for item_id in self.shots_tree.get_children():
+            shot_row = self.shot_rows_by_item_id.get(item_id)
+            if shot_row is None:
+                continue
+            cell_bounds = self.shots_tree.bbox(item_id, column_id)
+            if not cell_bounds:
+                continue
+
+            cell_x, cell_y, cell_width, cell_height = cell_bounds
+            button_height = max(cell_height - 4, 1)
+            button_width = max((cell_width - 8) // 2, 20)
+            up_button = ttk.Button(
+                self.shots_tree,
+                text="▲",
+                width=2,
+                command=lambda row=shot_row: self._move_shot_order(row, -1),
+            )
+            down_button = ttk.Button(
+                self.shots_tree,
+                text="▼",
+                width=2,
+                command=lambda row=shot_row: self._move_shot_order(row, 1),
+            )
+            up_button.place(x=cell_x + 2, y=cell_y + 2, width=button_width, height=button_height)
+            down_button.place(x=cell_x + 6 + button_width, y=cell_y + 2, width=button_width, height=button_height)
+            self.move_buttons_by_item_id[item_id] = (up_button, down_button)
+
+    def _destroy_move_buttons(self) -> None:
+        for up_button, down_button in self.move_buttons_by_item_id.values():
+            up_button.destroy()
+            down_button.destroy()
+        self.move_buttons_by_item_id = {}
 
     def _get_sorted_shot_rows(self) -> list[ShotRow]:
         def sort_key(shot_row: ShotRow) -> tuple:
@@ -934,6 +1003,7 @@ class ShotManagerApp:
         return sorted(self.current_shot_rows, key=sort_key, reverse=self.shot_sort_reverse)
 
     def _clear_shots(self) -> None:
+        self._destroy_move_buttons()
         self.shot_rows_by_item_id = {}
         for item_id in self.shots_tree.get_children():
             self.shots_tree.delete(item_id)
