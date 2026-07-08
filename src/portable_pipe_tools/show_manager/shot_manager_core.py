@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import json
 from pathlib import Path
 import re
+import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -16,6 +18,8 @@ SHOT_MANAGER_SAVE_FILENAME = "shot_manager_local_save.json"
 LOCAL_SAVE_SCHEMA_VERSION = 2
 CHECKED_BOX = "☑"
 UNCHECKED_BOX = "☐"
+RENDER_CONTEXT_SEGMENTS = ("lite", "unreal", "_output")
+HERO_MP4_SUFFIX = "_heroMP4s"
 
 COLUMN_TITLES = {
     "order": "Order",
@@ -55,6 +59,15 @@ class ShotRow:
     level_path: str = ""
     manifest_path: Path | None = None
     source: str = "folder"
+
+
+@dataclass(frozen=True)
+class Mp4GatherResult:
+    dump_folder: Path
+    copied_count: int
+    active_shot_count: int
+    missing_output_folders: tuple[str, ...]
+    missing_beauty_mp4s: tuple[str, ...]
 
 
 def _as_path(path_text: str | Path) -> Path:
@@ -183,6 +196,99 @@ def _active_display(is_active: bool) -> str:
     return CHECKED_BOX if is_active else UNCHECKED_BOX
 
 
+def _is_beauty_mp4(file_path: Path) -> bool:
+    lower_name = file_path.name.lower()
+    return file_path.is_file() and lower_name.endswith(".mp4") and "beauty" in lower_name
+
+
+def _find_latest_beauty_mp4(output_folder: Path) -> Path | None:
+    if not output_folder.is_dir():
+        return None
+
+    candidates: list[tuple[float, Path]] = []
+    for file_path in output_folder.iterdir():
+        if not _is_beauty_mp4(file_path):
+            continue
+        try:
+            candidates.append((file_path.stat().st_mtime, file_path))
+        except OSError:
+            continue
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _build_unique_dest_path(dump_folder: Path, file_name: str, sequence_name: str, shot_name: str) -> Path:
+    dest_path = dump_folder / file_name
+    if not dest_path.exists():
+        return dest_path
+
+    stem = Path(file_name).stem
+    ext = Path(file_name).suffix
+    prefixed_path = dump_folder / f"{sequence_name}_{shot_name}_{file_name}"
+    if not prefixed_path.exists():
+        return prefixed_path
+
+    index = 2
+    while True:
+        numbered_path = dump_folder / f"{sequence_name}_{shot_name}_{stem}_{index}{ext}"
+        if not numbered_path.exists():
+            return numbered_path
+        index += 1
+
+
+def gather_show_mp4s_for_active_shots(show_root: Path, shot_rows: list[ShotRow]) -> Mp4GatherResult:
+    sequences_root = show_root / "sequences"
+    show_dump_root = sequences_root / "_output"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    dump_folder = show_dump_root / f"{timestamp}{HERO_MP4_SUFFIX}"
+    dump_folder.mkdir(parents=True, exist_ok=True)
+
+    active_rows = [shot_row for shot_row in shot_rows if shot_row.is_active]
+    missing_output_folders: list[str] = []
+    missing_beauty_mp4s: list[str] = []
+    copied_count = 0
+
+    for shot_row in sorted(active_rows, key=lambda row: (row.order, row.sequence.lower(), row.shot_name.lower())):
+        shot_output_folder = (
+            sequences_root
+            / shot_row.sequence
+            / shot_row.shot_name
+            / RENDER_CONTEXT_SEGMENTS[0]
+            / RENDER_CONTEXT_SEGMENTS[1]
+            / RENDER_CONTEXT_SEGMENTS[2]
+        )
+
+        if not shot_output_folder.is_dir():
+            missing_output_folders.append(f"{shot_row.sequence}:{shot_row.shot_name}")
+            continue
+
+        latest_mp4_path = _find_latest_beauty_mp4(shot_output_folder)
+        if latest_mp4_path is None:
+            missing_beauty_mp4s.append(f"{shot_row.sequence}:{shot_row.shot_name}")
+            continue
+
+        dest_path = _build_unique_dest_path(
+            dump_folder,
+            latest_mp4_path.name,
+            shot_row.sequence,
+            shot_row.shot_name,
+        )
+        shutil.copy2(latest_mp4_path, dest_path)
+        copied_count += 1
+
+    return Mp4GatherResult(
+        dump_folder=dump_folder,
+        copied_count=copied_count,
+        active_shot_count=len(active_rows),
+        missing_output_folders=tuple(missing_output_folders),
+        missing_beauty_mp4s=tuple(missing_beauty_mp4s),
+    )
+
+
 def save_order_updates_to_manifests(shot_rows: list[ShotRow]) -> int:
     rows_by_manifest: dict[Path, list[ShotRow]] = {}
     for shot_row in shot_rows:
@@ -198,10 +304,7 @@ def save_order_updates_to_manifests(shot_rows: list[ShotRow]) -> int:
         if not isinstance(shots, list):
             raise ValueError(f"Manifest 'shots' field must be a list: {manifest_path}")
 
-        order_by_shot_name = {
-            shot_row.shot_name: shot_row.order
-            for shot_row in manifest_rows
-        }
+        order_by_shot_name = {shot_row.shot_name: shot_row.order for shot_row in manifest_rows}
         changed = False
 
         for shot_data in shots:
@@ -433,6 +536,7 @@ class ShotManagerApp:
         actions_frame = ttk.Frame(outer)
         actions_frame.pack(fill="x", pady=(8, 0))
         ttk.Button(actions_frame, text="Fix 0 Orders", command=self._fix_zero_orders).pack(side="left")
+        ttk.Button(actions_frame, text="Gather Show MP4s", command=self._gather_show_mp4s).pack(side="right")
         ttk.Label(outer, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(8, 0))
 
     def _load_saved_local_state(self) -> None:
@@ -584,16 +688,8 @@ class ShotManagerApp:
             messagebox.showinfo("Shot Manager", "There are no shots to update.")
             return
 
-        used_orders = {
-            shot_row.order
-            for shot_row in self.current_shot_rows
-            if shot_row.order > 0
-        }
-        zero_order_rows = [
-            shot_row
-            for shot_row in self.current_shot_rows
-            if shot_row.order == 0
-        ]
+        used_orders = {shot_row.order for shot_row in self.current_shot_rows if shot_row.order > 0}
+        zero_order_rows = [shot_row for shot_row in self.current_shot_rows if shot_row.order == 0]
 
         if not zero_order_rows:
             self._set_status("No shots with order 0 were found in the current shot listing.")
@@ -602,15 +698,7 @@ class ShotManagerApp:
         next_available_order = 1
         fixed_rows: list[ShotRow] = []
 
-        for shot_row in sorted(
-            zero_order_rows,
-            key=lambda row: (
-                row.sequence.lower(),
-                row.section_number,
-                row.shot_number,
-                row.shot_name.lower(),
-            ),
-        ):
+        for shot_row in sorted(zero_order_rows, key=lambda row: (row.sequence.lower(), row.section_number, row.shot_number, row.shot_name.lower())):
             while next_available_order in used_orders:
                 next_available_order += 1
             shot_row.order = next_available_order
@@ -625,8 +713,40 @@ class ShotManagerApp:
             return
 
         self._render_shot_rows()
+        self._set_status(f"Fixed {len(fixed_rows)} shot order value(s) and saved {saved_manifest_count} manifest file(s).")
+
+    def _gather_show_mp4s(self) -> None:
+        show_path = self._get_selected_show_path()
+        if show_path is None:
+            messagebox.showwarning("Shot Manager", "Please choose a show first.")
+            return
+
+        try:
+            all_show_shot_rows = find_shot_folders(show_path, ALL_SEQUENCES_LABEL)
+            result = gather_show_mp4s_for_active_shots(show_path, all_show_shot_rows)
+        except Exception as error:
+            self._set_status(f"Error gathering show MP4s: {error}")
+            messagebox.showerror("Shot Manager Error", str(error))
+            return
+
+        if result.copied_count == 0:
+            self._set_status(
+                f"No MP4s copied. Active shots: {result.active_shot_count}; "
+                f"missing folders: {len(result.missing_output_folders)}; "
+                f"missing beauty MP4s: {len(result.missing_beauty_mp4s)}."
+            )
+            messagebox.showwarning(
+                "Gather Show MP4s",
+                "No MP4s were copied. Check that active shots have beauty MP4 renders in lite/unreal/_output.",
+            )
+            return
+
         self._set_status(
-            f"Fixed {len(fixed_rows)} shot order value(s) and saved {saved_manifest_count} manifest file(s)."
+            f"Gathered {result.copied_count} MP4(s) from {result.active_shot_count} active shot(s) into: {result.dump_folder}"
+        )
+        messagebox.showinfo(
+            "Gather Show MP4s",
+            f"Copied {result.copied_count} MP4(s) into:\n{result.dump_folder}",
         )
 
     def _on_shots_tree_click(self, event: tk.Event) -> str | None:
