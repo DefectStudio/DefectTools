@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
+import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -194,6 +197,17 @@ def _get_all_sequences_manifest_path_from_sequence_manifest(manifest_path: Path)
 
 def _active_display(is_active: bool) -> str:
     return CHECKED_BOX if is_active else UNCHECKED_BOX
+
+
+def open_folder_in_file_browser(folder_path: Path) -> None:
+    normalized_path = folder_path.resolve()
+    if hasattr(os, "startfile"):
+        os.startfile(str(normalized_path))
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(normalized_path)])
+        return
+    subprocess.Popen(["xdg-open", str(normalized_path)])
 
 
 def _is_beauty_mp4(file_path: Path) -> bool:
@@ -741,13 +755,25 @@ class ShotManagerApp:
             )
             return
 
+        open_warning = ""
+        try:
+            open_folder_in_file_browser(result.dump_folder)
+        except Exception as error:
+            open_warning = f" Could not open folder automatically: {error}"
+
         self._set_status(
-            f"Gathered {result.copied_count} MP4(s) from {result.active_shot_count} active shot(s) into: {result.dump_folder}"
+            f"Gathered {result.copied_count} MP4(s) from {result.active_shot_count} active shot(s) into: {result.dump_folder}.{open_warning}"
         )
-        messagebox.showinfo(
-            "Gather Show MP4s",
-            f"Copied {result.copied_count} MP4(s) into:\n{result.dump_folder}",
-        )
+        if open_warning:
+            messagebox.showwarning(
+                "Gather Show MP4s",
+                f"Copied {result.copied_count} MP4(s) into:\n{result.dump_folder}\n\n{open_warning.strip()}",
+            )
+        else:
+            messagebox.showinfo(
+                "Gather Show MP4s",
+                f"Copied {result.copied_count} MP4(s) into:\n{result.dump_folder}",
+            )
 
     def _on_shots_tree_click(self, event: tk.Event) -> str | None:
         if self.shots_tree.identify_region(event.x, event.y) != "cell":
