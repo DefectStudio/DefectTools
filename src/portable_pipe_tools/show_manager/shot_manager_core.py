@@ -15,7 +15,6 @@ from tkinter import filedialog, messagebox, ttk
 ALL_SEQUENCES_LABEL = "All Sequences"
 SHOW_MANIFEST_FILENAME = "_show_manifest.json"
 SEQUENCE_MANIFEST_SUFFIX = "_sequence_shots_manifest.json"
-ALL_SEQUENCES_MANIFEST_FILENAME = "all_sequences_shots_manifest.json"
 LOCAL_SAVE_FOLDER_NAME = "LocalSaveFiles"
 SHOT_MANAGER_SAVE_FILENAME = "shot_manager_local_save.json"
 LOCAL_SAVE_SCHEMA_VERSION = 2
@@ -194,10 +193,6 @@ def _get_sequence_manifest_path(sequence_folder: Path) -> Path:
     return sequence_folder / f"{sequence_folder.name.lower()}{SEQUENCE_MANIFEST_SUFFIX}"
 
 
-def _get_all_sequences_manifest_path_from_sequence_manifest(manifest_path: Path) -> Path:
-    return manifest_path.parent.parent / ALL_SEQUENCES_MANIFEST_FILENAME
-
-
 def _active_display(is_active: bool) -> str:
     return CHECKED_BOX if is_active else UNCHECKED_BOX
 
@@ -344,42 +339,6 @@ def save_order_updates_to_manifests(shot_rows: list[ShotRow]) -> int:
             _write_json_file(manifest_path, manifest_data)
             saved_paths.add(manifest_path)
 
-    all_sequence_manifest_paths = {
-        _get_all_sequences_manifest_path_from_sequence_manifest(manifest_path)
-        for manifest_path in rows_by_manifest
-    }
-    order_by_sequence_and_shot = {
-        (shot_row.sequence.upper(), shot_row.shot_name): shot_row.order
-        for shot_row in shot_rows
-        if shot_row.manifest_path is not None
-    }
-
-    for all_sequences_manifest_path in all_sequence_manifest_paths:
-        if not all_sequences_manifest_path.is_file():
-            continue
-        manifest_data = _read_json_file(all_sequences_manifest_path)
-        shots = manifest_data.get("shots") or []
-        if not isinstance(shots, list):
-            continue
-
-        changed = False
-        for shot_data in shots:
-            if not isinstance(shot_data, dict):
-                continue
-            sequence_name = str(shot_data.get("sequence_name") or "").strip().upper()
-            shot_name = str(shot_data.get("shot_name") or "").strip()
-            key = (sequence_name, shot_name)
-            if key not in order_by_sequence_and_shot:
-                continue
-            new_order = order_by_sequence_and_shot[key]
-            if _coerce_optional_int(shot_data.get("order")) != new_order:
-                shot_data["order"] = new_order
-                changed = True
-
-        if changed:
-            _write_json_file(all_sequences_manifest_path, manifest_data)
-            saved_paths.add(all_sequences_manifest_path)
-
     return len(saved_paths)
 
 
@@ -423,40 +382,6 @@ def save_active_updates_to_manifests(shot_rows: list[ShotRow]) -> int:
         if changed:
             _write_json_file(manifest_path, manifest_data)
             saved_paths.add(manifest_path)
-
-    all_sequence_manifest_paths = {
-        _get_all_sequences_manifest_path_from_sequence_manifest(manifest_path)
-        for manifest_path in rows_by_manifest
-    }
-    active_by_sequence_and_shot = {
-        (shot_row.sequence.upper(), shot_row.shot_name): shot_row.is_active
-        for shot_row in shot_rows
-        if shot_row.manifest_path is not None
-    }
-
-    for all_sequences_manifest_path in all_sequence_manifest_paths:
-        if not all_sequences_manifest_path.is_file():
-            continue
-        manifest_data = _read_json_file(all_sequences_manifest_path)
-        shots = manifest_data.get("shots") or []
-        if not isinstance(shots, list):
-            continue
-
-        changed = False
-        for shot_data in shots:
-            if not isinstance(shot_data, dict):
-                continue
-            sequence_name = str(shot_data.get("sequence_name") or "").strip().upper()
-            shot_name = str(shot_data.get("shot_name") or "").strip()
-            key = (sequence_name, shot_name)
-            if key not in active_by_sequence_and_shot:
-                continue
-            if _set_shot_active_fields(shot_data, active_by_sequence_and_shot[key]):
-                changed = True
-
-        if changed:
-            _write_json_file(all_sequences_manifest_path, manifest_data)
-            saved_paths.add(all_sequences_manifest_path)
 
     return len(saved_paths)
 
