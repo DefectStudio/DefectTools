@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 ALL_SEQUENCES_LABEL = "All Sequences"
 SHOW_MANIFEST_FILENAME = "_show_manifest.json"
 SEQUENCE_MANIFEST_SUFFIX = "_sequence_shots_manifest.json"
+ALL_SEQUENCES_MANIFEST_FILENAME = "all_sequences_shots_manifest.json"
 LOCAL_SAVE_FOLDER_NAME = "LocalSaveFiles"
 SHOT_MANAGER_SAVE_FILENAME = "shot_manager_local_save.json"
 LOCAL_SAVE_SCHEMA_VERSION = 2
@@ -163,12 +164,98 @@ def _read_json_file(json_path: Path) -> dict:
     return data
 
 
+def _write_json_file(json_path: Path, data: dict) -> None:
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    with json_path.open("w", encoding="utf-8", newline="\n") as json_file:
+        json.dump(data, json_file, indent=4, ensure_ascii=False)
+        json_file.write("\n")
+
+
 def _get_sequence_manifest_path(sequence_folder: Path) -> Path:
     return sequence_folder / f"{sequence_folder.name.lower()}{SEQUENCE_MANIFEST_SUFFIX}"
 
 
+def _get_all_sequences_manifest_path_from_sequence_manifest(manifest_path: Path) -> Path:
+    return manifest_path.parent.parent / ALL_SEQUENCES_MANIFEST_FILENAME
+
+
 def _active_display(is_active: bool) -> str:
     return CHECKED_BOX if is_active else UNCHECKED_BOX
+
+
+def save_order_updates_to_manifests(shot_rows: list[ShotRow]) -> int:
+    rows_by_manifest: dict[Path, list[ShotRow]] = {}
+    for shot_row in shot_rows:
+        if shot_row.manifest_path is None:
+            continue
+        rows_by_manifest.setdefault(shot_row.manifest_path, []).append(shot_row)
+
+    saved_paths: set[Path] = set()
+
+    for manifest_path, manifest_rows in rows_by_manifest.items():
+        manifest_data = _read_json_file(manifest_path)
+        shots = manifest_data.get("shots") or []
+        if not isinstance(shots, list):
+            raise ValueError(f"Manifest 'shots' field must be a list: {manifest_path}")
+
+        order_by_shot_name = {
+            shot_row.shot_name: shot_row.order
+            for shot_row in manifest_rows
+        }
+        changed = False
+
+        for shot_data in shots:
+            if not isinstance(shot_data, dict):
+                continue
+            shot_name = str(shot_data.get("shot_name") or "").strip()
+            if shot_name not in order_by_shot_name:
+                continue
+            new_order = order_by_shot_name[shot_name]
+            if _coerce_optional_int(shot_data.get("order")) != new_order:
+                shot_data["order"] = new_order
+                changed = True
+
+        if changed:
+            _write_json_file(manifest_path, manifest_data)
+            saved_paths.add(manifest_path)
+
+    all_sequence_manifest_paths = {
+        _get_all_sequences_manifest_path_from_sequence_manifest(manifest_path)
+        for manifest_path in rows_by_manifest
+    }
+    order_by_sequence_and_shot = {
+        (shot_row.sequence.upper(), shot_row.shot_name): shot_row.order
+        for shot_row in shot_rows
+        if shot_row.manifest_path is not None
+    }
+
+    for all_sequences_manifest_path in all_sequence_manifest_paths:
+        if not all_sequences_manifest_path.is_file():
+            continue
+        manifest_data = _read_json_file(all_sequences_manifest_path)
+        shots = manifest_data.get("shots") or []
+        if not isinstance(shots, list):
+            continue
+
+        changed = False
+        for shot_data in shots:
+            if not isinstance(shot_data, dict):
+                continue
+            sequence_name = str(shot_data.get("sequence_name") or "").strip().upper()
+            shot_name = str(shot_data.get("shot_name") or "").strip()
+            key = (sequence_name, shot_name)
+            if key not in order_by_sequence_and_shot:
+                continue
+            new_order = order_by_sequence_and_shot[key]
+            if _coerce_optional_int(shot_data.get("order")) != new_order:
+                shot_data["order"] = new_order
+                changed = True
+
+        if changed:
+            _write_json_file(all_sequences_manifest_path, manifest_data)
+            saved_paths.add(all_sequences_manifest_path)
+
+    return len(saved_paths)
 
 
 def find_show_folders(dropbox_root: str | Path) -> list[ShowFolderInfo]:
@@ -343,6 +430,9 @@ class ShotManagerApp:
         x_scroll = ttk.Scrollbar(listing_frame, orient="horizontal", command=self.shots_tree.xview)
         x_scroll.grid(row=1, column=0, sticky="ew")
         self.shots_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        actions_frame = ttk.Frame(outer)
+        actions_frame.pack(fill="x", pady=(8, 0))
+        ttk.Button(actions_frame, text="Fix 0 Orders", command=self._fix_zero_orders).pack(side="left")
         ttk.Label(outer, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(8, 0))
 
     def _load_saved_local_state(self) -> None:
@@ -488,6 +578,56 @@ class ShotManagerApp:
             if column_key == self.shot_sort_column:
                 heading_text = f"{column_title} {'▼' if self.shot_sort_reverse else '▲'}"
             self.shots_tree.heading(column_key, text=heading_text, command=lambda key=column_key: self._sort_shots_by(key))
+
+    def _fix_zero_orders(self) -> None:
+        if not self.current_shot_rows:
+            messagebox.showinfo("Shot Manager", "There are no shots to update.")
+            return
+
+        used_orders = {
+            shot_row.order
+            for shot_row in self.current_shot_rows
+            if shot_row.order > 0
+        }
+        zero_order_rows = [
+            shot_row
+            for shot_row in self.current_shot_rows
+            if shot_row.order == 0
+        ]
+
+        if not zero_order_rows:
+            self._set_status("No shots with order 0 were found in the current shot listing.")
+            return
+
+        next_available_order = 1
+        fixed_rows: list[ShotRow] = []
+
+        for shot_row in sorted(
+            zero_order_rows,
+            key=lambda row: (
+                row.sequence.lower(),
+                row.section_number,
+                row.shot_number,
+                row.shot_name.lower(),
+            ),
+        ):
+            while next_available_order in used_orders:
+                next_available_order += 1
+            shot_row.order = next_available_order
+            used_orders.add(next_available_order)
+            fixed_rows.append(shot_row)
+
+        try:
+            saved_manifest_count = save_order_updates_to_manifests(fixed_rows)
+        except Exception as error:
+            self._set_status(f"Error saving fixed order values: {error}")
+            messagebox.showerror("Shot Manager Error", str(error))
+            return
+
+        self._render_shot_rows()
+        self._set_status(
+            f"Fixed {len(fixed_rows)} shot order value(s) and saved {saved_manifest_count} manifest file(s)."
+        )
 
     def _on_shots_tree_click(self, event: tk.Event) -> str | None:
         if self.shots_tree.identify_region(event.x, event.y) != "cell":
