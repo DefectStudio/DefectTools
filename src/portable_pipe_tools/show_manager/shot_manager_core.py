@@ -22,6 +22,7 @@ LOCAL_SAVE_SCHEMA_VERSION = 2
 CHECKED_BOX = "☑"
 UNCHECKED_BOX = "☐"
 MOVE_DISPLAY = "▲  ▼"
+SHOT_TREE_ROW_HEIGHT = 30
 RENDER_CONTEXT_SEGMENTS = ("lite", "unreal", "_output")
 HERO_MP4_SUFFIX = "_heroMP4s"
 
@@ -516,6 +517,8 @@ class ShotManagerApp:
     def _build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=12)
         outer.pack(fill="both", expand=True)
+        style = ttk.Style(self.root)
+        style.configure("ShotManager.Treeview", rowheight=SHOT_TREE_ROW_HEIGHT)
         ttk.Label(outer, text="Shot Manager", font=("Segoe UI", 18, "bold")).pack(anchor="w", pady=(0, 12))
         controls = ttk.LabelFrame(outer, text="Show Browser", padding=10)
         controls.pack(fill="x", pady=(0, 12))
@@ -537,7 +540,7 @@ class ShotManagerApp:
         listing_frame.rowconfigure(0, weight=1)
         listing_frame.columnconfigure(0, weight=1)
         columns = tuple(COLUMN_TITLES)
-        self.shots_tree = ttk.Treeview(listing_frame, columns=columns, show="headings", selectmode="browse")
+        self.shots_tree = ttk.Treeview(listing_frame, columns=columns, show="headings", selectmode="browse", style="ShotManager.Treeview")
         self._refresh_column_headings()
         self.shots_tree.column("move", width=78, minwidth=70, stretch=False, anchor="center")
         self.shots_tree.column("order", width=70, minwidth=60, stretch=False, anchor="center")
@@ -963,8 +966,9 @@ class ShotManagerApp:
                 continue
 
             cell_x, cell_y, cell_width, cell_height = cell_bounds
-            button_height = max(cell_height - 4, 1)
+            button_height = max(cell_height + 6, 1)
             button_width = max((cell_width - 8) // 2, 20)
+            button_y = cell_y - 3
             up_button = ttk.Button(
                 self.shots_tree,
                 text="▲",
@@ -977,8 +981,8 @@ class ShotManagerApp:
                 width=2,
                 command=lambda row=shot_row: self._move_shot_order(row, 1),
             )
-            up_button.place(x=cell_x + 2, y=cell_y + 2, width=button_width, height=button_height)
-            down_button.place(x=cell_x + 6 + button_width, y=cell_y + 2, width=button_width, height=button_height)
+            up_button.place(x=cell_x + 2, y=button_y, width=button_width, height=button_height)
+            down_button.place(x=cell_x + 6 + button_width, y=button_y, width=button_width, height=button_height)
             self.move_buttons_by_item_id[item_id] = (up_button, down_button)
 
     def _destroy_move_buttons(self) -> None:
