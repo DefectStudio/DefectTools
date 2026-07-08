@@ -8,6 +8,12 @@ from tkinter import filedialog, messagebox, ttk
 
 
 ALL_SEQUENCES_LABEL = "All Sequences"
+COLUMN_TITLES = {
+    "order": "Order",
+    "sequence": "Sequence",
+    "shot": "Shot",
+    "path": "Folder Path",
+}
 SHOT_NAME_RE = re.compile(
     r"^(?P<sequence>[A-Za-z0-9]{3})_(?P<section>\d{3})_(?P<shot>\d{4,})$"
 )
@@ -161,6 +167,9 @@ class ShotManagerApp:
 
         self.show_folders_by_name: dict[str, Path] = {}
         self.sequence_folders_by_name: dict[str, Path] = {}
+        self.current_shot_rows: list[ShotRow] = []
+        self.shot_sort_column = "order"
+        self.shot_sort_reverse = False
 
         self._build_ui()
 
@@ -248,17 +257,14 @@ class ShotManagerApp:
         listing_frame.rowconfigure(0, weight=1)
         listing_frame.columnconfigure(0, weight=1)
 
-        columns = ("order", "sequence", "shot", "path")
+        columns = tuple(COLUMN_TITLES)
         self.shots_tree = ttk.Treeview(
             listing_frame,
             columns=columns,
             show="headings",
             selectmode="browse",
         )
-        self.shots_tree.heading("order", text="Order")
-        self.shots_tree.heading("sequence", text="Sequence")
-        self.shots_tree.heading("shot", text="Shot")
-        self.shots_tree.heading("path", text="Folder Path")
+        self._refresh_column_headings()
 
         self.shots_tree.column("order", width=70, minwidth=60, stretch=False, anchor="center")
         self.shots_tree.column("sequence", width=100, minwidth=80, stretch=False, anchor="center")
@@ -339,7 +345,8 @@ class ShotManagerApp:
             self.show_select_var.set("")
             self.sequence_select_var.set(ALL_SEQUENCES_LABEL)
             self.sequence_combo.configure(values=[ALL_SEQUENCES_LABEL])
-            self._clear_shots()
+            self.current_shot_rows = []
+            self._render_shot_rows()
             self._set_status("No show folders found. A show folder must contain a 'sequences' subfolder.")
 
     def _on_show_selected(self, _event: tk.Event) -> None:
@@ -355,7 +362,8 @@ class ShotManagerApp:
             self.sequence_folders_by_name = {}
             self.sequence_combo.configure(values=[ALL_SEQUENCES_LABEL])
             self.sequence_select_var.set(ALL_SEQUENCES_LABEL)
-            self._clear_shots()
+            self.current_shot_rows = []
+            self._render_shot_rows()
             return
 
         sequence_folders = find_sequence_folders(show_path)
@@ -377,21 +385,60 @@ class ShotManagerApp:
         show_path = self._get_selected_show_path()
 
         if show_path is None:
-            self._clear_shots()
+            self.current_shot_rows = []
+            self._render_shot_rows()
             return
 
         selected_sequence = self.sequence_select_var.get().strip() or ALL_SEQUENCES_LABEL
 
         try:
-            shot_rows = find_shot_folders(show_path, selected_sequence)
+            self.current_shot_rows = find_shot_folders(show_path, selected_sequence)
         except Exception as error:
             self._set_status(f"Error: {error}")
             messagebox.showerror("Shot Manager Error", str(error))
             return
 
+        self._render_shot_rows()
+
+        if selected_sequence == ALL_SEQUENCES_LABEL:
+            self._set_status(
+                f"Showing {len(self.current_shot_rows)} shot folder(s) across all sequences."
+            )
+        else:
+            self._set_status(
+                f"Showing {len(self.current_shot_rows)} shot folder(s) in sequence {selected_sequence}."
+            )
+
+    def _sort_shots_by(self, column_key: str) -> None:
+        if column_key == self.shot_sort_column:
+            self.shot_sort_reverse = not self.shot_sort_reverse
+        else:
+            self.shot_sort_column = column_key
+            self.shot_sort_reverse = False
+
+        self._refresh_column_headings()
+        self._render_shot_rows()
+
+        direction = "descending" if self.shot_sort_reverse else "ascending"
+        column_title = COLUMN_TITLES.get(column_key, column_key)
+        self._set_status(f"Sorted by {column_title} ({direction}).")
+
+    def _refresh_column_headings(self) -> None:
+        for column_key, column_title in COLUMN_TITLES.items():
+            heading_text = column_title
+            if column_key == self.shot_sort_column:
+                heading_text = f"{column_title} {'▼' if self.shot_sort_reverse else '▲'}"
+
+            self.shots_tree.heading(
+                column_key,
+                text=heading_text,
+                command=lambda key=column_key: self._sort_shots_by(key),
+            )
+
+    def _render_shot_rows(self) -> None:
         self._clear_shots()
 
-        for shot_row in shot_rows:
+        for shot_row in self._get_sorted_shot_rows():
             self.shots_tree.insert(
                 "",
                 "end",
@@ -403,14 +450,37 @@ class ShotManagerApp:
                 ),
             )
 
-        if selected_sequence == ALL_SEQUENCES_LABEL:
-            self._set_status(
-                f"Showing {len(shot_rows)} shot folder(s) across all sequences."
-            )
-        else:
-            self._set_status(
-                f"Showing {len(shot_rows)} shot folder(s) in sequence {selected_sequence}."
-            )
+    def _get_sorted_shot_rows(self) -> list[ShotRow]:
+        def sort_key(shot_row: ShotRow) -> tuple:
+            if self.shot_sort_column == "order":
+                return (shot_row.order,)
+
+            if self.shot_sort_column == "sequence":
+                return (
+                    shot_row.sequence.lower(),
+                    shot_row.section_number,
+                    shot_row.shot_number,
+                    shot_row.shot_name.lower(),
+                )
+
+            if self.shot_sort_column == "shot":
+                return (
+                    shot_row.shot_name.lower(),
+                    shot_row.sequence.lower(),
+                    shot_row.section_number,
+                    shot_row.shot_number,
+                )
+
+            if self.shot_sort_column == "path":
+                return (str(shot_row.shot_path).lower(),)
+
+            return (shot_row.order,)
+
+        return sorted(
+            self.current_shot_rows,
+            key=sort_key,
+            reverse=self.shot_sort_reverse,
+        )
 
     def _clear_shots(self) -> None:
         for item_id in self.shots_tree.get_children():
