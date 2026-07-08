@@ -10,12 +10,16 @@ from tkinter import filedialog, messagebox, ttk
 
 ALL_SEQUENCES_LABEL = "All Sequences"
 SHOW_MANIFEST_FILENAME = "_show_manifest.json"
+SEQUENCE_MANIFEST_SUFFIX = "_sequence_shots_manifest.json"
 LOCAL_SAVE_FOLDER_NAME = "LocalSaveFiles"
 SHOT_MANAGER_SAVE_FILENAME = "shot_manager_local_save.json"
 LOCAL_SAVE_SCHEMA_VERSION = 1
+CHECKED_BOX = "☑"
+UNCHECKED_BOX = "☐"
 
 COLUMN_TITLES = {
     "order": "Order",
+    "is_active": "Is Active?",
     "sequence": "Sequence",
     "shot": "Shot",
     "path": "Folder Path",
@@ -39,7 +43,7 @@ class ShowFolderInfo:
         return self.show_manifest is not None
 
 
-@dataclass(frozen=True)
+@dataclass
 class ShotRow:
     order: int
     sequence: str
@@ -47,6 +51,12 @@ class ShotRow:
     shot_path: Path
     section_number: int
     shot_number: int
+    is_active: bool = False
+    start_frame: int | None = None
+    end_frame: int | None = None
+    level_path: str = ""
+    manifest_path: Path | None = None
+    source: str = "folder"
 
 
 def _as_path(path_text: str | Path) -> Path:
@@ -131,6 +141,51 @@ def _parse_shot_folder_name(folder_name: str) -> tuple[str, int, int] | None:
     )
 
 
+def _coerce_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    if value is None:
+        return default
+
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "y", "active"):
+        return True
+
+    if text in ("0", "false", "no", "n", "inactive", ""):
+        return False
+
+    return bool(value)
+
+
+def _coerce_optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
+def _read_json_file(json_path: Path) -> dict:
+    with json_path.open("r", encoding="utf-8") as json_file:
+        data = json.load(json_file)
+
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON root must be an object: {json_path}")
+
+    return data
+
+
+def _get_sequence_manifest_path(sequence_folder: Path) -> Path:
+    return sequence_folder / f"{sequence_folder.name.lower()}{SEQUENCE_MANIFEST_SUFFIX}"
+
+
+def _active_display(is_active: bool) -> str:
+    return CHECKED_BOX if is_active else UNCHECKED_BOX
+
+
 def find_show_folders(dropbox_root: str | Path) -> list[ShowFolderInfo]:
     """
     A show folder is any direct child of the Dropbox/root folder that has
@@ -179,47 +234,90 @@ def find_sequence_folders(show_root: str | Path) -> list[Path]:
     return sorted(sequence_folders, key=lambda path: path.name.upper())
 
 
-def find_shot_folders(show_root: str | Path, selected_sequence: str) -> list[ShotRow]:
-    show_path = _as_path(show_root)
+def _shot_rows_from_sequence_manifest(sequence_folder: Path) -> list[ShotRow]:
+    manifest_path = _get_sequence_manifest_path(sequence_folder)
+    if not manifest_path.is_file():
+        return []
 
-    if selected_sequence == ALL_SEQUENCES_LABEL:
-        sequence_folders = find_sequence_folders(show_path)
-    else:
-        sequence_path = show_path / "sequences" / selected_sequence
-        sequence_folders = [sequence_path] if _is_sequence_folder(sequence_path) else []
+    manifest = _read_json_file(manifest_path)
+    shots = manifest.get("shots") or []
 
-    shot_candidates: list[tuple[str, int, int, Path]] = []
+    if not isinstance(shots, list):
+        raise ValueError(f"Manifest 'shots' field must be a list: {manifest_path}")
 
-    for sequence_folder in sequence_folders:
-        sequence_name = sequence_folder.name.upper()
+    sequence_name = str(manifest.get("sequence_name") or sequence_folder.name).upper()
+    shot_rows: list[ShotRow] = []
 
-        for child in sequence_folder.iterdir():
-            if not child.is_dir():
-                continue
+    for index, shot_data in enumerate(shots, start=1):
+        if not isinstance(shot_data, dict):
+            continue
 
-            parsed = _parse_shot_folder_name(child.name)
-            if parsed is None:
-                continue
+        shot_name = str(shot_data.get("shot_name") or "").strip()
+        parsed = _parse_shot_folder_name(shot_name)
+        if parsed is None:
+            continue
 
-            shot_sequence, section_number, shot_number = parsed
-            if shot_sequence != sequence_name:
-                continue
+        shot_sequence, section_number, shot_number = parsed
+        if shot_sequence != sequence_name:
+            continue
 
-            shot_candidates.append(
-                (
-                    shot_sequence,
-                    section_number,
-                    shot_number,
-                    child,
-                )
+        order = _coerce_optional_int(shot_data.get("order")) or index
+        is_active = _coerce_bool(
+            shot_data.get("is_active", shot_data.get("is_active_value")),
+            default=False,
+        )
+
+        shot_rows.append(
+            ShotRow(
+                order=order,
+                sequence=sequence_name,
+                shot_name=shot_name,
+                shot_path=sequence_folder / shot_name,
+                section_number=section_number,
+                shot_number=shot_number,
+                is_active=is_active,
+                start_frame=_coerce_optional_int(shot_data.get("start_frame")),
+                end_frame=_coerce_optional_int(shot_data.get("end_frame")),
+                level_path=str(shot_data.get("level_path") or ""),
+                manifest_path=manifest_path,
+                source="manifest",
             )
+        )
+
+    return sorted(
+        shot_rows,
+        key=lambda row: (
+            row.order,
+            row.section_number,
+            row.shot_number,
+            row.shot_name.lower(),
+        ),
+    )
+
+
+def _fallback_shot_rows_from_sequence_folder(sequence_folder: Path) -> list[ShotRow]:
+    sequence_name = sequence_folder.name.upper()
+    shot_candidates: list[tuple[int, int, Path]] = []
+
+    for child in sequence_folder.iterdir():
+        if not child.is_dir():
+            continue
+
+        parsed = _parse_shot_folder_name(child.name)
+        if parsed is None:
+            continue
+
+        shot_sequence, section_number, shot_number = parsed
+        if shot_sequence != sequence_name:
+            continue
+
+        shot_candidates.append((section_number, shot_number, child))
 
     shot_candidates.sort(
         key=lambda row: (
             row[0],
             row[1],
-            row[2],
-            row[3].name.lower(),
+            row[2].name.lower(),
         )
     )
 
@@ -231,18 +329,54 @@ def find_shot_folders(show_root: str | Path, selected_sequence: str) -> list[Sho
             shot_path=shot_path,
             section_number=section_number,
             shot_number=shot_number,
+            is_active=False,
+            source="folder",
         )
-        for index, (sequence_name, section_number, shot_number, shot_path)
+        for index, (section_number, shot_number, shot_path)
         in enumerate(shot_candidates, start=1)
     ]
+
+
+def _shot_rows_from_sequence_folder(sequence_folder: Path) -> list[ShotRow]:
+    manifest_rows = _shot_rows_from_sequence_manifest(sequence_folder)
+    if manifest_rows:
+        return manifest_rows
+
+    return _fallback_shot_rows_from_sequence_folder(sequence_folder)
+
+
+def find_shot_folders(show_root: str | Path, selected_sequence: str) -> list[ShotRow]:
+    show_path = _as_path(show_root)
+
+    if selected_sequence == ALL_SEQUENCES_LABEL:
+        sequence_folders = find_sequence_folders(show_path)
+    else:
+        sequence_path = show_path / "sequences" / selected_sequence
+        sequence_folders = [sequence_path] if _is_sequence_folder(sequence_path) else []
+
+    shot_rows: list[ShotRow] = []
+
+    for sequence_folder in sequence_folders:
+        shot_rows.extend(_shot_rows_from_sequence_folder(sequence_folder))
+
+    return sorted(
+        shot_rows,
+        key=lambda row: (
+            row.sequence.lower(),
+            row.order,
+            row.section_number,
+            row.shot_number,
+            row.shot_name.lower(),
+        ),
+    )
 
 
 class ShotManagerApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Shot Manager")
-        self.root.geometry("1100x700")
-        self.root.minsize(850, 520)
+        self.root.geometry("1180x700")
+        self.root.minsize(920, 520)
 
         self.dropbox_root_var = tk.StringVar()
         self.show_select_var = tk.StringVar()
@@ -254,6 +388,7 @@ class ShotManagerApp:
         self.sequence_folders_by_name: dict[str, Path] = {}
         self.show_manifest: Path | None = None
         self.current_shot_rows: list[ShotRow] = []
+        self.shot_rows_by_item_id: dict[str, ShotRow] = {}
         self.shot_sort_column = "order"
         self.shot_sort_reverse = False
 
@@ -354,10 +489,12 @@ class ShotManagerApp:
         self._refresh_column_headings()
 
         self.shots_tree.column("order", width=70, minwidth=60, stretch=False, anchor="center")
+        self.shots_tree.column("is_active", width=95, minwidth=90, stretch=False, anchor="center")
         self.shots_tree.column("sequence", width=100, minwidth=80, stretch=False, anchor="center")
         self.shots_tree.column("shot", width=160, minwidth=130, stretch=False)
         self.shots_tree.column("path", width=700, minwidth=300, stretch=True)
 
+        self.shots_tree.bind("<Button-1>", self._on_shots_tree_click)
         self.shots_tree.grid(row=0, column=0, sticky="nsew")
 
         y_scroll = ttk.Scrollbar(
@@ -511,13 +648,27 @@ class ShotManagerApp:
         self._render_shot_rows()
 
         manifest_status = "show manifest found" if self.show_manifest else "show manifest missing"
+        sequence_manifest_count = len(
+            {
+                shot_row.manifest_path
+                for shot_row in self.current_shot_rows
+                if shot_row.manifest_path is not None
+            }
+        )
+        active_count = sum(1 for shot_row in self.current_shot_rows if shot_row.is_active)
+        inactive_count = len(self.current_shot_rows) - active_count
+
         if selected_sequence == ALL_SEQUENCES_LABEL:
             self._set_status(
-                f"Showing {len(self.current_shot_rows)} shot folder(s) across all sequences; {manifest_status}."
+                f"Showing {len(self.current_shot_rows)} shot(s) across all sequences; "
+                f"{active_count} active, {inactive_count} inactive; "
+                f"loaded {sequence_manifest_count} sequence manifest(s); {manifest_status}."
             )
         else:
             self._set_status(
-                f"Showing {len(self.current_shot_rows)} shot folder(s) in sequence {selected_sequence}; {manifest_status}."
+                f"Showing {len(self.current_shot_rows)} shot(s) in sequence {selected_sequence}; "
+                f"{active_count} active, {inactive_count} inactive; "
+                f"loaded {sequence_manifest_count} sequence manifest(s); {manifest_status}."
             )
 
     def _sort_shots_by(self, column_key: str) -> None:
@@ -546,29 +697,87 @@ class ShotManagerApp:
                 command=lambda key=column_key: self._sort_shots_by(key),
             )
 
+    def _on_shots_tree_click(self, event: tk.Event) -> str | None:
+        region = self.shots_tree.identify_region(event.x, event.y)
+        if region != "cell":
+            return None
+
+        column_key = self._get_tree_column_key(event.x)
+        if column_key != "is_active":
+            return None
+
+        item_id = self.shots_tree.identify_row(event.y)
+        if not item_id:
+            return None
+
+        shot_row = self.shot_rows_by_item_id.get(item_id)
+        if shot_row is None:
+            return None
+
+        shot_row.is_active = not shot_row.is_active
+        self._render_shot_rows()
+
+        state_text = "active" if shot_row.is_active else "inactive"
+        self._set_status(f"Set {shot_row.shot_name} to {state_text} in the Shot Manager view.")
+
+        return "break"
+
+    def _get_tree_column_key(self, x_position: int) -> str:
+        column_id = self.shots_tree.identify_column(x_position)
+        if not column_id.startswith("#"):
+            return ""
+
+        try:
+            column_index = int(column_id[1:]) - 1
+        except ValueError:
+            return ""
+
+        columns = tuple(self.shots_tree["columns"])
+        if column_index < 0 or column_index >= len(columns):
+            return ""
+
+        return str(columns[column_index])
+
     def _render_shot_rows(self) -> None:
         self._clear_shots()
 
         for shot_row in self._get_sorted_shot_rows():
-            self.shots_tree.insert(
+            item_id = self.shots_tree.insert(
                 "",
                 "end",
                 values=(
                     shot_row.order,
+                    _active_display(shot_row.is_active),
                     shot_row.sequence,
                     shot_row.shot_name,
                     str(shot_row.shot_path),
                 ),
             )
+            self.shot_rows_by_item_id[item_id] = shot_row
 
     def _get_sorted_shot_rows(self) -> list[ShotRow]:
         def sort_key(shot_row: ShotRow) -> tuple:
             if self.shot_sort_column == "order":
-                return (shot_row.order,)
+                return (
+                    shot_row.sequence.lower(),
+                    shot_row.order,
+                    shot_row.section_number,
+                    shot_row.shot_number,
+                    shot_row.shot_name.lower(),
+                )
+
+            if self.shot_sort_column == "is_active":
+                return (
+                    shot_row.is_active,
+                    shot_row.sequence.lower(),
+                    shot_row.order,
+                    shot_row.shot_name.lower(),
+                )
 
             if self.shot_sort_column == "sequence":
                 return (
                     shot_row.sequence.lower(),
+                    shot_row.order,
                     shot_row.section_number,
                     shot_row.shot_number,
                     shot_row.shot_name.lower(),
@@ -585,7 +794,7 @@ class ShotManagerApp:
             if self.shot_sort_column == "path":
                 return (str(shot_row.shot_path).lower(),)
 
-            return (shot_row.order,)
+            return (shot_row.sequence.lower(), shot_row.order)
 
         return sorted(
             self.current_shot_rows,
@@ -594,6 +803,7 @@ class ShotManagerApp:
         )
 
     def _clear_shots(self) -> None:
+        self.shot_rows_by_item_id = {}
         for item_id in self.shots_tree.get_children():
             self.shots_tree.delete(item_id)
 
