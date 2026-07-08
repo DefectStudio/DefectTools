@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 .venv/
 venv/
@@ -9,3 +9,9 @@ venv/
 local_config/
 *.local.json
 *_token*.json
+
+# Local tool save files
+LocalSaveFiles/*
+!LocalSaveFiles/.gitkeep
+SaveFiles/*
+!SaveFiles/.gitkeep
