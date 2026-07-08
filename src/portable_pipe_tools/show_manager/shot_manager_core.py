@@ -755,25 +755,46 @@ class ShotManagerApp:
             )
             return
 
-        open_warning = ""
-        try:
-            open_folder_in_file_browser(result.dump_folder)
-        except Exception as error:
-            open_warning = f" Could not open folder automatically: {error}"
-
         self._set_status(
-            f"Gathered {result.copied_count} MP4(s) from {result.active_shot_count} active shot(s) into: {result.dump_folder}.{open_warning}"
+            f"Gathered {result.copied_count} MP4(s) from {result.active_shot_count} active shot(s) into: {result.dump_folder}."
         )
-        if open_warning:
-            messagebox.showwarning(
-                "Gather Show MP4s",
-                f"Copied {result.copied_count} MP4(s) into:\n{result.dump_folder}\n\n{open_warning.strip()}",
-            )
-        else:
-            messagebox.showinfo(
-                "Gather Show MP4s",
-                f"Copied {result.copied_count} MP4(s) into:\n{result.dump_folder}",
-            )
+        self._show_gather_success_dialog(result)
+
+    def _show_gather_success_dialog(self, result: Mp4GatherResult) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Gather Show MP4s")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.columnconfigure(0, weight=1)
+
+        message = f"Copied {result.copied_count} MP4(s) into:\n{result.dump_folder}"
+        ttk.Label(dialog, text=message, justify="left", padding=12).grid(row=0, column=0, sticky="ew")
+
+        button_frame = ttk.Frame(dialog, padding=(12, 0, 12, 12))
+        button_frame.grid(row=1, column=0, sticky="ew")
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=0)
+        button_frame.columnconfigure(2, weight=0)
+
+        def open_output_folder() -> None:
+            try:
+                open_folder_in_file_browser(result.dump_folder)
+            except Exception as error:
+                messagebox.showerror(
+                    "Open Output Folder",
+                    f"Could not open output folder:\n{result.dump_folder}\n\n{error}",
+                    parent=dialog,
+                )
+
+        ttk.Button(button_frame, text="Open Output Folder", command=open_output_folder).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(button_frame, text="Close", command=dialog.destroy).grid(row=0, column=2)
+
+        dialog.update_idletasks()
+        x_pos = self.root.winfo_rootx() + max((self.root.winfo_width() - dialog.winfo_width()) // 2, 0)
+        y_pos = self.root.winfo_rooty() + max((self.root.winfo_height() - dialog.winfo_height()) // 2, 0)
+        dialog.geometry(f"+{x_pos}+{y_pos}")
+        dialog.grab_set()
+        dialog.focus_set()
 
     def _on_shots_tree_click(self, event: tk.Event) -> str | None:
         if self.shots_tree.identify_region(event.x, event.y) != "cell":
