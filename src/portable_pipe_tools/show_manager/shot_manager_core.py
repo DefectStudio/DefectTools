@@ -572,6 +572,11 @@ class ShotManagerApp:
         actions_frame = ttk.Frame(outer)
         actions_frame.pack(fill="x", pady=(8, 0))
         ttk.Button(actions_frame, text="Fix 0 Orders", command=self._fix_zero_orders).pack(side="left")
+        ttk.Button(
+            actions_frame,
+            text="Set Inactive Orders to 999",
+            command=self._set_inactive_orders_to_999,
+        ).pack(side="left", padx=(8, 0))
         ttk.Button(actions_frame, text="Gather Show MP4s", command=self._gather_show_mp4s).pack(side="right")
         ttk.Label(outer, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(8, 0))
 
@@ -768,6 +773,43 @@ class ShotManagerApp:
 
         self._render_shot_rows()
         self._set_status(f"Fixed {len(fixed_rows)} shot order value(s) and saved {saved_manifest_count} manifest file(s).")
+
+    def _set_inactive_orders_to_999(self) -> None:
+        if not self.current_shot_rows:
+            messagebox.showinfo("Shot Manager", "There are no shots to update.")
+            return
+
+        inactive_rows = [shot_row for shot_row in self.current_shot_rows if not shot_row.is_active]
+        if not inactive_rows:
+            self._set_status("No inactive shots were found in the current shot listing.")
+            return
+
+        changed_rows = [shot_row for shot_row in inactive_rows if shot_row.order != 999]
+        if not changed_rows:
+            self._set_status("All inactive shots in the current shot listing already have order 999.")
+            return
+
+        original_orders = [(shot_row, shot_row.order) for shot_row in changed_rows]
+        for shot_row in changed_rows:
+            shot_row.order = 999
+
+        try:
+            saved_manifest_count = save_order_updates_to_manifests(changed_rows)
+        except Exception as error:
+            for shot_row, original_order in original_orders:
+                shot_row.order = original_order
+            self._render_shot_rows()
+            self._set_status(f"Error saving inactive shot order values: {error}")
+            messagebox.showerror("Shot Manager Error", str(error))
+            return
+
+        self.shot_sort_column = "order"
+        self.shot_sort_reverse = False
+        self._refresh_column_headings()
+        self._render_shot_rows()
+        self._set_status(
+            f"Set {len(changed_rows)} inactive shot order value(s) to 999 and saved {saved_manifest_count} manifest file(s)."
+        )
 
     def _move_shot_order(self, shot_row: ShotRow, direction: int) -> None:
         if any(row.order <= 0 for row in self.current_shot_rows):
