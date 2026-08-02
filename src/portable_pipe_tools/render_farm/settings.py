@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from portable_pipe_tools.render_farm.queue import read_json_object, write_json_atomic
+from portable_pipe_tools.render_farm.queue import (
+    create_directory_with_retry,
+    read_json_object,
+    write_json_atomic,
+)
 
 
 SETTINGS_SCHEMA_VERSION = 1
@@ -16,11 +20,9 @@ def get_default_settings_path() -> Path:
 
 def load_saved_render_farm_root(settings_path: Path | None = None) -> str:
     path = settings_path or get_default_settings_path()
-    if not path.exists():
-        return ""
     try:
         data = read_json_object(path)
-    except Exception:
+    except (FileNotFoundError, OSError, ValueError):
         return ""
     return str(data.get("show_render_farm_root") or "").strip()
 
@@ -30,7 +32,7 @@ def save_render_farm_root(
     settings_path: Path | None = None,
 ) -> Path:
     path = settings_path or get_default_settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    create_directory_with_retry(path.parent, parents=True, exist_ok=True)
     write_json_atomic(
         path,
         {

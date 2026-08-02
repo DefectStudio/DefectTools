@@ -1,19 +1,28 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import socket
-from typing import Any
+import stat as stat_module
+import time
+from typing import Any, TypeVar
 from uuid import uuid4
 
 
 SCHEMA_VERSION = 1
 JOB_FILENAME = "job.json"
 RESULT_FILENAME = "result.json"
+
+WINDOWS_LOCK_RETRY_TIMEOUT_SECONDS = 15.0
+WINDOWS_LOCK_RETRY_INITIAL_DELAY_SECONDS = 0.1
+WINDOWS_LOCK_RETRY_MAX_DELAY_SECONDS = 1.0
+TRANSIENT_WINDOWS_LOCK_ERRORS = frozenset((32, 33))
 
 SUBMITTING_FOLDER = "00_Submitting"
 NEEDS_RENDERING_FOLDER = "01_NeedsRendering"
@@ -30,6 +39,8 @@ QUEUE_FOLDER_NAMES: tuple[str, ...] = (
 )
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+LOGGER = logging.getLogger("render_worker.queue")
+_OperationResult = TypeVar("_OperationResult")
 
 
 @dataclass(frozen=True)
@@ -43,7 +54,8 @@ class QueuePaths:
 
     @classmethod
     def from_root(cls, farm_root: str | Path) -> QueuePaths:
-        root = Path(farm_root).expanduser().resolve()
+        # Avoid resolving through a network/sync provider just to normalize text.
+        root = Path(os.path.abspath(Path(farm_root).expanduser()))
         return cls(
             root=root,
             submitting=root / SUBMITTING_FOLDER,
@@ -93,38 +105,158 @@ def default_worker_name() -> str:
 
 def create_queue_folders(farm_root: str | Path) -> QueuePaths:
     paths = QueuePaths.from_root(farm_root)
-    paths.root.mkdir(parents=True, exist_ok=True)
+    create_directory_with_retry(paths.root, parents=True, exist_ok=True)
     for folder in paths.all_queue_folders():
-        folder.mkdir(exist_ok=True)
+        create_directory_with_retry(folder, exist_ok=True)
     return paths
 
 
+def retry_transient_windows_lock(
+    operation: Callable[[], _OperationResult],
+    description: str,
+    timeout_seconds: float = WINDOWS_LOCK_RETRY_TIMEOUT_SECONDS,
+    initial_delay_seconds: float = WINDOWS_LOCK_RETRY_INITIAL_DELAY_SECONDS,
+    max_delay_seconds: float = WINDOWS_LOCK_RETRY_MAX_DELAY_SECONDS,
+    sleep: Callable[[float], None] | None = None,
+    monotonic: Callable[[], float] | None = None,
+) -> _OperationResult:
+    """Retry only Windows sharing/lock violations from filesystem observers."""
+    sleep_function = sleep or time.sleep
+    monotonic_function = monotonic or time.monotonic
+    deadline = monotonic_function() + timeout_seconds
+    delay_seconds = initial_delay_seconds
+
+    while True:
+        try:
+            return operation()
+        except OSError as error:
+            winerror = getattr(error, "winerror", None)
+            if winerror not in TRANSIENT_WINDOWS_LOCK_ERRORS:
+                raise
+
+            remaining_seconds = deadline - monotonic_function()
+            if remaining_seconds <= 0:
+                LOGGER.error(
+                    "%s remained locked for %.1f seconds; giving up",
+                    description,
+                    timeout_seconds,
+                )
+                raise
+
+            wait_seconds = min(delay_seconds, remaining_seconds)
+            LOGGER.warning(
+                "%s is temporarily locked by another process (WinError %s); "
+                "retrying in %.1f seconds",
+                description,
+                winerror,
+                wait_seconds,
+            )
+            sleep_function(wait_seconds)
+            delay_seconds = min(delay_seconds * 2, max_delay_seconds)
+
+
+def create_directory_with_retry(
+    path: Path,
+    parents: bool = False,
+    exist_ok: bool = False,
+) -> None:
+    retry_transient_windows_lock(
+        operation=lambda: path.mkdir(parents=parents, exist_ok=exist_ok),
+        description=f"Create directory {path}",
+    )
+
+
+def path_exists_with_retry(path: Path) -> bool:
+    def check_path() -> bool:
+        try:
+            path.stat()
+        except FileNotFoundError:
+            return False
+        return True
+
+    return retry_transient_windows_lock(
+        operation=check_path,
+        description=f"Check path {path}",
+    )
+
+
+def rename_path_with_retry(source: Path, destination: Path) -> None:
+    retry_transient_windows_lock(
+        operation=lambda: source.rename(destination),
+        description=f"Rename {source} -> {destination}",
+    )
+
+
 def read_json_object(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected a JSON object in {path}")
-    return data
+    def read_json() -> dict[str, Any]:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected a JSON object in {path}")
+        return data
+
+    return retry_transient_windows_lock(
+        operation=read_json,
+        description=f"Read JSON {path}",
+    )
 
 
 def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
     """Write JSON beside its destination, then replace the destination."""
-    temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    try:
+    temporary_paths: list[Path] = []
+
+    def write_temporary_json() -> Path:
+        temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        temporary_paths.append(temporary_path)
         with temporary_path.open("x", encoding="utf-8", newline="\n") as handle:
             json.dump(data, handle, indent=4, ensure_ascii=False)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
+        return temporary_path
+
+    try:
+        temporary_path = retry_transient_windows_lock(
+            operation=write_temporary_json,
+            description=f"Write temporary JSON for {path}",
+        )
+        retry_transient_windows_lock(
+            operation=lambda: os.replace(temporary_path, path),
+            description=f"Publish JSON {path}",
+        )
     finally:
-        temporary_path.unlink(missing_ok=True)
+        for temporary_path in temporary_paths:
+            try:
+                retry_transient_windows_lock(
+                    operation=lambda path_to_remove=temporary_path: (
+                        path_to_remove.unlink(missing_ok=True)
+                    ),
+                    description=f"Remove temporary JSON {temporary_path}",
+                )
+            except OSError as cleanup_error:
+                LOGGER.warning(
+                    "Could not remove temporary JSON file %s: %s",
+                    temporary_path,
+                    cleanup_error,
+                )
 
 
 def list_job_candidates(paths: QueuePaths) -> list[JobCandidate]:
     candidates: list[JobCandidate] = []
-    for folder in paths.needs_rendering.iterdir():
-        if not folder.is_dir():
+    queue_entries = retry_transient_windows_lock(
+        operation=lambda: list(paths.needs_rendering.iterdir()),
+        description=f"Scan queue folder {paths.needs_rendering}",
+    )
+    for folder in queue_entries:
+        try:
+            folder_status = retry_transient_windows_lock(
+                operation=folder.stat,
+                description=f"Inspect queued path {folder}",
+            )
+        except FileNotFoundError:
+            # Another worker may have claimed it after the directory scan.
+            continue
+        if not stat_module.S_ISDIR(folder_status.st_mode):
             continue
 
         priority = -1_000_000
@@ -159,14 +291,14 @@ def claim_next_job(paths: QueuePaths, worker_name: str) -> Path | None:
 
     for candidate in list_job_candidates(paths):
         claimed_folder = paths.is_rendering / f"{candidate.folder.name}__{safe_worker_name}"
-        if claimed_folder.exists():
+        if path_exists_with_retry(claimed_folder):
             raise FileExistsError(
                 f"Claim destination already exists; manual inspection is required: "
                 f"{claimed_folder}"
             )
 
         try:
-            candidate.folder.rename(claimed_folder)
+            rename_path_with_retry(candidate.folder, claimed_folder)
         except FileNotFoundError:
             # Another worker won the rename race.
             continue
@@ -246,12 +378,12 @@ def finish_claimed_job(
 
     destination_root = paths.render_complete if success else paths.render_failed
     destination = destination_root / claimed_folder.name
-    if destination.exists():
+    if path_exists_with_retry(destination):
         raise FileExistsError(
             f"Terminal job destination already exists; manual inspection is required: "
             f"{destination}"
         )
-    claimed_folder.rename(destination)
+    rename_path_with_retry(claimed_folder, destination)
     return destination
 
 
@@ -275,10 +407,10 @@ def fail_unreadable_claimed_job(
     write_json_atomic(claimed_folder / RESULT_FILENAME, result)
 
     destination = paths.render_failed / claimed_folder.name
-    if destination.exists():
+    if path_exists_with_retry(destination):
         raise FileExistsError(
             f"Failed-job destination already exists; manual inspection is required: "
             f"{destination}"
         )
-    claimed_folder.rename(destination)
+    rename_path_with_retry(claimed_folder, destination)
     return destination

@@ -11,7 +11,9 @@ from uuid import uuid4
 from portable_pipe_tools.render_farm.queue import (
     JOB_FILENAME,
     SCHEMA_VERSION,
+    create_directory_with_retry,
     create_queue_folders,
+    rename_path_with_retry,
     safe_name,
     utc_now,
     write_json_atomic,
@@ -40,7 +42,7 @@ def create_test_job(
     )
     staging_folder = paths.submitting / job_id
     queued_folder = paths.needs_rendering / job_id
-    staging_folder.mkdir()
+    create_directory_with_retry(staging_folder)
 
     submitted_by = safe_name(
         os.environ.get("COMPUTERNAME") or socket.gethostname(),
@@ -76,7 +78,7 @@ def create_test_job(
 
     # A worker ignores 00_Submitting. Publishing is the folder rename below.
     write_json_atomic(staging_folder / JOB_FILENAME, job)
-    staging_folder.rename(queued_folder)
+    rename_path_with_retry(staging_folder, queued_folder)
     return queued_folder
 
 

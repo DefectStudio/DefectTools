@@ -71,6 +71,14 @@ semantics must still be verified on the studio file server before production use
 JSON updates are written to a temporary file beside `job.json` and published with
 `os.replace` so a process interruption is less likely to leave partial JSON.
 
+Dropbox, antivirus software, and other filesystem observers can briefly hold a
+new file or folder open on Windows. Every render-farm filesystem stage uses the
+same 15-second policy for Windows sharing and lock violations (`WinError 32` and
+`33`), including queue initialization and scans, JSON reads and writes, temporary
+file cleanup, job publication, worker claims, and terminal-state moves. State
+transitions remain direct atomic rename/replace operations; there is no
+copy/delete fallback. Other permission errors fail immediately.
+
 ## Deliberately not in this checkpoint
 
 - Continuous polling or a Windows service
