@@ -18,6 +18,27 @@ The worker creates these folders beneath the supplied farm root:
 `00_Submitting` is never scanned by workers. A submission becomes visible only
 when its complete job folder is renamed into `01_NeedsRendering`.
 
+## Render Worker interface
+
+Launch the Tkinter interface from the repository root:
+
+```bat
+tools\render_worker_gui.bat
+```
+
+Use **Show Render Farm Base Folder** to select the show-specific `RenderFarm`
+folder that directly contains the five queue folders. The interface can:
+
+- Initialize or validate the queue folders.
+- Publish a fake test job.
+- Process one queued job with the current simulation result.
+- Display worker and filesystem activity in a live output log.
+
+Filesystem operations run outside the Tk main thread so a slow network share
+does not freeze the window. The interface prevents closing while one of these
+operations is active. It remembers the last selected base folder in the local,
+Git-ignored `LocalSaveFiles/render_worker_local_save.json` file.
+
 ## Manual walking test
 
 From the repository root:

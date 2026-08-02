@@ -13,6 +13,18 @@ Initial goals:
 The first filesystem render-queue checkpoint can publish a fake job, atomically
 claim it by moving its folder, and simulate either completion or failure:
 
+Launch the Render Worker interface:
+
+```bat
+tools\render_worker_gui.bat
+```
+
+Choose the show-specific `RenderFarm` base folder in the interface. The window
+can initialize the five queue folders, create a fake job, process one job, and
+display worker activity in its output log.
+
+Command-line walking test:
+
 ```bat
 tools\create_test_render_job.bat D:\RenderFarmPrototype
 tools\render_worker.bat D:\RenderFarmPrototype --worker-name RENDER-03 --simulate-result success
