@@ -28,7 +28,7 @@ def load_local_settings(settings_path: Path | None = None) -> dict:
 
 def update_local_settings(
     settings_path: Path | None = None,
-    **updates: str | Path,
+    **updates: str | Path | int,
 ) -> Path:
     path = settings_path or get_default_settings_path()
     data = load_local_settings(path)
@@ -46,14 +46,14 @@ def load_saved_render_farm_root(settings_path: Path | None = None) -> str:
     return str(data.get("show_render_farm_root") or "").strip()
 
 
-def load_saved_animation_sprite_folder(settings_path: Path | None = None) -> str:
-    data = load_local_settings(settings_path)
-    return str(data.get("animation_sprite_folder") or "").strip()
-
-
 def load_saved_unreal_editor_cmd(settings_path: Path | None = None) -> str:
     data = load_local_settings(settings_path)
     return str(data.get("unreal_editor_cmd") or "").strip()
+
+
+def load_saved_poll_interval_seconds(settings_path: Path | None = None) -> str:
+    data = load_local_settings(settings_path)
+    return str(data.get("poll_interval_seconds") or "").strip()
 
 
 def save_render_farm_root(
@@ -66,16 +66,6 @@ def save_render_farm_root(
     )
 
 
-def save_animation_sprite_folder(
-    sprite_folder: str | Path,
-    settings_path: Path | None = None,
-) -> Path:
-    return update_local_settings(
-        settings_path,
-        animation_sprite_folder=sprite_folder,
-    )
-
-
 def save_unreal_editor_cmd(
     unreal_editor_cmd: str | Path,
     settings_path: Path | None = None,
@@ -83,4 +73,14 @@ def save_unreal_editor_cmd(
     return update_local_settings(
         settings_path,
         unreal_editor_cmd=unreal_editor_cmd,
+    )
+
+
+def save_poll_interval_seconds(
+    poll_interval_seconds: int,
+    settings_path: Path | None = None,
+) -> Path:
+    return update_local_settings(
+        settings_path,
+        poll_interval_seconds=poll_interval_seconds,
     )

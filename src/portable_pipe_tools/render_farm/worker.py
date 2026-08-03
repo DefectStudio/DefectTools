@@ -48,6 +48,7 @@ WORKER_STAGE_LABELS: dict[WorkerStage, str] = {
 }
 
 StageCallback = Callable[[WorkerStage], None]
+JobCallback = Callable[[dict], None]
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,8 @@ def run_once(
     unreal_editor_cmd: str | Path | None = None,
     render_timeout_seconds: float = DEFAULT_RENDER_TIMEOUT_SECONDS,
     unreal_runner: Callable[..., UnrealExecutionResult] | None = None,
+    should_stop_before_claim: Callable[[], bool] | None = None,
+    job_callback: JobCallback | None = None,
 ) -> WorkerResult | None:
     if minimum_stage_seconds < 0:
         raise ValueError("minimum_stage_seconds cannot be negative")
@@ -118,7 +121,14 @@ def run_once(
         LOGGER.info("Queue is empty: %s", paths.needs_rendering)
         return None
 
+    if should_stop_before_claim is not None and should_stop_before_claim():
+        LOGGER.info("Stop requested before claiming the next queued job.")
+        return None
+
     def claim_and_prepare_job() -> _ClaimedJob | None:
+        if should_stop_before_claim is not None and should_stop_before_claim():
+            LOGGER.info("Stop requested before claiming the next queued job.")
+            return None
         claimed_folder = claim_next_job(paths, worker)
         if claimed_folder is None:
             return None
@@ -137,6 +147,11 @@ def run_once(
                 job=None,
                 failure_reason=reason,
             )
+        if job_callback is not None:
+            try:
+                job_callback(dict(job))
+            except Exception:
+                LOGGER.exception("Could not report the claimed job to the interface")
         return _ClaimedJob(folder=claimed_folder, job=job)
 
     claimed_job = _run_stage(

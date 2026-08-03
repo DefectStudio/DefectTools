@@ -34,15 +34,35 @@ folder that directly contains the five queue folders. The interface can:
 - Publish a fake test job.
 - Simulate one queued job with the selected test result.
 - Claim and render one real queued job with UnrealEditor-Cmd.
+- Continuously listen for and process real jobs until stopped.
 - Display worker and filesystem activity in a live output log.
 
 The **UnrealEditor-Cmd.exe** field is remembered in the same machine-local
-settings file as the farm and sprite folders. **Render One Job with Unreal**
-shows a confirmation before it claims anything. **Simulate One Job** remains a
-separate safe path for fake jobs and queue testing.
+settings file as the farm folder. **Render One Job with Unreal** shows a
+confirmation before it claims anything. **Simulate One Job** remains a separate
+safe path for fake jobs and queue testing.
 
-The **Animation Sprite Folder** selects a local folder containing these paid
-production assets, which are intentionally not copied into this repository:
+**Start Worker** begins continuous real-job processing. The polling interval is
+configurable from 1 to 3600 seconds and defaults to 15 seconds. When the queue is
+empty, the bottom status counts down to the next check, for example:
+
+```text
+Waiting for jobs — next check in 12 seconds
+```
+
+Only one automatic listener can exist in a GUI instance, and the supervised
+buttons and worker configuration are locked while it is active. After a job
+completes or fails, the listener immediately checks for another. After an empty
+queue or unexpected worker error, it waits for the configured interval and then
+continues listening.
+
+**Stop Worker** is graceful. If no job has been claimed, the current queue check
+stops before claiming one. If a render is already claimed, that render finishes
+and reaches its terminal queue folder before the listener stops. It never kills
+Unreal in the middle of a render.
+
+The animation sheets are loaded automatically from the repository-level
+`spriteImages` folder:
 
 ```text
 Base_Idle.png          Waiting to find a job
@@ -53,7 +73,9 @@ Base_Hoe.png           Finishing render tasks
 
 Each sheet is one row of transparent 48x48 PNG frames. The GUI slices the sheets
 at runtime and displays them with pixel-preserving 2x integer scaling. The stage
-name is always shown directly beneath the animation.
+name is always shown directly beneath the animation. Once a job is claimed, a
+second line shows the active shot, zero-padded version, and short render-setting
+name until the job reaches Render Complete or Render Failed.
 
 The default minimum stage duration is five seconds. This timer surrounds the
 real stage operation: a fast simulated action remains visible for five seconds,
@@ -65,8 +87,7 @@ Filesystem operations run outside the Tk main thread so a slow network share
 does not freeze the window. The interface prevents closing while one of these
 operations is active. It remembers the last selected base folder in the local,
 Git-ignored `LocalSaveFiles/render_worker_local_save.json` file. The selected
-animation sprite folder and Unreal executable are remembered in the same
-machine-local settings file.
+Unreal executable is remembered in the same machine-local settings file.
 
 ## One supervised real Unreal render
 
@@ -86,6 +107,9 @@ Then:
 2. Select `C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`.
 3. Click **Render One Job with Unreal** and accept the confirmation.
 4. Watch the Rendering stage and live output log.
+
+Once a supervised job succeeds, use **Start Worker** for continuous processing
+and **Stop Worker** when the computer should stop accepting new work.
 
 The command-line equivalent is:
 
@@ -157,6 +181,11 @@ file cleanup, job publication, worker claims, and terminal-state moves. State
 transitions remain direct atomic rename/replace operations; there is no
 copy/delete fallback. Other permission errors fail immediately.
 
+Dropbox can change a directory rename's error from a sharing violation to
+`WinError 5` while it finishes observing the folder. Directory renames therefore
+also retry error 5 for the same bounded 15-second window. Other file reads and
+writes still treat access denied as a real permission failure immediately.
+
 ## Deliberately not in this checkpoint
 
 - Continuous polling or a Windows service
@@ -165,4 +194,6 @@ copy/delete fallback. Other permission errors fail immediately.
 - Worker heartbeats or stalled-job recovery
 - Automatic retries
 
-For now, the pixel worker can take exactly one carefully supervised real step.
+The pixel worker can now take supervised single steps or continuously process
+one real job at a time. Heartbeats and stalled-job recovery remain the next
+unattended-operation safety checkpoint.

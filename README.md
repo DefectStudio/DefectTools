@@ -23,12 +23,16 @@ tools\render_worker_gui.bat
 Choose the show-specific `RenderFarm` base folder in the interface. The window
 can initialize the five queue folders, create a fake job, simulate one job, or
 render one real job with Unreal while displaying activity in its output log.
+**Start Worker** keeps listening for real jobs at a configurable interval
+(15 seconds by default); **Stop Worker** finishes an already-claimed render and
+stops before claiming another.
 
 The interface also displays transparent pixel-art animations for the worker's
-Waiting, Moving Files, Rendering, and Finishing stages. Choose the folder that
-contains `Base_Idle.png`, `Base_Run.png`, `Base_WateringCan.png`, and
-`Base_Hoe.png`. Source frames are 48x48 and are displayed at a crisp 2x scale.
-Every entered worker stage remains visible for at least five seconds.
+Waiting, Moving Files, Rendering, and Finishing stages. The four sheets are
+loaded automatically from the repository's `spriteImages` folder. Source
+frames are 48x48 and are displayed at a crisp 2x scale. While a job is active,
+the activity panel shows its shot, version, and render setting. Every entered
+worker stage remains visible for at least five seconds.
 
 Command-line walking test:
 

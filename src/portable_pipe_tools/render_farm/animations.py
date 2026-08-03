@@ -11,9 +11,8 @@ SPRITE_FRAME_SIZE = 48
 SPRITE_DISPLAY_SCALE = 2
 SPRITE_FRAME_INTERVAL_MS = 140
 
-DEFAULT_ANIMATION_SPRITE_FOLDER = Path(
-    "D:/Defect/pixelAssets/Little Dreamyland - Paid Pack/"
-    "Sprites/Characters/BASE CHARACTER"
+DEFAULT_ANIMATION_SPRITE_FOLDER = (
+    Path(__file__).resolve().parents[3] / "spriteImages"
 )
 
 STAGE_SPRITE_FILENAMES: dict[WorkerStage, str] = {

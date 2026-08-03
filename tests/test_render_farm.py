@@ -12,6 +12,7 @@ from portable_pipe_tools.render_farm.queue import (
     create_queue_folders,
     list_job_candidates,
     read_json_object,
+    rename_path_with_retry,
     retry_transient_windows_lock,
     write_json_atomic,
 )
@@ -204,6 +205,48 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         )
         self.assertEqual([5.0, 5.0, 5.0, 5.0], sleep_durations)
 
+    def test_worker_reports_claimed_job_details(self) -> None:
+        create_test_job(
+            self.farm_root,
+            shot_name="SH090",
+            render_version=7,
+        )
+        reported_jobs: list[dict] = []
+
+        result = run_once(
+            self.farm_root,
+            "RENDER-DISPLAY",
+            simulate_success=True,
+            minimum_stage_seconds=0.0,
+            job_callback=reported_jobs.append,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(1, len(reported_jobs))
+        self.assertEqual("SH090", reported_jobs[0]["shot_name"])
+        self.assertEqual(7, reported_jobs[0]["render_version"])
+        self.assertEqual(
+            "/Game/TEST/ReplaceWithRenderConfig",
+            reported_jobs[0]["render_config"],
+        )
+
+    def test_stop_request_before_claim_leaves_job_queued(self) -> None:
+        queued_folder = create_test_job(self.farm_root)
+        reported_stages: list[WorkerStage] = []
+
+        result = run_once(
+            self.farm_root,
+            "RENDER-STOPPING",
+            simulate_success=True,
+            minimum_stage_seconds=0.0,
+            stage_callback=reported_stages.append,
+            should_stop_before_claim=lambda: True,
+        )
+
+        self.assertIsNone(result)
+        self.assertTrue(queued_folder.is_dir())
+        self.assertEqual([WorkerStage.WAITING], reported_stages)
+
     def test_transient_windows_sharing_lock_is_retried(self) -> None:
         attempts = 0
         sleep_delays: list[float] = []
@@ -245,6 +288,31 @@ class RenderFarmPrototypeTests(unittest.TestCase):
 
         self.assertEqual(1, attempts)
         self.assertEqual([], sleep_delays)
+
+    def test_directory_rename_retries_dropbox_access_denied(self) -> None:
+        source = self.paths.needs_rendering / "dropbox-rename-source"
+        destination = self.paths.is_rendering / "dropbox-rename-destination"
+        source.mkdir()
+        original_rename = Path.rename
+        attempts = 0
+
+        def flaky_rename(path: Path, target: Path) -> Path:
+            nonlocal attempts
+            if path == source:
+                attempts += 1
+                if attempts == 1:
+                    raise self._windows_error(5)
+            return original_rename(path, target)
+
+        with (
+            patch.object(Path, "rename", new=flaky_rename),
+            patch("portable_pipe_tools.render_farm.queue.time.sleep"),
+        ):
+            rename_path_with_retry(source, destination)
+
+        self.assertEqual(2, attempts)
+        self.assertFalse(source.exists())
+        self.assertTrue(destination.is_dir())
 
     def test_transient_lock_retry_stops_at_timeout(self) -> None:
         clock_values = iter((0.0, 2.0))

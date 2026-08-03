@@ -5,10 +5,28 @@ import struct
 import tempfile
 import unittest
 
-from portable_pipe_tools.render_farm.animations import inspect_sprite_sheet
+from portable_pipe_tools.render_farm.animations import (
+    DEFAULT_ANIMATION_SPRITE_FOLDER,
+    STAGE_SPRITE_FILENAMES,
+    get_stage_sprite_paths,
+    inspect_sprite_sheet,
+)
 
 
 class RenderWorkerAnimationTests(unittest.TestCase):
+    def test_project_sprite_sheets_are_present_and_valid(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        self.assertEqual(
+            repository_root / "spriteImages",
+            DEFAULT_ANIMATION_SPRITE_FOLDER,
+        )
+
+        sprite_paths = get_stage_sprite_paths(DEFAULT_ANIMATION_SPRITE_FOLDER)
+        self.assertEqual(len(STAGE_SPRITE_FILENAMES), len(sprite_paths))
+        for sprite_path in sprite_paths.values():
+            self.assertTrue(sprite_path.is_file(), sprite_path)
+            self.assertGreater(inspect_sprite_sheet(sprite_path).frame_count, 0)
+
     def test_valid_transparent_sprite_sheet_reports_frame_count(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             sprite_path = Path(temporary_directory) / "sprite.png"

@@ -23,6 +23,11 @@ WINDOWS_LOCK_RETRY_TIMEOUT_SECONDS = 15.0
 WINDOWS_LOCK_RETRY_INITIAL_DELAY_SECONDS = 0.1
 WINDOWS_LOCK_RETRY_MAX_DELAY_SECONDS = 1.0
 TRANSIENT_WINDOWS_LOCK_ERRORS = frozenset((32, 33))
+# Dropbox can report a directory rename lock first as a sharing violation and
+# then as access denied while it finishes observing the folder. Limit WinError
+# 5 retries to directory renames so genuine read/write permission failures still
+# fail immediately.
+TRANSIENT_WINDOWS_RENAME_ERRORS = TRANSIENT_WINDOWS_LOCK_ERRORS | frozenset((5,))
 
 SUBMITTING_FOLDER = "00_Submitting"
 NEEDS_RENDERING_FOLDER = "01_NeedsRendering"
@@ -119,8 +124,9 @@ def retry_transient_windows_lock(
     max_delay_seconds: float = WINDOWS_LOCK_RETRY_MAX_DELAY_SECONDS,
     sleep: Callable[[float], None] | None = None,
     monotonic: Callable[[], float] | None = None,
+    transient_winerrors: frozenset[int] = TRANSIENT_WINDOWS_LOCK_ERRORS,
 ) -> _OperationResult:
-    """Retry only Windows sharing/lock violations from filesystem observers."""
+    """Retry the supplied Windows errors for a bounded filesystem operation."""
     sleep_function = sleep or time.sleep
     monotonic_function = monotonic or time.monotonic
     deadline = monotonic_function() + timeout_seconds
@@ -131,7 +137,7 @@ def retry_transient_windows_lock(
             return operation()
         except OSError as error:
             winerror = getattr(error, "winerror", None)
-            if winerror not in TRANSIENT_WINDOWS_LOCK_ERRORS:
+            if winerror not in transient_winerrors:
                 raise
 
             remaining_seconds = deadline - monotonic_function()
@@ -184,6 +190,7 @@ def rename_path_with_retry(source: Path, destination: Path) -> None:
     retry_transient_windows_lock(
         operation=lambda: source.rename(destination),
         description=f"Rename {source} -> {destination}",
+        transient_winerrors=TRANSIENT_WINDOWS_RENAME_ERRORS,
     )
 
 
