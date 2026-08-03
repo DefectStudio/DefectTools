@@ -11,6 +11,14 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
+from portable_pipe_tools.render_farm.animations import (
+    DEFAULT_ANIMATION_SPRITE_FOLDER,
+    SPRITE_DISPLAY_SCALE,
+    SPRITE_FRAME_INTERVAL_MS,
+    SPRITE_FRAME_SIZE,
+    get_stage_sprite_paths,
+    inspect_sprite_sheet,
+)
 from portable_pipe_tools.render_farm.queue import (
     QueuePaths,
     create_queue_folders,
@@ -19,10 +27,18 @@ from portable_pipe_tools.render_farm.queue import (
 )
 from portable_pipe_tools.render_farm.test_job import create_test_job
 from portable_pipe_tools.render_farm.settings import (
+    load_saved_animation_sprite_folder,
     load_saved_render_farm_root,
+    save_animation_sprite_folder,
     save_render_farm_root,
 )
-from portable_pipe_tools.render_farm.worker import WorkerResult, run_once
+from portable_pipe_tools.render_farm.worker import (
+    DEFAULT_MINIMUM_STAGE_SECONDS,
+    WORKER_STAGE_LABELS,
+    WorkerResult,
+    WorkerStage,
+    run_once,
+)
 
 
 WORKER_LOGGER = logging.getLogger("render_worker")
@@ -54,19 +70,31 @@ class RenderWorkerApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Render Worker")
-        self.root.geometry("960x680")
-        self.root.minsize(800, 540)
+        self.root.geometry("980x820")
+        self.root.minsize(820, 680)
 
         self.farm_root_var = tk.StringVar(value=load_saved_render_farm_root())
+        saved_sprite_folder = load_saved_animation_sprite_folder()
+        self.sprite_folder_var = tk.StringVar(
+            value=saved_sprite_folder or str(DEFAULT_ANIMATION_SPRITE_FOLDER)
+        )
         self.worker_name_var = tk.StringVar(value=default_worker_name())
         self.simulate_result_var = tk.StringVar(value="success")
         self.status_var = tk.StringVar(value="Ready")
+        self.current_stage_var = tk.StringVar(
+            value=WORKER_STAGE_LABELS[WorkerStage.WAITING]
+        )
 
         self._busy = False
         self._closing = False
+        self._active_stage = WorkerStage.WAITING
         self._log_queue: Queue[str] = Queue()
+        self._stage_queue: Queue[WorkerStage] = Queue()
         self._completion_queue: Queue[BackgroundCompletion] = Queue()
         self._poll_after_id: str | None = None
+        self._animation_after_id: str | None = None
+        self._animation_frame_index = 0
+        self._animation_frames: dict[WorkerStage, list[tk.PhotoImage]] = {}
 
         self._worker_log_handler = QueueLogHandler(self._log_queue)
         self._worker_log_handler.setFormatter(
@@ -79,6 +107,8 @@ class RenderWorkerApp:
         WORKER_LOGGER.setLevel(logging.INFO)
 
         self._build_ui()
+        self._load_animation_assets()
+        self._set_worker_stage(WorkerStage.WAITING)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._schedule_queue_poll()
 
@@ -89,6 +119,7 @@ class RenderWorkerApp:
         )
         if self.farm_root_var.get():
             self._log(f"Loaded saved RenderFarm folder: {self.farm_root_var.get()}")
+        self._log(f"Animation sprite folder: {self.sprite_folder_var.get()}")
 
     def _build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=12)
@@ -164,6 +195,33 @@ class RenderWorkerApp:
             text="Prototype only; Unreal rendering is not connected yet.",
         ).grid(row=2, column=2, sticky="w", padx=(8, 0), pady=4)
 
+        ttk.Label(setup_frame, text="Animation Sprite Folder").grid(
+            row=3,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+            pady=4,
+        )
+        self.sprite_folder_entry = ttk.Entry(
+            setup_frame,
+            textvariable=self.sprite_folder_var,
+        )
+        self.sprite_folder_entry.grid(row=3, column=1, sticky="ew", pady=4)
+        sprite_button_row = ttk.Frame(setup_frame)
+        sprite_button_row.grid(row=3, column=2, sticky="w", padx=(8, 0), pady=4)
+        self.sprite_browse_button = ttk.Button(
+            sprite_button_row,
+            text="Browse...",
+            command=self._browse_sprite_folder,
+        )
+        self.sprite_browse_button.pack(side="left", padx=(0, 6))
+        self.reload_sprites_button = ttk.Button(
+            sprite_button_row,
+            text="Reload",
+            command=self._reload_animation_assets_from_field,
+        )
+        self.reload_sprites_button.pack(side="left")
+
         button_row = ttk.Frame(outer)
         button_row.pack(fill="x", pady=(12, 8))
 
@@ -199,6 +257,22 @@ class RenderWorkerApp:
             self.create_test_job_button,
             self.process_one_button,
         )
+
+        activity_frame = ttk.LabelFrame(outer, text="Worker Activity", padding=8)
+        activity_frame.pack(fill="x", pady=(2, 10))
+
+        self.animation_image_label = ttk.Label(
+            activity_frame,
+            anchor="center",
+            text="Loading animation...",
+        )
+        self.animation_image_label.pack(fill="x")
+        ttk.Label(
+            activity_frame,
+            textvariable=self.current_stage_var,
+            anchor="center",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(fill="x", pady=(4, 0))
 
         log_header = ttk.Frame(outer)
         log_header.pack(fill="x", pady=(2, 4))
@@ -256,6 +330,28 @@ class RenderWorkerApp:
             self.farm_root_var.set(selected)
             self._remember_farm_root(Path(selected))
             self._log(f"Selected show RenderFarm base folder: {selected}")
+
+    def _browse_sprite_folder(self) -> None:
+        current_value = self.sprite_folder_var.get().strip()
+        selected = filedialog.askdirectory(
+            title="Choose Render Worker Animation Sprite Folder",
+            initialdir=current_value or None,
+        )
+        if selected:
+            self.sprite_folder_var.set(selected)
+            self._remember_sprite_folder(Path(selected))
+            self._load_animation_assets()
+
+    def _reload_animation_assets_from_field(self) -> None:
+        raw_path = self.sprite_folder_var.get().strip()
+        if not raw_path:
+            self._show_input_error(
+                ValueError("Please choose the animation sprite folder.")
+            )
+            return
+        sprite_folder = Path(raw_path).expanduser()
+        self._remember_sprite_folder(sprite_folder)
+        self._load_animation_assets()
 
     def _get_farm_root(self) -> Path:
         raw_path = self.farm_root_var.get().strip()
@@ -322,6 +418,8 @@ class RenderWorkerApp:
                 farm_root=farm_root,
                 worker_name=worker_name,
                 simulate_success=simulate_success,
+                minimum_stage_seconds=DEFAULT_MINIMUM_STAGE_SECONDS,
+                stage_callback=self._stage_queue.put,
             ),
             on_success=self._job_processed,
         )
@@ -386,6 +484,13 @@ class RenderWorkerApp:
 
         while True:
             try:
+                stage = self._stage_queue.get_nowait()
+            except Empty:
+                break
+            self._set_worker_stage(stage)
+
+        while True:
+            try:
                 completion = self._completion_queue.get_nowait()
             except Empty:
                 break
@@ -399,6 +504,7 @@ class RenderWorkerApp:
     ) -> None:
         self._set_busy(False, "Ready")
         if completion.error is not None:
+            self._set_worker_stage(WorkerStage.WAITING)
             self._log(
                 f"ERROR during {completion.label}: "
                 f"{type(completion.error).__name__}: {completion.error}"
@@ -412,6 +518,7 @@ class RenderWorkerApp:
 
         completion.on_success(completion.result)
         self._log(f"{completion.label} finished.")
+        self._set_worker_stage(WorkerStage.WAITING)
 
     def _set_busy(self, busy: bool, status: str) -> None:
         self._busy = busy
@@ -424,6 +531,9 @@ class RenderWorkerApp:
             button.configure(state=button_state)
         self.browse_button.configure(state=button_state)
         self.farm_root_entry.configure(state=entry_state)
+        self.sprite_browse_button.configure(state=button_state)
+        self.reload_sprites_button.configure(state=button_state)
+        self.sprite_folder_entry.configure(state=entry_state)
         self.worker_name_entry.configure(state=entry_state)
         self.simulate_result_combo.configure(state=combo_state)
 
@@ -456,6 +566,92 @@ class RenderWorkerApp:
         except Exception as error:
             self._log(f"WARNING: Could not remember the RenderFarm folder: {error}")
 
+    def _remember_sprite_folder(self, sprite_folder: Path) -> None:
+        try:
+            save_animation_sprite_folder(sprite_folder)
+        except Exception as error:
+            self._log(f"WARNING: Could not remember the sprite folder: {error}")
+
+    def _load_animation_assets(self) -> None:
+        if self._animation_after_id is not None:
+            self.root.after_cancel(self._animation_after_id)
+            self._animation_after_id = None
+
+        self._animation_frames = {}
+        sprite_folder = Path(self.sprite_folder_var.get().strip()).expanduser()
+        errors: list[str] = []
+
+        for stage, sprite_path in get_stage_sprite_paths(sprite_folder).items():
+            try:
+                sheet_info = inspect_sprite_sheet(sprite_path)
+                sheet_image = tk.PhotoImage(file=str(sprite_path))
+                frames: list[tk.PhotoImage] = []
+                for frame_index in range(sheet_info.frame_count):
+                    source_x = frame_index * SPRITE_FRAME_SIZE
+                    frame = tk.PhotoImage(
+                        width=SPRITE_FRAME_SIZE,
+                        height=SPRITE_FRAME_SIZE,
+                    )
+                    frame.tk.call(
+                        str(frame),
+                        "copy",
+                        str(sheet_image),
+                        "-from",
+                        source_x,
+                        0,
+                        source_x + SPRITE_FRAME_SIZE,
+                        SPRITE_FRAME_SIZE,
+                        "-to",
+                        0,
+                        0,
+                    )
+                    frames.append(
+                        frame.zoom(SPRITE_DISPLAY_SCALE, SPRITE_DISPLAY_SCALE)
+                    )
+                self._animation_frames[stage] = frames
+            except Exception as error:
+                errors.append(f"{sprite_path.name}: {error}")
+
+        if errors:
+            for error_message in errors:
+                self._log(f"ANIMATION WARNING: {error_message}")
+        else:
+            frame_summary = ", ".join(
+                f"{stage.value}={len(frames)}"
+                for stage, frames in self._animation_frames.items()
+            )
+            self._log(f"Loaded animation frames: {frame_summary}")
+
+        self._set_worker_stage(self._active_stage)
+
+    def _set_worker_stage(self, stage: WorkerStage) -> None:
+        self._active_stage = stage
+        self.current_stage_var.set(WORKER_STAGE_LABELS[stage])
+        self._animation_frame_index = 0
+        if self._animation_after_id is not None:
+            self.root.after_cancel(self._animation_after_id)
+            self._animation_after_id = None
+        self._show_next_animation_frame()
+
+    def _show_next_animation_frame(self) -> None:
+        frames = self._animation_frames.get(self._active_stage, [])
+        if not frames:
+            self.animation_image_label.configure(
+                image="",
+                text="Animation unavailable",
+            )
+            return
+
+        frame = frames[self._animation_frame_index % len(frames)]
+        self.animation_image_label.configure(image=frame, text="")
+        self._animation_frame_index = (
+            self._animation_frame_index + 1
+        ) % len(frames)
+        self._animation_after_id = self.root.after(
+            SPRITE_FRAME_INTERVAL_MS,
+            self._show_next_animation_frame,
+        )
+
     def _on_close(self) -> None:
         if self._busy:
             messagebox.showwarning(
@@ -469,6 +665,9 @@ class RenderWorkerApp:
         if self._poll_after_id is not None:
             self.root.after_cancel(self._poll_after_id)
             self._poll_after_id = None
+        if self._animation_after_id is not None:
+            self.root.after_cancel(self._animation_after_id)
+            self._animation_after_id = None
         WORKER_LOGGER.removeHandler(self._worker_log_handler)
         self.root.destroy()
 

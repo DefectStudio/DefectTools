@@ -34,10 +34,31 @@ folder that directly contains the five queue folders. The interface can:
 - Process one queued job with the current simulation result.
 - Display worker and filesystem activity in a live output log.
 
+The **Animation Sprite Folder** selects a local folder containing these paid
+production assets, which are intentionally not copied into this repository:
+
+```text
+Base_Idle.png          Waiting to find a job
+Base_Run.png           Moving files and claiming the job
+Base_WateringCan.png   Rendering
+Base_Hoe.png           Finishing render tasks
+```
+
+Each sheet is one row of transparent 48x48 PNG frames. The GUI slices the sheets
+at runtime and displays them with pixel-preserving 2x integer scaling. The stage
+name is always shown directly beneath the animation.
+
+The default minimum stage duration is five seconds. This timer surrounds the
+real stage operation: a fast simulated action remains visible for five seconds,
+while a slow Dropbox or future Unreal operation naturally stays in that stage
+for its actual longer duration. A successful simulated job therefore displays
+Waiting, Moving, Rendering, and Finishing for at least 20 seconds total.
+
 Filesystem operations run outside the Tk main thread so a slow network share
 does not freeze the window. The interface prevents closing while one of these
 operations is active. It remembers the last selected base folder in the local,
-Git-ignored `LocalSaveFiles/render_worker_local_save.json` file.
+Git-ignored `LocalSaveFiles/render_worker_local_save.json` file. The selected
+animation sprite folder is remembered in the same machine-local settings file.
 
 ## Manual walking test
 

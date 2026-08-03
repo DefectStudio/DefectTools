@@ -23,6 +23,12 @@ Choose the show-specific `RenderFarm` base folder in the interface. The window
 can initialize the five queue folders, create a fake job, process one job, and
 display worker activity in its output log.
 
+The interface also displays transparent pixel-art animations for the worker's
+Waiting, Moving Files, Rendering, and Finishing stages. Choose the folder that
+contains `Base_Idle.png`, `Base_Run.png`, `Base_WateringCan.png`, and
+`Base_Hoe.png`. Source frames are 48x48 and are displayed at a crisp 2x scale.
+Every entered worker stage remains visible for at least five seconds.
+
 Command-line walking test:
 
 ```bat

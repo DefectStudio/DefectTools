@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 import logging
 from pathlib import Path
 import sys
+import time
+from typing import TypeVar
 
 from portable_pipe_tools.render_farm.queue import (
     QueuePaths,
@@ -13,12 +17,32 @@ from portable_pipe_tools.render_farm.queue import (
     default_worker_name,
     fail_unreadable_claimed_job,
     finish_claimed_job,
+    list_job_candidates,
     mark_job_rendering,
     safe_name,
 )
 
 
 LOGGER = logging.getLogger("render_worker")
+DEFAULT_MINIMUM_STAGE_SECONDS = 5.0
+_StageResult = TypeVar("_StageResult")
+
+
+class WorkerStage(str, Enum):
+    WAITING = "waiting"
+    MOVING = "moving"
+    RENDERING = "rendering"
+    FINISHING = "finishing"
+
+
+WORKER_STAGE_LABELS: dict[WorkerStage, str] = {
+    WorkerStage.WAITING: "Waiting to find a job",
+    WorkerStage.MOVING: "Moving files and claiming the job",
+    WorkerStage.RENDERING: "Rendering",
+    WorkerStage.FINISHING: "Finishing render tasks",
+}
+
+StageCallback = Callable[[WorkerStage], None]
 
 
 @dataclass(frozen=True)
@@ -28,46 +52,158 @@ class WorkerResult:
     reason: str
 
 
+@dataclass(frozen=True)
+class _ClaimedJob:
+    folder: Path
+    job: dict | None
+    failure_reason: str | None = None
+
+
+def _run_stage(
+    stage: WorkerStage,
+    operation: Callable[[], _StageResult],
+    minimum_stage_seconds: float,
+    stage_callback: StageCallback | None,
+    sleep: Callable[[float], None],
+    monotonic: Callable[[], float],
+) -> _StageResult:
+    started_at = monotonic()
+    LOGGER.info("Stage: %s", WORKER_STAGE_LABELS[stage])
+    try:
+        if stage_callback is not None:
+            stage_callback(stage)
+        return operation()
+    finally:
+        elapsed_seconds = monotonic() - started_at
+        remaining_seconds = max(0.0, minimum_stage_seconds - elapsed_seconds)
+        if remaining_seconds > 0:
+            sleep(remaining_seconds)
+
+
 def run_once(
     farm_root: str | Path,
     worker_name: str,
     simulate_success: bool,
+    minimum_stage_seconds: float = DEFAULT_MINIMUM_STAGE_SECONDS,
+    stage_callback: StageCallback | None = None,
+    sleep: Callable[[float], None] | None = None,
+    monotonic: Callable[[], float] | None = None,
 ) -> WorkerResult | None:
+    if minimum_stage_seconds < 0:
+        raise ValueError("minimum_stage_seconds cannot be negative")
+
+    sleep_function = sleep or time.sleep
+    monotonic_function = monotonic or time.monotonic
     paths = create_queue_folders(farm_root)
     worker = safe_name(worker_name, "WORKER")
-    claimed_folder = claim_next_job(paths, worker)
 
-    if claimed_folder is None:
+    queued_candidates = _run_stage(
+        stage=WorkerStage.WAITING,
+        operation=lambda: list_job_candidates(paths),
+        minimum_stage_seconds=minimum_stage_seconds,
+        stage_callback=stage_callback,
+        sleep=sleep_function,
+        monotonic=monotonic_function,
+    )
+    if not queued_candidates:
         LOGGER.info("Queue is empty: %s", paths.needs_rendering)
         return None
 
-    LOGGER.info("Claimed job: %s", claimed_folder)
-    try:
-        job = mark_job_rendering(claimed_folder, worker)
-    except Exception as error:
-        reason = f"Claimed job is invalid or unreadable: {type(error).__name__}: {error}"
-        LOGGER.error(reason)
-        final_folder = fail_unreadable_claimed_job(
+    def claim_and_prepare_job() -> _ClaimedJob | None:
+        claimed_folder = claim_next_job(paths, worker)
+        if claimed_folder is None:
+            return None
+
+        LOGGER.info("Claimed job: %s", claimed_folder)
+        try:
+            job = mark_job_rendering(claimed_folder, worker)
+        except Exception as error:
+            reason = (
+                f"Claimed job is invalid or unreadable: "
+                f"{type(error).__name__}: {error}"
+            )
+            LOGGER.error(reason)
+            return _ClaimedJob(
+                folder=claimed_folder,
+                job=None,
+                failure_reason=reason,
+            )
+        return _ClaimedJob(folder=claimed_folder, job=job)
+
+    claimed_job = _run_stage(
+        stage=WorkerStage.MOVING,
+        operation=claim_and_prepare_job,
+        minimum_stage_seconds=minimum_stage_seconds,
+        stage_callback=stage_callback,
+        sleep=sleep_function,
+        monotonic=monotonic_function,
+    )
+
+    if claimed_job is None:
+        LOGGER.info("Queue is empty: %s", paths.needs_rendering)
+        return None
+
+    if claimed_job.job is None:
+        failure_reason = claimed_job.failure_reason or "Claimed job is invalid"
+
+        def finish_invalid_job() -> WorkerResult:
+            final_folder = fail_unreadable_claimed_job(
+                paths=paths,
+                claimed_folder=claimed_job.folder,
+                worker_name=worker,
+                reason=failure_reason,
+            )
+            LOGGER.info("Job failed: %s", final_folder)
+            return WorkerResult("failed", final_folder, failure_reason)
+
+        return _run_stage(
+            stage=WorkerStage.FINISHING,
+            operation=finish_invalid_job,
+            minimum_stage_seconds=minimum_stage_seconds,
+            stage_callback=stage_callback,
+            sleep=sleep_function,
+            monotonic=monotonic_function,
+        )
+
+    def simulate_render() -> tuple[bool, str]:
+        success = simulate_success
+        reason = (
+            "Simulated render completed successfully"
+            if success
+            else "Simulated render failure"
+        )
+        return success, reason
+
+    success, reason = _run_stage(
+        stage=WorkerStage.RENDERING,
+        operation=simulate_render,
+        minimum_stage_seconds=minimum_stage_seconds,
+        stage_callback=stage_callback,
+        sleep=sleep_function,
+        monotonic=monotonic_function,
+    )
+
+    def finish_job() -> WorkerResult:
+        final_folder = finish_claimed_job(
             paths=paths,
-            claimed_folder=claimed_folder,
+            claimed_folder=claimed_job.folder,
+            job=claimed_job.job,
             worker_name=worker,
+            success=success,
             reason=reason,
         )
-        return WorkerResult("failed", final_folder, reason)
+        status = "complete" if success else "failed"
+        LOGGER.info("Job %s: %s", status, final_folder)
+        return WorkerResult(status, final_folder, reason)
 
-    success = simulate_success
-    reason = "Simulated render completed successfully" if success else "Simulated render failure"
-    final_folder = finish_claimed_job(
-        paths=paths,
-        claimed_folder=claimed_folder,
-        job=job,
-        worker_name=worker,
-        success=success,
-        reason=reason,
+    return _run_stage(
+        stage=WorkerStage.FINISHING,
+        operation=finish_job,
+        minimum_stage_seconds=minimum_stage_seconds,
+        stage_callback=stage_callback,
+        sleep=sleep_function,
+        monotonic=monotonic_function,
     )
-    status = "complete" if success else "failed"
-    LOGGER.info("Job %s: %s", status, final_folder)
-    return WorkerResult(status, final_folder, reason)
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -91,6 +227,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Create/validate queue folders without claiming a job",
     )
+    parser.add_argument(
+        "--minimum-stage-seconds",
+        type=float,
+        default=DEFAULT_MINIMUM_STAGE_SECONDS,
+        help="Minimum time to display each worker stage (default: 5 seconds)",
+    )
     return parser
 
 
@@ -111,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
             farm_root=args.farm_root,
             worker_name=args.worker_name,
             simulate_success=args.simulate_result == "success",
+            minimum_stage_seconds=args.minimum_stage_seconds,
         )
     except Exception:
         LOGGER.exception("Worker stopped because of an unexpected queue error")

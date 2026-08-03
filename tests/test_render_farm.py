@@ -16,7 +16,7 @@ from portable_pipe_tools.render_farm.queue import (
     write_json_atomic,
 )
 from portable_pipe_tools.render_farm.test_job import create_test_job
-from portable_pipe_tools.render_farm.worker import run_once
+from portable_pipe_tools.render_farm.worker import WorkerStage, run_once
 
 
 class RenderFarmPrototypeTests(unittest.TestCase):
@@ -60,7 +60,12 @@ class RenderFarmPrototypeTests(unittest.TestCase):
     def test_successful_simulation_updates_and_moves_job(self) -> None:
         create_test_job(self.farm_root)
 
-        result = run_once(self.farm_root, "RENDER-03", simulate_success=True)
+        result = run_once(
+            self.farm_root,
+            "RENDER-03",
+            simulate_success=True,
+            minimum_stage_seconds=0.0,
+        )
 
         self.assertIsNotNone(result)
         assert result is not None
@@ -77,7 +82,12 @@ class RenderFarmPrototypeTests(unittest.TestCase):
     def test_failed_simulation_updates_and_moves_job(self) -> None:
         create_test_job(self.farm_root)
 
-        result = run_once(self.farm_root, "RENDER-04", simulate_success=False)
+        result = run_once(
+            self.farm_root,
+            "RENDER-04",
+            simulate_success=False,
+            minimum_stage_seconds=0.0,
+        )
 
         self.assertIsNotNone(result)
         assert result is not None
@@ -92,7 +102,12 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         broken_folder.mkdir()
         (broken_folder / JOB_FILENAME).write_text("{broken", encoding="utf-8")
 
-        result = run_once(self.farm_root, "RENDER-05", simulate_success=True)
+        result = run_once(
+            self.farm_root,
+            "RENDER-05",
+            simulate_success=True,
+            minimum_stage_seconds=0.0,
+        )
 
         self.assertIsNotNone(result)
         assert result is not None
@@ -100,6 +115,33 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         self.assertTrue((result.final_folder / JOB_FILENAME).exists())
         failure = read_json_object(result.final_folder / RESULT_FILENAME)
         self.assertIn("invalid or unreadable", failure["reason"])
+
+    def test_worker_reports_four_stages_with_five_second_minimums(self) -> None:
+        create_test_job(self.farm_root)
+        reported_stages: list[WorkerStage] = []
+        sleep_durations: list[float] = []
+
+        result = run_once(
+            self.farm_root,
+            "RENDER-06",
+            simulate_success=True,
+            minimum_stage_seconds=5.0,
+            stage_callback=reported_stages.append,
+            sleep=sleep_durations.append,
+            monotonic=lambda: 0.0,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            [
+                WorkerStage.WAITING,
+                WorkerStage.MOVING,
+                WorkerStage.RENDERING,
+                WorkerStage.FINISHING,
+            ],
+            reported_stages,
+        )
+        self.assertEqual([5.0, 5.0, 5.0, 5.0], sleep_durations)
 
     def test_transient_windows_sharing_lock_is_retried(self) -> None:
         attempts = 0
