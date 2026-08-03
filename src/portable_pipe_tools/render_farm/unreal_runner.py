@@ -59,6 +59,7 @@ class UnrealExecutionResult:
             "unreal_reported_success": unreal_result.get("success"),
             "unreal_result_stage": unreal_result.get("stage"),
             "output_file_count": unreal_result.get("output_file_count", 0),
+            "output_validation": unreal_result.get("output_validation"),
             "unreal_log_file": UNREAL_LOG_FILENAME,
             "unreal_stdout_file": UNREAL_STDOUT_FILENAME,
             "render_command_file": RENDER_COMMAND_FILENAME,

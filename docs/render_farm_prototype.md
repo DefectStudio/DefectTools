@@ -1,8 +1,8 @@
 # Render Farm Filesystem Worker
 
 This checkpoint supports supervised and continuous filesystem-queue processing,
-including real Unreal 5.8 Movie Render Graph launches. Git synchronization and
-post-render frame validation remain separate checkpoints.
+including real Unreal 5.8 Movie Render Graph launches and post-render output
+validation. Git synchronization and worker heartbeats remain separate checkpoints.
 
 ## Queue folders
 
@@ -62,6 +62,14 @@ Completed and failed manifests preserve `submitted_output_directory` and add
 for diagnostics. Before Unreal launches, the worker checks the destination MP4
 and EXR version folder. Existing output stops the render safely and asks for a
 new render version, preventing accidental overwrite.
+
+After Movie Render Graph finishes, the Unreal executor collects files from MRG
+`graph_data` and validates them on disk before reporting success. An enabled MP4
+must exist, and an enabled EXR output must contain at least the job's expected
+frame count. Validation details and the final file count are preserved in
+`unreal_result.json`, `result.json`, and the terminal job manifest. Missing
+outputs move the job to `04_RenderFailed` even if Unreal's pipeline callback
+reported success.
 
 **Start Worker** begins continuous real-job processing. The polling interval is
 configurable from 1 to 3600 seconds and defaults to 15 seconds. When the queue is
@@ -213,9 +221,8 @@ writes still treat access denied as a real permission failure immediately.
 
 ## Deliberately not in this checkpoint
 
-- Continuous polling or a Windows service
+- A Windows service
 - Git or Git LFS synchronization
-- Frame/output validation
 - Worker heartbeats or stalled-job recovery
 - Automatic retries
 

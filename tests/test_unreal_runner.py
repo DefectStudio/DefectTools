@@ -116,6 +116,13 @@ class UnrealRunnerTests(unittest.TestCase):
         self.assertIn("did not write unreal_result.json", result.reason)
 
     def test_unreal_success_result_is_accepted(self) -> None:
+        output_validation = {
+            "success": True,
+            "validated_output_file_count": 100,
+            "exr_file_count": 99,
+            "mp4_exists": True,
+            "errors": [],
+        }
         result = _interpret_unreal_result(
             self.job,
             0,
@@ -123,10 +130,15 @@ class UnrealRunnerTests(unittest.TestCase):
                 "job_id": self.job["job_id"],
                 "success": True,
                 "output_file_count": 100,
+                "output_validation": output_validation,
             },
         )
         self.assertTrue(result.success)
         self.assertIn("100 output file", result.reason)
+        self.assertEqual(
+            output_validation,
+            result.terminal_result_details()["output_validation"],
+        )
 
 
 if __name__ == "__main__":
