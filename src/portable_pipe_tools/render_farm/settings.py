@@ -51,6 +51,11 @@ def load_saved_animation_sprite_folder(settings_path: Path | None = None) -> str
     return str(data.get("animation_sprite_folder") or "").strip()
 
 
+def load_saved_unreal_editor_cmd(settings_path: Path | None = None) -> str:
+    data = load_local_settings(settings_path)
+    return str(data.get("unreal_editor_cmd") or "").strip()
+
+
 def save_render_farm_root(
     farm_root: str | Path,
     settings_path: Path | None = None,
@@ -68,4 +73,14 @@ def save_animation_sprite_folder(
     return update_local_settings(
         settings_path,
         animation_sprite_folder=sprite_folder,
+    )
+
+
+def save_unreal_editor_cmd(
+    unreal_editor_cmd: str | Path,
+    settings_path: Path | None = None,
+) -> Path:
+    return update_local_settings(
+        settings_path,
+        unreal_editor_cmd=unreal_editor_cmd,
     )

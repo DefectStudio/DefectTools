@@ -355,6 +355,7 @@ def finish_claimed_job(
     worker_name: str,
     success: bool,
     reason: str,
+    result_details: dict[str, Any] | None = None,
 ) -> Path:
     status = "complete" if success else "failed"
     finished_utc = utc_now()
@@ -369,6 +370,18 @@ def finish_claimed_job(
         "render_started_utc": job.get("render_started_utc"),
         "render_finished_utc": finished_utc,
     }
+    if result_details:
+        result.update(result_details)
+
+    # State-machine fields are authoritative even when execution-specific
+    # diagnostics are merged into the result.
+    result["schema_version"] = SCHEMA_VERSION
+    result["job_id"] = job.get("job_id")
+    result["status"] = status
+    result["worker"] = safe_name(worker_name, "WORKER")
+    result["reason"] = reason
+    result["render_started_utc"] = job.get("render_started_utc")
+    result["render_finished_utc"] = finished_utc
 
     job["status"] = status
     job["render_finished_utc"] = finished_utc

@@ -7,8 +7,10 @@ import unittest
 from portable_pipe_tools.render_farm.settings import (
     load_saved_animation_sprite_folder,
     load_saved_render_farm_root,
+    load_saved_unreal_editor_cmd,
     save_animation_sprite_folder,
     save_render_farm_root,
+    save_unreal_editor_cmd,
 )
 
 
@@ -46,6 +48,18 @@ class RenderWorkerSettingsTests(unittest.TestCase):
             settings_path.write_text("{broken", encoding="utf-8")
 
             self.assertEqual("", load_saved_render_farm_root(settings_path))
+
+    def test_unreal_editor_cmd_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "render_worker.json"
+            executable = "C:/Program Files/Epic Games/UE_5.8/Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+
+            save_unreal_editor_cmd(executable, settings_path)
+
+            self.assertEqual(
+                executable,
+                load_saved_unreal_editor_cmd(settings_path),
+            )
 
 
 if __name__ == "__main__":

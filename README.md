@@ -8,10 +8,11 @@ Initial goals:
 - Support file-server pipeline workflows
 - Eventually integrate with ClickUp, Natron, DaVinci, RV, SyncSketch, and UnrealTools
 
-## Render farm queue prototype
+## Render farm worker
 
-The first filesystem render-queue checkpoint can publish a fake job, atomically
-claim it by moving its folder, and simulate either completion or failure:
+The filesystem worker can publish a fake test job, atomically claim one queued
+job, simulate completion/failure, or launch UnrealEditor-Cmd for a real Movie
+Render Graph job published by the Unreal rendering tool.
 
 Launch the Render Worker interface:
 
@@ -20,8 +21,8 @@ tools\render_worker_gui.bat
 ```
 
 Choose the show-specific `RenderFarm` base folder in the interface. The window
-can initialize the five queue folders, create a fake job, process one job, and
-display worker activity in its output log.
+can initialize the five queue folders, create a fake job, simulate one job, or
+render one real job with Unreal while displaying activity in its output log.
 
 The interface also displays transparent pixel-art animations for the worker's
 Waiting, Moving Files, Rendering, and Finishing stages. Choose the folder that
@@ -36,5 +37,11 @@ tools\create_test_render_job.bat D:\RenderFarmPrototype
 tools\render_worker.bat D:\RenderFarmPrototype --worker-name RENDER-03 --simulate-result success
 ```
 
+One supervised real job:
+
+```bat
+tools\render_worker.bat "F:\Defect Dropbox\defect\s3bishop\renderFarm" --worker-name RENDER-03 --render-with-unreal --unreal-editor-cmd "C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
+```
+
 See [docs/render_farm_prototype.md](docs/render_farm_prototype.md) for the queue
-contract, manual failure test, and intentionally deferred features.
+contract, real-render behavior, manual failure test, and deferred features.

@@ -21,6 +21,11 @@ from portable_pipe_tools.render_farm.queue import (
     mark_job_rendering,
     safe_name,
 )
+from portable_pipe_tools.render_farm.unreal_runner import (
+    DEFAULT_RENDER_TIMEOUT_SECONDS,
+    UnrealExecutionResult,
+    execute_unreal_job,
+)
 
 
 LOGGER = logging.getLogger("render_worker")
@@ -88,6 +93,10 @@ def run_once(
     stage_callback: StageCallback | None = None,
     sleep: Callable[[float], None] | None = None,
     monotonic: Callable[[], float] | None = None,
+    render_with_unreal: bool = False,
+    unreal_editor_cmd: str | Path | None = None,
+    render_timeout_seconds: float = DEFAULT_RENDER_TIMEOUT_SECONDS,
+    unreal_runner: Callable[..., UnrealExecutionResult] | None = None,
 ) -> WorkerResult | None:
     if minimum_stage_seconds < 0:
         raise ValueError("minimum_stage_seconds cannot be negative")
@@ -165,18 +174,43 @@ def run_once(
             monotonic=monotonic_function,
         )
 
-    def simulate_render() -> tuple[bool, str]:
-        success = simulate_success
-        reason = (
-            "Simulated render completed successfully"
-            if success
-            else "Simulated render failure"
-        )
-        return success, reason
+    def render_job() -> tuple[bool, str, dict | None]:
+        if not render_with_unreal:
+            success = simulate_success
+            reason = (
+                "Simulated render completed successfully"
+                if success
+                else "Simulated render failure"
+            )
+            return success, reason, None
 
-    success, reason = _run_stage(
+        runner = unreal_runner or execute_unreal_job
+        try:
+            execution_result = runner(
+                claimed_folder=claimed_job.folder,
+                job=claimed_job.job,
+                unreal_editor_cmd=unreal_editor_cmd,
+                timeout_seconds=render_timeout_seconds,
+            )
+        except Exception as error:
+            reason = (
+                "Real Unreal render could not run: "
+                f"{type(error).__name__}: {error}"
+            )
+            LOGGER.exception(reason)
+            return False, reason, {
+                "simulated": False,
+                "exit_code": None,
+            }
+        return (
+            execution_result.success,
+            execution_result.reason,
+            execution_result.terminal_result_details(),
+        )
+
+    success, reason, result_details = _run_stage(
         stage=WorkerStage.RENDERING,
-        operation=simulate_render,
+        operation=render_job,
         minimum_stage_seconds=minimum_stage_seconds,
         stage_callback=stage_callback,
         sleep=sleep_function,
@@ -191,6 +225,7 @@ def run_once(
             worker_name=worker,
             success=success,
             reason=reason,
+            result_details=result_details,
         )
         status = "complete" if success else "failed"
         LOGGER.info("Job %s: %s", status, final_folder)
@@ -208,7 +243,7 @@ def run_once(
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Claim and simulate one job from the PortablePipeTools render queue."
+        description="Claim and process one job from the PortablePipeTools render queue."
     )
     parser.add_argument("farm_root", type=Path, help="Shared RenderFarm folder")
     parser.add_argument(
@@ -221,6 +256,23 @@ def build_argument_parser() -> argparse.ArgumentParser:
         choices=("success", "failure"),
         default="success",
         help="Terminal state to simulate for this prototype",
+    )
+    parser.add_argument(
+        "--render-with-unreal",
+        action="store_true",
+        help="Launch UnrealEditor-Cmd and execute the claimed real MRG job",
+    )
+    parser.add_argument(
+        "--unreal-editor-cmd",
+        type=Path,
+        default=None,
+        help="Optional explicit path to UnrealEditor-Cmd.exe",
+    )
+    parser.add_argument(
+        "--render-timeout-seconds",
+        type=float,
+        default=DEFAULT_RENDER_TIMEOUT_SECONDS,
+        help="Maximum Unreal process runtime before the worker fails the job",
     )
     parser.add_argument(
         "--init-only",
@@ -254,6 +306,9 @@ def main(argv: list[str] | None = None) -> int:
             worker_name=args.worker_name,
             simulate_success=args.simulate_result == "success",
             minimum_stage_seconds=args.minimum_stage_seconds,
+            render_with_unreal=args.render_with_unreal,
+            unreal_editor_cmd=args.unreal_editor_cmd,
+            render_timeout_seconds=args.render_timeout_seconds,
         )
     except Exception:
         LOGGER.exception("Worker stopped because of an unexpected queue error")

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 import logging
+import os
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
@@ -29,8 +30,10 @@ from portable_pipe_tools.render_farm.test_job import create_test_job
 from portable_pipe_tools.render_farm.settings import (
     load_saved_animation_sprite_folder,
     load_saved_render_farm_root,
+    load_saved_unreal_editor_cmd,
     save_animation_sprite_folder,
     save_render_farm_root,
+    save_unreal_editor_cmd,
 )
 from portable_pipe_tools.render_farm.worker import (
     DEFAULT_MINIMUM_STAGE_SECONDS,
@@ -70,8 +73,8 @@ class RenderWorkerApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Render Worker")
-        self.root.geometry("980x820")
-        self.root.minsize(820, 680)
+        self.root.geometry("1080x880")
+        self.root.minsize(900, 720)
 
         self.farm_root_var = tk.StringVar(value=load_saved_render_farm_root())
         saved_sprite_folder = load_saved_animation_sprite_folder()
@@ -80,6 +83,26 @@ class RenderWorkerApp:
         )
         self.worker_name_var = tk.StringVar(value=default_worker_name())
         self.simulate_result_var = tk.StringVar(value="success")
+        saved_unreal_editor_cmd = load_saved_unreal_editor_cmd()
+        default_unreal_editor_cmd = (
+            Path(os.environ.get("ProgramFiles") or r"C:\Program Files")
+            / "Epic Games"
+            / "UE_5.8"
+            / "Engine"
+            / "Binaries"
+            / "Win64"
+            / "UnrealEditor-Cmd.exe"
+        )
+        self.unreal_editor_cmd_var = tk.StringVar(
+            value=(
+                saved_unreal_editor_cmd
+                or (
+                    str(default_unreal_editor_cmd)
+                    if default_unreal_editor_cmd.is_file()
+                    else ""
+                )
+            )
+        )
         self.status_var = tk.StringVar(value="Ready")
         self.current_stage_var = tk.StringVar(
             value=WORKER_STAGE_LABELS[WorkerStage.WAITING]
@@ -119,6 +142,10 @@ class RenderWorkerApp:
         )
         if self.farm_root_var.get():
             self._log(f"Loaded saved RenderFarm folder: {self.farm_root_var.get()}")
+        if self.unreal_editor_cmd_var.get():
+            self._log(
+                f"Unreal command-line executable: {self.unreal_editor_cmd_var.get()}"
+            )
         self._log(f"Animation sprite folder: {self.sprite_folder_var.get()}")
 
     def _build_ui(self) -> None:
@@ -134,8 +161,8 @@ class RenderWorkerApp:
         ttk.Label(
             outer,
             text=(
-                "Filesystem queue prototype — configure this worker, inspect its "
-                "activity, and process one simulated render job at a time."
+                "Filesystem render worker — process one simulated or real Unreal "
+                "Movie Render Graph job at a time."
             ),
         ).pack(anchor="w", pady=(2, 12))
 
@@ -192,11 +219,36 @@ class RenderWorkerApp:
         self.simulate_result_combo.grid(row=2, column=1, sticky="w", pady=4)
         ttk.Label(
             setup_frame,
-            text="Prototype only; Unreal rendering is not connected yet.",
+            text="Used only by the Simulate One Job button.",
         ).grid(row=2, column=2, sticky="w", padx=(8, 0), pady=4)
 
-        ttk.Label(setup_frame, text="Animation Sprite Folder").grid(
+        ttk.Label(setup_frame, text="UnrealEditor-Cmd.exe").grid(
             row=3,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+            pady=4,
+        )
+        self.unreal_editor_cmd_entry = ttk.Entry(
+            setup_frame,
+            textvariable=self.unreal_editor_cmd_var,
+        )
+        self.unreal_editor_cmd_entry.grid(row=3, column=1, sticky="ew", pady=4)
+        self.unreal_editor_cmd_browse_button = ttk.Button(
+            setup_frame,
+            text="Browse...",
+            command=self._browse_unreal_editor_cmd,
+        )
+        self.unreal_editor_cmd_browse_button.grid(
+            row=3,
+            column=2,
+            sticky="w",
+            padx=(8, 0),
+            pady=4,
+        )
+
+        ttk.Label(setup_frame, text="Animation Sprite Folder").grid(
+            row=4,
             column=0,
             sticky="w",
             padx=(0, 8),
@@ -206,9 +258,9 @@ class RenderWorkerApp:
             setup_frame,
             textvariable=self.sprite_folder_var,
         )
-        self.sprite_folder_entry.grid(row=3, column=1, sticky="ew", pady=4)
+        self.sprite_folder_entry.grid(row=4, column=1, sticky="ew", pady=4)
         sprite_button_row = ttk.Frame(setup_frame)
-        sprite_button_row.grid(row=3, column=2, sticky="w", padx=(8, 0), pady=4)
+        sprite_button_row.grid(row=4, column=2, sticky="w", padx=(8, 0), pady=4)
         self.sprite_browse_button = ttk.Button(
             sprite_button_row,
             text="Browse...",
@@ -241,10 +293,17 @@ class RenderWorkerApp:
 
         self.process_one_button = ttk.Button(
             button_row,
-            text="Process One Job",
+            text="Simulate One Job",
             command=self._process_one_job,
         )
         self.process_one_button.pack(side="left", padx=(0, 8))
+
+        self.render_one_button = ttk.Button(
+            button_row,
+            text="Render One Job with Unreal",
+            command=self._render_one_job_with_unreal,
+        )
+        self.render_one_button.pack(side="left", padx=(0, 8))
 
         ttk.Button(
             button_row,
@@ -256,6 +315,7 @@ class RenderWorkerApp:
             self.initialize_button,
             self.create_test_job_button,
             self.process_one_button,
+            self.render_one_button,
         )
 
         activity_frame = ttk.LabelFrame(outer, text="Worker Activity", padding=8)
@@ -342,6 +402,26 @@ class RenderWorkerApp:
             self._remember_sprite_folder(Path(selected))
             self._load_animation_assets()
 
+    def _browse_unreal_editor_cmd(self) -> None:
+        current_value = self.unreal_editor_cmd_var.get().strip()
+        selected = filedialog.askopenfilename(
+            title="Choose UnrealEditor-Cmd.exe",
+            initialdir=str(Path(current_value).parent) if current_value else None,
+            initialfile=(
+                Path(current_value).name
+                if current_value
+                else "UnrealEditor-Cmd.exe"
+            ),
+            filetypes=(
+                ("Unreal command-line editor", "UnrealEditor-Cmd.exe"),
+                ("Executables", "*.exe"),
+            ),
+        )
+        if selected:
+            self.unreal_editor_cmd_var.set(selected)
+            self._remember_unreal_editor_cmd(Path(selected))
+            self._log(f"Selected Unreal command-line executable: {selected}")
+
     def _reload_animation_assets_from_field(self) -> None:
         raw_path = self.sprite_folder_var.get().strip()
         if not raw_path:
@@ -366,6 +446,17 @@ class RenderWorkerApp:
         worker_name = safe_name(raw_name, "WORKER")
         self.worker_name_var.set(worker_name)
         return worker_name
+
+    def _get_unreal_editor_cmd(self) -> Path:
+        raw_path = self.unreal_editor_cmd_var.get().strip()
+        if not raw_path:
+            raise ValueError("Please choose UnrealEditor-Cmd.exe.")
+        executable = Path(raw_path).expanduser()
+        if not executable.is_file():
+            raise FileNotFoundError(
+                f"UnrealEditor-Cmd.exe was not found: {executable}"
+            )
+        return executable
 
     def _initialize_queue(self) -> None:
         try:
@@ -420,6 +511,43 @@ class RenderWorkerApp:
                 simulate_success=simulate_success,
                 minimum_stage_seconds=DEFAULT_MINIMUM_STAGE_SECONDS,
                 stage_callback=self._stage_queue.put,
+            ),
+            on_success=self._job_processed,
+        )
+
+    def _render_one_job_with_unreal(self) -> None:
+        try:
+            farm_root = self._get_farm_root()
+            worker_name = self._get_worker_name()
+            unreal_editor_cmd = self._get_unreal_editor_cmd()
+        except Exception as error:
+            self._show_input_error(error)
+            return
+
+        confirmed = messagebox.askyesno(
+            "Render One Farm Job with Unreal",
+            "This will claim the next queued job and launch a real Unreal render.\n\n"
+            "This checkpoint renders the worker's current project checkout; "
+            "automatic Git sync is not enabled yet.\n\n"
+            "Continue?",
+            parent=self.root,
+        )
+        if not confirmed:
+            self._log("Real Unreal render cancelled before claiming a job.")
+            return
+
+        self._remember_farm_root(farm_root)
+        self._remember_unreal_editor_cmd(unreal_editor_cmd)
+        self._run_background(
+            label="Render one job with Unreal",
+            work=lambda: run_once(
+                farm_root=farm_root,
+                worker_name=worker_name,
+                simulate_success=False,
+                minimum_stage_seconds=DEFAULT_MINIMUM_STAGE_SECONDS,
+                stage_callback=self._stage_queue.put,
+                render_with_unreal=True,
+                unreal_editor_cmd=unreal_editor_cmd,
             ),
             on_success=self._job_processed,
         )
@@ -536,6 +664,8 @@ class RenderWorkerApp:
         self.sprite_folder_entry.configure(state=entry_state)
         self.worker_name_entry.configure(state=entry_state)
         self.simulate_result_combo.configure(state=combo_state)
+        self.unreal_editor_cmd_entry.configure(state=entry_state)
+        self.unreal_editor_cmd_browse_button.configure(state=button_state)
 
     def _clear_log(self) -> None:
         self.log_text.configure(state="normal")
@@ -571,6 +701,14 @@ class RenderWorkerApp:
             save_animation_sprite_folder(sprite_folder)
         except Exception as error:
             self._log(f"WARNING: Could not remember the sprite folder: {error}")
+
+    def _remember_unreal_editor_cmd(self, unreal_editor_cmd: Path) -> None:
+        try:
+            save_unreal_editor_cmd(unreal_editor_cmd)
+        except Exception as error:
+            self._log(
+                f"WARNING: Could not remember UnrealEditor-Cmd.exe: {error}"
+            )
 
     def _load_animation_assets(self) -> None:
         if self._animation_after_id is not None:

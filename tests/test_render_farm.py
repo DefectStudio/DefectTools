@@ -16,6 +16,7 @@ from portable_pipe_tools.render_farm.queue import (
     write_json_atomic,
 )
 from portable_pipe_tools.render_farm.test_job import create_test_job
+from portable_pipe_tools.render_farm.unreal_runner import UnrealExecutionResult
 from portable_pipe_tools.render_farm.worker import WorkerStage, run_once
 
 
@@ -96,6 +97,66 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         result_json = read_json_object(result.final_folder / RESULT_FILENAME)
         self.assertEqual(1, result_json["exit_code"])
         self.assertEqual("Simulated render failure", result_json["reason"])
+
+    def test_successful_real_runner_result_is_not_marked_simulated(self) -> None:
+        create_test_job(self.farm_root)
+
+        def successful_runner(**kwargs) -> UnrealExecutionResult:
+            self.assertEqual("rendering", kwargs["job"]["status"])
+            self.assertEqual(30.0, kwargs["timeout_seconds"])
+            return UnrealExecutionResult(
+                success=True,
+                reason="Real render completed",
+                exit_code=0,
+                unreal_result={
+                    "success": True,
+                    "stage": "render",
+                    "output_file_count": 100,
+                },
+            )
+
+        result = run_once(
+            self.farm_root,
+            "RENDER-REAL",
+            simulate_success=False,
+            minimum_stage_seconds=0.0,
+            render_with_unreal=True,
+            render_timeout_seconds=30.0,
+            unreal_runner=successful_runner,
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("complete", result.status)
+        result_json = read_json_object(result.final_folder / RESULT_FILENAME)
+        self.assertFalse(result_json["simulated"])
+        self.assertEqual(0, result_json["exit_code"])
+        self.assertTrue(result_json["unreal_reported_success"])
+        self.assertEqual(100, result_json["output_file_count"])
+
+    def test_real_runner_exception_moves_claimed_job_to_failed(self) -> None:
+        create_test_job(self.farm_root)
+
+        def broken_runner(**kwargs) -> UnrealExecutionResult:
+            del kwargs
+            raise FileNotFoundError("UnrealEditor-Cmd.exe")
+
+        result = run_once(
+            self.farm_root,
+            "RENDER-BROKEN",
+            simulate_success=False,
+            minimum_stage_seconds=0.0,
+            render_with_unreal=True,
+            unreal_runner=broken_runner,
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("failed", result.status)
+        result_json = read_json_object(result.final_folder / RESULT_FILENAME)
+        self.assertFalse(result_json["simulated"])
+        self.assertIsNone(result_json["exit_code"])
+        self.assertIn("FileNotFoundError", result_json["reason"])
 
     def test_invalid_json_is_claimed_and_moved_to_failed(self) -> None:
         broken_folder = self.paths.needs_rendering / "broken-job"
