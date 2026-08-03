@@ -101,10 +101,14 @@ class RenderFarmPrototypeTests(unittest.TestCase):
 
     def test_successful_real_runner_result_is_not_marked_simulated(self) -> None:
         create_test_job(self.farm_root)
+        worker_uproject = self.farm_root / "worker" / "s3bishop.uproject"
+        worker_uproject.parent.mkdir()
+        worker_uproject.write_text("{}", encoding="utf-8")
 
         def successful_runner(**kwargs) -> UnrealExecutionResult:
             self.assertEqual("rendering", kwargs["job"]["status"])
             self.assertEqual(30.0, kwargs["timeout_seconds"])
+            self.assertEqual(worker_uproject, kwargs["local_uproject"])
             return UnrealExecutionResult(
                 success=True,
                 reason="Real render completed",
@@ -124,6 +128,7 @@ class RenderFarmPrototypeTests(unittest.TestCase):
             render_with_unreal=True,
             render_timeout_seconds=30.0,
             unreal_runner=successful_runner,
+            local_uproject=worker_uproject,
         )
 
         self.assertIsNotNone(result)

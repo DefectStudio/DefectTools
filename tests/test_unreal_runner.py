@@ -12,6 +12,7 @@ from portable_pipe_tools.render_farm.unreal_runner import (
     PYTHON_EXECUTOR_CLASS,
     _interpret_unreal_result,
     build_unreal_command,
+    resolve_unreal_project,
     resolve_unreal_editor_cmd,
 )
 
@@ -78,6 +79,36 @@ class UnrealRunnerTests(unittest.TestCase):
             command,
         )
         self.assertIn("-RenderFarmValidateOnly=true", command)
+
+    def test_local_uproject_overrides_missing_submitting_computer_path(self) -> None:
+        self.job["project"] = "s3bishop"
+        self.job["uproject"] = str(
+            self.root / "missing-main-computer" / "s3bishop.uproject"
+        )
+        worker_project_folder = self.root / "worker-checkout"
+        worker_project_folder.mkdir()
+        worker_uproject = worker_project_folder / "s3bishop.uproject"
+        worker_uproject.write_text(
+            json.dumps({"EngineAssociation": "5.8"}),
+            encoding="utf-8",
+        )
+
+        command = build_unreal_command(
+            self.claimed_folder,
+            self.job,
+            self.executable,
+            local_uproject=worker_uproject,
+        )
+
+        self.assertEqual(str(worker_uproject.resolve()), command[1])
+
+    def test_local_uproject_must_match_submitted_project_name(self) -> None:
+        self.job["project"] = "s3bishop"
+        wrong_project = self.root / "spectrum.uproject"
+        wrong_project.write_text("{}", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "does not match the farm job"):
+            resolve_unreal_project(self.job, wrong_project)
 
     def test_exit_zero_without_unreal_result_is_failure(self) -> None:
         result = _interpret_unreal_result(self.job, 0, None)

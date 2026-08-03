@@ -35,9 +35,11 @@ from portable_pipe_tools.render_farm.listener import (
 )
 from portable_pipe_tools.render_farm.test_job import create_test_job
 from portable_pipe_tools.render_farm.settings import (
+    load_saved_local_uproject,
     load_saved_poll_interval_seconds,
     load_saved_render_farm_root,
     load_saved_unreal_editor_cmd,
+    save_local_uproject,
     save_poll_interval_seconds,
     save_render_farm_root,
     save_unreal_editor_cmd,
@@ -106,6 +108,7 @@ class ListenerConfiguration:
     farm_root: Path
     worker_name: str
     unreal_editor_cmd: Path
+    local_uproject: Path | None
     poll_interval_seconds: int
 
 
@@ -142,6 +145,9 @@ class RenderWorkerApp:
                     else ""
                 )
             )
+        )
+        self.local_uproject_var = tk.StringVar(
+            value=load_saved_local_uproject()
         )
         self.status_var = tk.StringVar(value="Ready")
         self.current_stage_var = tk.StringVar(
@@ -191,6 +197,15 @@ class RenderWorkerApp:
         if self.unreal_editor_cmd_var.get():
             self._log(
                 f"Unreal command-line executable: {self.unreal_editor_cmd_var.get()}"
+            )
+        if self.local_uproject_var.get():
+            self._log(
+                f"Worker-local Unreal project: {self.local_uproject_var.get()}"
+            )
+        else:
+            self._log(
+                "No worker-local Unreal project selected; submitted job paths "
+                "will be used."
             )
         self._log(
             f"Project animation sprites: {DEFAULT_ANIMATION_SPRITE_FOLDER}"
@@ -295,8 +310,33 @@ class RenderWorkerApp:
             pady=4,
         )
 
-        ttk.Label(setup_frame, text="Polling Interval (seconds)").grid(
+        ttk.Label(setup_frame, text="Local Unreal Project (.uproject)").grid(
             row=4,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+            pady=4,
+        )
+        self.local_uproject_entry = ttk.Entry(
+            setup_frame,
+            textvariable=self.local_uproject_var,
+        )
+        self.local_uproject_entry.grid(row=4, column=1, sticky="ew", pady=4)
+        self.local_uproject_browse_button = ttk.Button(
+            setup_frame,
+            text="Browse...",
+            command=self._browse_local_uproject,
+        )
+        self.local_uproject_browse_button.grid(
+            row=4,
+            column=2,
+            sticky="w",
+            padx=(8, 0),
+            pady=4,
+        )
+
+        ttk.Label(setup_frame, text="Polling Interval (seconds)").grid(
+            row=5,
             column=0,
             sticky="w",
             padx=(0, 8),
@@ -309,11 +349,11 @@ class RenderWorkerApp:
             textvariable=self.poll_interval_var,
             width=10,
         )
-        self.poll_interval_spinbox.grid(row=4, column=1, sticky="w", pady=4)
+        self.poll_interval_spinbox.grid(row=5, column=1, sticky="w", pady=4)
         ttk.Label(
             setup_frame,
             text="Used by Start Worker; default is 15 seconds.",
-        ).grid(row=4, column=2, sticky="w", padx=(8, 0), pady=4)
+        ).grid(row=5, column=2, sticky="w", padx=(8, 0), pady=4)
 
         button_row = ttk.Frame(outer)
         button_row.pack(fill="x", pady=(12, 8))
@@ -473,6 +513,22 @@ class RenderWorkerApp:
             self._remember_unreal_editor_cmd(Path(selected))
             self._log(f"Selected Unreal command-line executable: {selected}")
 
+    def _browse_local_uproject(self) -> None:
+        current_value = self.local_uproject_var.get().strip()
+        selected = filedialog.askopenfilename(
+            title="Choose This Worker's Local Unreal Project",
+            initialdir=str(Path(current_value).parent) if current_value else None,
+            initialfile=Path(current_value).name if current_value else None,
+            filetypes=(
+                ("Unreal project", "*.uproject"),
+                ("All files", "*.*"),
+            ),
+        )
+        if selected:
+            self.local_uproject_var.set(selected)
+            self._remember_local_uproject(Path(selected))
+            self._log(f"Selected worker-local Unreal project: {selected}")
+
     def _get_farm_root(self) -> Path:
         raw_path = self.farm_root_var.get().strip()
         if not raw_path:
@@ -498,6 +554,21 @@ class RenderWorkerApp:
             )
         return executable
 
+    def _get_local_uproject(self) -> Path | None:
+        raw_path = self.local_uproject_var.get().strip()
+        if not raw_path:
+            return None
+        local_uproject = Path(raw_path).expanduser()
+        if local_uproject.suffix.casefold() != ".uproject":
+            raise ValueError(
+                "The Local Unreal Project must be a .uproject file."
+            )
+        if not local_uproject.is_file():
+            raise FileNotFoundError(
+                f"The Local Unreal Project was not found: {local_uproject}"
+            )
+        return local_uproject
+
     def _get_poll_interval_seconds(self) -> int:
         interval = parse_poll_interval_seconds(self.poll_interval_var.get())
         self.poll_interval_var.set(str(interval))
@@ -516,12 +587,18 @@ class RenderWorkerApp:
                 farm_root=self._get_farm_root(),
                 worker_name=self._get_worker_name(),
                 unreal_editor_cmd=self._get_unreal_editor_cmd(),
+                local_uproject=self._get_local_uproject(),
                 poll_interval_seconds=self._get_poll_interval_seconds(),
             )
         except Exception as error:
             self._show_input_error(error)
             return
 
+        local_project_message = (
+            str(configuration.local_uproject)
+            if configuration.local_uproject is not None
+            else "Use the project path stored in each submitted job"
+        )
         confirmed = messagebox.askyesno(
             "Start Automatic Render Worker",
             "The worker will continuously claim and render real Unreal jobs "
@@ -529,6 +606,7 @@ class RenderWorkerApp:
             f"{configuration.poll_interval_seconds} seconds. Stop Worker will "
             "finish an already-claimed render before stopping.\n\nAutomatic Git "
             "sync is not enabled; jobs render from the current checkout.\n\n"
+            f"Local Unreal project:\n{local_project_message}\n\n"
             "Start the worker?",
             parent=self.root,
         )
@@ -543,6 +621,7 @@ class RenderWorkerApp:
         self._listener_configuration = configuration
         self._remember_farm_root(configuration.farm_root)
         self._remember_unreal_editor_cmd(configuration.unreal_editor_cmd)
+        self._remember_local_uproject(configuration.local_uproject)
         self._remember_poll_interval(configuration.poll_interval_seconds)
         self._cancel_listener_countdown()
         self._refresh_control_states()
@@ -552,6 +631,7 @@ class RenderWorkerApp:
             "Automatic worker started. Polling interval: "
             f"{configuration.poll_interval_seconds} seconds."
         )
+        self._log(f"Local Unreal project: {local_project_message}")
         self._schedule_listener_check_now()
 
     def _stop_worker(self) -> None:
@@ -601,6 +681,7 @@ class RenderWorkerApp:
                 stage_callback=self._stage_queue.put,
                 render_with_unreal=True,
                 unreal_editor_cmd=configuration.unreal_editor_cmd,
+                local_uproject=configuration.local_uproject,
                 should_stop_before_claim=(
                     lambda: self._listener_state.stop_requested
                 ),
@@ -746,15 +827,22 @@ class RenderWorkerApp:
             farm_root = self._get_farm_root()
             worker_name = self._get_worker_name()
             unreal_editor_cmd = self._get_unreal_editor_cmd()
+            local_uproject = self._get_local_uproject()
         except Exception as error:
             self._show_input_error(error)
             return
 
+        local_project_message = (
+            str(local_uproject)
+            if local_uproject is not None
+            else "Use the project path stored in the submitted job"
+        )
         confirmed = messagebox.askyesno(
             "Render One Farm Job with Unreal",
             "This will claim the next queued job and launch a real Unreal render.\n\n"
             "This checkpoint renders the worker's current project checkout; "
             "automatic Git sync is not enabled yet.\n\n"
+            f"Local Unreal project:\n{local_project_message}\n\n"
             "Continue?",
             parent=self.root,
         )
@@ -764,6 +852,7 @@ class RenderWorkerApp:
 
         self._remember_farm_root(farm_root)
         self._remember_unreal_editor_cmd(unreal_editor_cmd)
+        self._remember_local_uproject(local_uproject)
         self._run_background(
             label="Render one job with Unreal",
             work=lambda: run_once(
@@ -774,6 +863,7 @@ class RenderWorkerApp:
                 stage_callback=self._stage_queue.put,
                 render_with_unreal=True,
                 unreal_editor_cmd=unreal_editor_cmd,
+                local_uproject=local_uproject,
                 job_callback=self._job_queue.put,
             ),
             on_success=self._job_processed,
@@ -923,6 +1013,8 @@ class RenderWorkerApp:
         self.poll_interval_spinbox.configure(state=entry_state)
         self.unreal_editor_cmd_entry.configure(state=entry_state)
         self.unreal_editor_cmd_browse_button.configure(state=button_state)
+        self.local_uproject_entry.configure(state=entry_state)
+        self.local_uproject_browse_button.configure(state=button_state)
 
     def _clear_log(self) -> None:
         self.log_text.configure(state="normal")
@@ -959,6 +1051,17 @@ class RenderWorkerApp:
         except Exception as error:
             self._log(
                 f"WARNING: Could not remember UnrealEditor-Cmd.exe: {error}"
+            )
+
+    def _remember_local_uproject(
+        self,
+        local_uproject: Path | None,
+    ) -> None:
+        try:
+            save_local_uproject(local_uproject or "")
+        except Exception as error:
+            self._log(
+                f"WARNING: Could not remember the Local Unreal Project: {error}"
             )
 
     def _remember_poll_interval(self, poll_interval_seconds: int) -> None:

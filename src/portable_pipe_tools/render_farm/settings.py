@@ -51,6 +51,11 @@ def load_saved_unreal_editor_cmd(settings_path: Path | None = None) -> str:
     return str(data.get("unreal_editor_cmd") or "").strip()
 
 
+def load_saved_local_uproject(settings_path: Path | None = None) -> str:
+    data = load_local_settings(settings_path)
+    return str(data.get("local_uproject") or "").strip()
+
+
 def load_saved_poll_interval_seconds(settings_path: Path | None = None) -> str:
     data = load_local_settings(settings_path)
     return str(data.get("poll_interval_seconds") or "").strip()
@@ -73,6 +78,16 @@ def save_unreal_editor_cmd(
     return update_local_settings(
         settings_path,
         unreal_editor_cmd=unreal_editor_cmd,
+    )
+
+
+def save_local_uproject(
+    local_uproject: str | Path,
+    settings_path: Path | None = None,
+) -> Path:
+    return update_local_settings(
+        settings_path,
+        local_uproject=local_uproject,
     )
 
 

@@ -42,6 +42,14 @@ settings file as the farm folder. **Render One Job with Unreal** shows a
 confirmation before it claims anything. **Simulate One Job** remains a separate
 safe path for fake jobs and queue testing.
 
+The **Local Unreal Project (.uproject)** field is also machine-local. When set,
+it overrides the absolute `uproject` path stored by the submitting computer.
+The selected filename must match the farm job's `project` name, ignoring case.
+This allows render workers to use different drive letters and checkout roots
+without changing the immutable submission record. If the field is blank, the
+worker falls back to the submitted path for backward compatibility. Completed
+and failed job manifests record the path actually used as `worker_uproject`.
+
 **Start Worker** begins continuous real-job processing. The polling interval is
 configurable from 1 to 3600 seconds and defaults to 15 seconds. When the queue is
 empty, the bottom status counts down to the next check, for example:
@@ -91,9 +99,11 @@ Unreal executable is remembered in the same machine-local settings file.
 
 ## One supervised real Unreal render
 
-Publish jobs from `WBP_03_RenderingTool` first. A real job must contain the local
-`.uproject` path, level, level sequence, Movie Render Graph preset, and serialized
-graph-variable overrides. The worker rejects fake test jobs in real-render mode.
+Publish jobs from `WBP_03_RenderingTool` first. A real job must contain the
+submitting project's `.uproject` path and identity, level, level sequence, Movie
+Render Graph preset, and serialized graph-variable overrides. A worker-local
+project selection may override that submitted path. The worker rejects fake test
+jobs in real-render mode.
 
 For the current `s3bishop` worker, launch the GUI:
 

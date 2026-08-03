@@ -27,6 +27,11 @@ render one real job with Unreal while displaying activity in its output log.
 (15 seconds by default); **Stop Worker** finishes an already-claimed render and
 stops before claiming another.
 
+Each render computer can select its own **Local Unreal Project (.uproject)**.
+That machine-local path overrides the absolute project path recorded by the
+submitting computer, so workers may use different drive letters and checkout
+locations. Leaving it blank preserves the submitted path as a fallback.
+
 The interface also displays transparent pixel-art animations for the worker's
 Waiting, Moving Files, Rendering, and Finishing stages. The four sheets are
 loaded automatically from the repository's `spriteImages` folder. Source

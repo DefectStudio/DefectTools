@@ -100,6 +100,7 @@ def run_once(
     unreal_runner: Callable[..., UnrealExecutionResult] | None = None,
     should_stop_before_claim: Callable[[], bool] | None = None,
     job_callback: JobCallback | None = None,
+    local_uproject: str | Path | None = None,
 ) -> WorkerResult | None:
     if minimum_stage_seconds < 0:
         raise ValueError("minimum_stage_seconds cannot be negative")
@@ -206,6 +207,7 @@ def run_once(
                 job=claimed_job.job,
                 unreal_editor_cmd=unreal_editor_cmd,
                 timeout_seconds=render_timeout_seconds,
+                local_uproject=local_uproject,
             )
         except Exception as error:
             reason = (
@@ -284,6 +286,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Optional explicit path to UnrealEditor-Cmd.exe",
     )
     parser.add_argument(
+        "--local-uproject",
+        type=Path,
+        default=None,
+        help=(
+            "Optional worker-local .uproject path that overrides the path "
+            "submitted in the farm job"
+        ),
+    )
+    parser.add_argument(
         "--render-timeout-seconds",
         type=float,
         default=DEFAULT_RENDER_TIMEOUT_SECONDS,
@@ -323,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
             minimum_stage_seconds=args.minimum_stage_seconds,
             render_with_unreal=args.render_with_unreal,
             unreal_editor_cmd=args.unreal_editor_cmd,
+            local_uproject=args.local_uproject,
             render_timeout_seconds=args.render_timeout_seconds,
         )
     except Exception:

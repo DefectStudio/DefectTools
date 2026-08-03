@@ -5,9 +5,11 @@ import tempfile
 import unittest
 
 from portable_pipe_tools.render_farm.settings import (
+    load_saved_local_uproject,
     load_saved_poll_interval_seconds,
     load_saved_render_farm_root,
     load_saved_unreal_editor_cmd,
+    save_local_uproject,
     save_poll_interval_seconds,
     save_render_farm_root,
     save_unreal_editor_cmd,
@@ -43,6 +45,18 @@ class RenderWorkerSettingsTests(unittest.TestCase):
             self.assertEqual(
                 executable,
                 load_saved_unreal_editor_cmd(settings_path),
+            )
+
+    def test_local_uproject_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "render_worker.json"
+            local_project = "K:/UnrealProjects/s3bishop/s3bishop.uproject"
+
+            save_local_uproject(local_project, settings_path)
+
+            self.assertEqual(
+                local_project,
+                load_saved_local_uproject(settings_path),
             )
 
     def test_poll_interval_round_trip(self) -> None:

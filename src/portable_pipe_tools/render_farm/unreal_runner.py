@@ -94,6 +94,7 @@ def _engine_version_candidates(job: dict[str, Any], uproject_data: dict[str, Any
 def resolve_unreal_editor_cmd(
     job: dict[str, Any],
     configured_path: str | Path | None = None,
+    local_uproject: str | Path | None = None,
 ) -> Path:
     if configured_path:
         configured = _as_path(configured_path)
@@ -103,7 +104,7 @@ def resolve_unreal_editor_cmd(
             )
         return configured
 
-    uproject = _as_path(str(job.get("uproject") or ""))
+    uproject = _as_path(local_uproject or str(job.get("uproject") or ""))
     uproject_data = _load_uproject(uproject)
     program_files = Path(os.environ.get("ProgramFiles") or r"C:\Program Files")
     for version in _engine_version_candidates(job, uproject_data):
@@ -130,7 +131,34 @@ def resolve_unreal_editor_cmd(
     )
 
 
-def validate_real_render_job(job: dict[str, Any]) -> None:
+def resolve_unreal_project(
+    job: dict[str, Any],
+    local_uproject: str | Path | None = None,
+) -> Path:
+    selected_value = local_uproject or str(job.get("uproject") or "")
+    uproject = _as_path(selected_value)
+    if uproject.suffix.casefold() != ".uproject":
+        raise ValueError(f"Local Unreal project must be a .uproject file: {uproject}")
+    if not uproject.is_file():
+        source = "configured local" if local_uproject else "submitted"
+        raise FileNotFoundError(
+            f"The {source} Unreal project does not exist on this worker: {uproject}"
+        )
+
+    submitted_project = str(job.get("project") or "").strip()
+    if submitted_project and uproject.stem.casefold() != submitted_project.casefold():
+        raise ValueError(
+            "The configured local Unreal project does not match the farm job: "
+            f"job project is '{submitted_project}', selected file is "
+            f"'{uproject.name}'."
+        )
+    return uproject
+
+
+def validate_real_render_job(
+    job: dict[str, Any],
+    local_uproject: str | Path | None = None,
+) -> Path:
     if job.get("job_type") != "unreal_movie_render_graph":
         raise ValueError(
             "Real rendering requires a published Unreal Movie Render Graph job; "
@@ -154,13 +182,12 @@ def validate_real_render_job(job: dict[str, Any]) -> None:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"Real render job is missing '{field_name}'.")
 
-    uproject = _as_path(job["uproject"])
-    if not uproject.is_file():
-        raise FileNotFoundError(f"Unreal project does not exist on this worker: {uproject}")
+    uproject = resolve_unreal_project(job, local_uproject)
 
     overrides = job.get("graph_variable_overrides")
     if not isinstance(overrides, dict) or not overrides:
         raise ValueError("Real render job has no Movie Render Graph variable overrides.")
+    return uproject
 
 
 def _map_package_path(level_object_path: str) -> str:
@@ -172,11 +199,11 @@ def build_unreal_command(
     job: dict[str, Any],
     unreal_editor_cmd: str | Path | None = None,
     validate_only: bool = False,
+    local_uproject: str | Path | None = None,
 ) -> list[str]:
-    validate_real_render_job(job)
+    uproject = validate_real_render_job(job, local_uproject)
     folder = _as_path(claimed_folder)
-    executable = resolve_unreal_editor_cmd(job, unreal_editor_cmd)
-    uproject = _as_path(job["uproject"])
+    executable = resolve_unreal_editor_cmd(job, unreal_editor_cmd, uproject)
     job_path = folder / JOB_FILENAME
     unreal_log_path = folder / UNREAL_LOG_FILENAME
 
@@ -331,13 +358,19 @@ def execute_unreal_job(
     job: dict[str, Any],
     unreal_editor_cmd: str | Path | None = None,
     timeout_seconds: float = DEFAULT_RENDER_TIMEOUT_SECONDS,
+    local_uproject: str | Path | None = None,
 ) -> UnrealExecutionResult:
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be greater than zero")
 
     folder = _as_path(claimed_folder)
-    command = build_unreal_command(folder, job, unreal_editor_cmd)
-    uproject = _as_path(job["uproject"])
+    command = build_unreal_command(
+        folder,
+        job,
+        unreal_editor_cmd,
+        local_uproject=local_uproject,
+    )
+    uproject = _as_path(command[1])
     job_path = folder / JOB_FILENAME
     command_path = folder / RENDER_COMMAND_FILENAME
     stdout_path = folder / UNREAL_STDOUT_FILENAME
@@ -360,11 +393,13 @@ def execute_unreal_job(
         )
 
     rendered_commit = _query_git_commit(uproject.parent)
+    job["worker_uproject"] = str(uproject)
     job["rendered_git_commit"] = rendered_commit
     job["worker_sync_policy"] = "current_checkout"
     write_json_atomic(job_path, job)
     if rendered_commit:
         LOGGER.info("Render checkout Git commit: %s", rendered_commit)
+    LOGGER.info("Worker-local Unreal project: %s", uproject)
     LOGGER.warning(
         "Git sync is not enabled in this checkpoint; rendering the worker's current checkout."
     )
