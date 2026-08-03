@@ -11,6 +11,9 @@ import subprocess
 from threading import Thread
 from typing import Any
 
+from portable_pipe_tools.render_farm.local_paths import (
+    prepare_worker_output_mapping,
+)
 from portable_pipe_tools.render_farm.queue import (
     JOB_FILENAME,
     path_exists_with_retry,
@@ -364,6 +367,23 @@ def execute_unreal_job(
         raise ValueError("timeout_seconds must be greater than zero")
 
     folder = _as_path(claimed_folder)
+    uproject = validate_real_render_job(job, local_uproject)
+    render_farm_root = folder.parent.parent
+    output_mapping = prepare_worker_output_mapping(job, render_farm_root)
+    LOGGER.info(
+        "Derived worker-local show root from Render Farm folder: %s",
+        output_mapping.local_show_file_server_path,
+    )
+    LOGGER.info(
+        "Remapped render output: %s -> %s",
+        output_mapping.submitted_output_directory,
+        output_mapping.worker_output_directory,
+    )
+    LOGGER.info(
+        "Portable output path: %s",
+        output_mapping.output_relative_directory,
+    )
+
     command = build_unreal_command(
         folder,
         job,

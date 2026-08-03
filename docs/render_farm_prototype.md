@@ -1,8 +1,8 @@
 # Render Farm Filesystem Worker
 
-This checkpoint supports one supervised filesystem-queue step, including a real
-Unreal 5.8 Movie Render Graph launch. Git synchronization, continuous polling,
-and frame/output validation remain separate checkpoints.
+This checkpoint supports supervised and continuous filesystem-queue processing,
+including real Unreal 5.8 Movie Render Graph launches. Git synchronization and
+post-render frame validation remain separate checkpoints.
 
 ## Queue folders
 
@@ -42,13 +42,26 @@ settings file as the farm folder. **Render One Job with Unreal** shows a
 confirmation before it claims anything. **Simulate One Job** remains a separate
 safe path for fake jobs and queue testing.
 
-The **Local Unreal Project (.uproject)** field is also machine-local. When set,
-it overrides the absolute `uproject` path stored by the submitting computer.
+The **Local Unreal Project (.uproject)** field is also machine-local. The GUI
+requires it for real renders, and it overrides the absolute `uproject` path
+stored by the submitting computer.
 The selected filename must match the farm job's `project` name, ignoring case.
 This allows render workers to use different drive letters and checkout roots
-without changing the immutable submission record. If the field is blank, the
-worker falls back to the submitted path for backward compatibility. Completed
-and failed job manifests record the path actually used as `worker_uproject`.
+without changing the immutable submission record.
+
+The worker derives the machine-local show root from the selected **Show Render
+Farm Base Folder**. That folder must be named `renderFarm`; its parent is treated
+as the show root and reported in the confirmation and worker log. The worker
+combines that root with the job's portable `output_relative_directory`. For
+example, an artist may
+submit an `F:` output while another worker renders to the matching `I:` Dropbox
+location. No `QuickWidgetToolsSettings.ini` is required by the worker.
+
+Completed and failed manifests preserve `submitted_output_directory` and add
+`worker_show_file_server_path`, `worker_output_directory`, and `worker_uproject`
+for diagnostics. Before Unreal launches, the worker checks the destination MP4
+and EXR version folder. Existing output stops the render safely and asks for a
+new render version, preventing accidental overwrite.
 
 **Start Worker** begins continuous real-job processing. The polling interval is
 configurable from 1 to 3600 seconds and defaults to 15 seconds. When the queue is
@@ -115,8 +128,10 @@ Then:
 
 1. Select `F:\Defect Dropbox\defect\s3bishop\renderFarm`.
 2. Select `C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe`.
-3. Click **Render One Job with Unreal** and accept the confirmation.
-4. Watch the Rendering stage and live output log.
+3. Select this computer's local `s3bishop.uproject` and verify that the derived
+   show path is the parent of the selected `renderFarm` folder.
+4. Click **Render One Job with Unreal** and accept the confirmation.
+5. Watch the Rendering stage and live output log.
 
 Once a supervised job succeeds, use **Start Worker** for continuous processing
 and **Stop Worker** when the computer should stop accepting new work.
@@ -124,7 +139,7 @@ and **Stop Worker** when the computer should stop accepting new work.
 The command-line equivalent is:
 
 ```bat
-tools\render_worker.bat "F:\Defect Dropbox\defect\s3bishop\renderFarm" --worker-name RENDER-03 --render-with-unreal --unreal-editor-cmd "C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
+tools\render_worker.bat "F:\Defect Dropbox\defect\s3bishop\renderFarm" --worker-name RENDER-03 --render-with-unreal --local-uproject "D:\UnrealProjects\s3bishop\s3bishop.uproject" --unreal-editor-cmd "C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
 ```
 
 The worker claims at most one job. It launches Unreal in `-game`, unattended,

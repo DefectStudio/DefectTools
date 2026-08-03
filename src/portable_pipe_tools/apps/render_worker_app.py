@@ -33,6 +33,9 @@ from portable_pipe_tools.render_farm.listener import (
     parse_poll_interval_seconds,
     waiting_status,
 )
+from portable_pipe_tools.render_farm.local_paths import (
+    derive_show_file_server_path,
+)
 from portable_pipe_tools.render_farm.test_job import create_test_job
 from portable_pipe_tools.render_farm.settings import (
     load_saved_local_uproject,
@@ -54,7 +57,7 @@ from portable_pipe_tools.render_farm.worker import (
 
 
 WORKER_LOGGER = logging.getLogger("render_worker")
-NO_ACTIVE_JOB_TEXT = "No active job"
+NO_ACTIVE_JOB_TEXT = "No Active Job"
 
 
 def format_job_activity(job: dict[str, Any]) -> str:
@@ -108,7 +111,8 @@ class ListenerConfiguration:
     farm_root: Path
     worker_name: str
     unreal_editor_cmd: Path
-    local_uproject: Path | None
+    local_uproject: Path
+    local_show_file_server_path: Path
     poll_interval_seconds: int
 
 
@@ -182,6 +186,7 @@ class RenderWorkerApp:
         WORKER_LOGGER.setLevel(logging.INFO)
 
         self._build_ui()
+        detected_show_root = self._refresh_derived_show_file_server_path()
         self._load_animation_assets()
         self._set_worker_stage(WorkerStage.WAITING)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -202,10 +207,15 @@ class RenderWorkerApp:
             self._log(
                 f"Worker-local Unreal project: {self.local_uproject_var.get()}"
             )
+            if detected_show_root is not None:
+                self._log(
+                    "Derived worker-local show root: "
+                    f"{detected_show_root}"
+                )
         else:
             self._log(
-                "No worker-local Unreal project selected; submitted job paths "
-                "will be used."
+                "Select this computer's local Unreal project before rendering "
+                "real farm jobs."
             )
         self._log(
             f"Project animation sprites: {DEFAULT_ANIMATION_SPRITE_FOLDER}"
@@ -234,7 +244,7 @@ class RenderWorkerApp:
         setup_frame.columnconfigure(1, weight=1)
 
         ttk.Label(setup_frame, text="Show Render Farm Base Folder").grid(
-            row=0,
+            row=1,
             column=0,
             sticky="w",
             padx=(0, 8),
@@ -244,16 +254,32 @@ class RenderWorkerApp:
             setup_frame,
             textvariable=self.farm_root_var,
         )
-        self.farm_root_entry.grid(row=0, column=1, sticky="ew", pady=4)
+        self.farm_root_entry.grid(row=1, column=1, sticky="ew", pady=4)
+        self.farm_root_entry.bind(
+            "<FocusOut>",
+            lambda _event: self._refresh_derived_show_file_server_path(),
+        )
+        self.farm_root_entry.bind(
+            "<Return>",
+            lambda _event: self._refresh_derived_show_file_server_path(
+                log_result=True
+            ),
+        )
         self.browse_button = ttk.Button(
             setup_frame,
             text="Browse...",
             command=self._browse_farm_root,
         )
-        self.browse_button.grid(row=0, column=2, padx=(8, 0), pady=4)
+        self.browse_button.grid(
+            row=1,
+            column=2,
+            sticky="w",
+            padx=(8, 0),
+            pady=4,
+        )
 
         ttk.Label(setup_frame, text="Worker Name").grid(
-            row=1,
+            row=0,
             column=0,
             sticky="w",
             padx=(0, 8),
@@ -263,10 +289,10 @@ class RenderWorkerApp:
             setup_frame,
             textvariable=self.worker_name_var,
         )
-        self.worker_name_entry.grid(row=1, column=1, sticky="ew", pady=4)
+        self.worker_name_entry.grid(row=0, column=1, sticky="ew", pady=4)
 
         ttk.Label(setup_frame, text="Simulation Result").grid(
-            row=2,
+            row=5,
             column=0,
             sticky="w",
             padx=(0, 8),
@@ -279,11 +305,11 @@ class RenderWorkerApp:
             state="readonly",
             width=16,
         )
-        self.simulate_result_combo.grid(row=2, column=1, sticky="w", pady=4)
+        self.simulate_result_combo.grid(row=5, column=1, sticky="w", pady=4)
         ttk.Label(
             setup_frame,
             text="Used only by the Simulate One Job button.",
-        ).grid(row=2, column=2, sticky="w", padx=(8, 0), pady=4)
+        ).grid(row=5, column=2, sticky="w", padx=(8, 0), pady=4)
 
         ttk.Label(setup_frame, text="UnrealEditor-Cmd.exe").grid(
             row=3,
@@ -311,7 +337,7 @@ class RenderWorkerApp:
         )
 
         ttk.Label(setup_frame, text="Local Unreal Project (.uproject)").grid(
-            row=4,
+            row=2,
             column=0,
             sticky="w",
             padx=(0, 8),
@@ -321,14 +347,14 @@ class RenderWorkerApp:
             setup_frame,
             textvariable=self.local_uproject_var,
         )
-        self.local_uproject_entry.grid(row=4, column=1, sticky="ew", pady=4)
+        self.local_uproject_entry.grid(row=2, column=1, sticky="ew", pady=4)
         self.local_uproject_browse_button = ttk.Button(
             setup_frame,
             text="Browse...",
             command=self._browse_local_uproject,
         )
         self.local_uproject_browse_button.grid(
-            row=4,
+            row=2,
             column=2,
             sticky="w",
             padx=(8, 0),
@@ -336,7 +362,7 @@ class RenderWorkerApp:
         )
 
         ttk.Label(setup_frame, text="Polling Interval (seconds)").grid(
-            row=5,
+            row=4,
             column=0,
             sticky="w",
             padx=(0, 8),
@@ -349,11 +375,11 @@ class RenderWorkerApp:
             textvariable=self.poll_interval_var,
             width=10,
         )
-        self.poll_interval_spinbox.grid(row=5, column=1, sticky="w", pady=4)
+        self.poll_interval_spinbox.grid(row=4, column=1, sticky="w", pady=4)
         ttk.Label(
             setup_frame,
             text="Used by Start Worker; default is 15 seconds.",
-        ).grid(row=5, column=2, sticky="w", padx=(8, 0), pady=4)
+        ).grid(row=4, column=2, sticky="w", padx=(8, 0), pady=4)
 
         button_row = ttk.Frame(outer)
         button_row.pack(fill="x", pady=(12, 8))
@@ -417,18 +443,18 @@ class RenderWorkerApp:
         activity_frame = ttk.LabelFrame(outer, text="Worker Activity", padding=8)
         activity_frame.pack(fill="x", pady=(2, 10))
 
+        ttk.Label(
+            activity_frame,
+            textvariable=self.current_stage_var,
+            anchor="center",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(fill="x", pady=(0, 4))
         self.animation_image_label = ttk.Label(
             activity_frame,
             anchor="center",
             text="Loading animation...",
         )
         self.animation_image_label.pack(fill="x")
-        ttk.Label(
-            activity_frame,
-            textvariable=self.current_stage_var,
-            anchor="center",
-            font=("Segoe UI", 11, "bold"),
-        ).pack(fill="x", pady=(4, 0))
         ttk.Label(
             activity_frame,
             textvariable=self.current_job_var,
@@ -492,6 +518,7 @@ class RenderWorkerApp:
             self.farm_root_var.set(selected)
             self._remember_farm_root(Path(selected))
             self._log(f"Selected show RenderFarm base folder: {selected}")
+            self._refresh_derived_show_file_server_path(log_result=True)
 
     def _browse_unreal_editor_cmd(self) -> None:
         current_value = self.unreal_editor_cmd_var.get().strip()
@@ -554,10 +581,12 @@ class RenderWorkerApp:
             )
         return executable
 
-    def _get_local_uproject(self) -> Path | None:
+    def _get_local_uproject(self) -> Path:
         raw_path = self.local_uproject_var.get().strip()
         if not raw_path:
-            return None
+            raise ValueError(
+                "Please choose this computer's Local Unreal Project (.uproject)."
+            )
         local_uproject = Path(raw_path).expanduser()
         if local_uproject.suffix.casefold() != ".uproject":
             raise ValueError(
@@ -568,6 +597,27 @@ class RenderWorkerApp:
                 f"The Local Unreal Project was not found: {local_uproject}"
             )
         return local_uproject
+
+    def _refresh_derived_show_file_server_path(
+        self,
+        log_result: bool = False,
+    ) -> Path | None:
+        raw_farm_root = self.farm_root_var.get().strip()
+        if not raw_farm_root:
+            return None
+        try:
+            show_root = derive_show_file_server_path(Path(raw_farm_root))
+        except Exception as error:
+            if log_result:
+                self._log(f"RENDER FARM PATH ERROR: {error}")
+            return None
+
+        if log_result:
+            self._log(f"Derived worker-local show root: {show_root}")
+        return show_root
+
+    def _get_derived_show_file_server_path(self, farm_root: Path) -> Path:
+        return derive_show_file_server_path(farm_root)
 
     def _get_poll_interval_seconds(self) -> int:
         interval = parse_poll_interval_seconds(self.poll_interval_var.get())
@@ -583,22 +633,24 @@ class RenderWorkerApp:
             return
 
         try:
+            farm_root = self._get_farm_root()
+            local_uproject = self._get_local_uproject()
+            local_show_file_server_path = (
+                self._get_derived_show_file_server_path(farm_root)
+            )
             configuration = ListenerConfiguration(
-                farm_root=self._get_farm_root(),
+                farm_root=farm_root,
                 worker_name=self._get_worker_name(),
                 unreal_editor_cmd=self._get_unreal_editor_cmd(),
-                local_uproject=self._get_local_uproject(),
+                local_uproject=local_uproject,
+                local_show_file_server_path=local_show_file_server_path,
                 poll_interval_seconds=self._get_poll_interval_seconds(),
             )
         except Exception as error:
             self._show_input_error(error)
             return
 
-        local_project_message = (
-            str(configuration.local_uproject)
-            if configuration.local_uproject is not None
-            else "Use the project path stored in each submitted job"
-        )
+        local_project_message = str(configuration.local_uproject)
         confirmed = messagebox.askyesno(
             "Start Automatic Render Worker",
             "The worker will continuously claim and render real Unreal jobs "
@@ -607,6 +659,8 @@ class RenderWorkerApp:
             "finish an already-claimed render before stopping.\n\nAutomatic Git "
             "sync is not enabled; jobs render from the current checkout.\n\n"
             f"Local Unreal project:\n{local_project_message}\n\n"
+            "Show path derived from Render Farm folder:\n"
+            f"{configuration.local_show_file_server_path}\n\n"
             "Start the worker?",
             parent=self.root,
         )
@@ -632,6 +686,10 @@ class RenderWorkerApp:
             f"{configuration.poll_interval_seconds} seconds."
         )
         self._log(f"Local Unreal project: {local_project_message}")
+        self._log(
+            "Worker-local show root derived from Render Farm folder: "
+            f"{configuration.local_show_file_server_path}"
+        )
         self._schedule_listener_check_now()
 
     def _stop_worker(self) -> None:
@@ -828,21 +886,22 @@ class RenderWorkerApp:
             worker_name = self._get_worker_name()
             unreal_editor_cmd = self._get_unreal_editor_cmd()
             local_uproject = self._get_local_uproject()
+            local_show_file_server_path = (
+                self._get_derived_show_file_server_path(farm_root)
+            )
         except Exception as error:
             self._show_input_error(error)
             return
 
-        local_project_message = (
-            str(local_uproject)
-            if local_uproject is not None
-            else "Use the project path stored in the submitted job"
-        )
+        local_project_message = str(local_uproject)
         confirmed = messagebox.askyesno(
             "Render One Farm Job with Unreal",
             "This will claim the next queued job and launch a real Unreal render.\n\n"
             "This checkpoint renders the worker's current project checkout; "
             "automatic Git sync is not enabled yet.\n\n"
             f"Local Unreal project:\n{local_project_message}\n\n"
+            "Show path derived from Render Farm folder:\n"
+            f"{local_show_file_server_path}\n\n"
             "Continue?",
             parent=self.root,
         )

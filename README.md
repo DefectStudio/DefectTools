@@ -30,7 +30,14 @@ stops before claiming another.
 Each render computer can select its own **Local Unreal Project (.uproject)**.
 That machine-local path overrides the absolute project path recorded by the
 submitting computer, so workers may use different drive letters and checkout
-locations. Leaving it blank preserves the submitted path as a fallback.
+locations. The worker derives its local show root from the selected **Show
+Render Farm Base Folder**: the parent of the required `renderFarm` folder is the
+show root. Real renders use that computer-local root, so Dropbox may use a
+different drive letter on every worker without any worker-side INI file.
+
+Before Unreal starts, the worker checks the local MP4 and EXR version targets.
+If output already exists, the job is failed safely with instructions to submit a
+new render version instead of silently overwriting an earlier render.
 
 The interface also displays transparent pixel-art animations for the worker's
 Waiting, Moving Files, Rendering, and Finishing stages. The four sheets are
@@ -49,7 +56,7 @@ tools\render_worker.bat D:\RenderFarmPrototype --worker-name RENDER-03 --simulat
 One supervised real job:
 
 ```bat
-tools\render_worker.bat "F:\Defect Dropbox\defect\s3bishop\renderFarm" --worker-name RENDER-03 --render-with-unreal --unreal-editor-cmd "C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
+tools\render_worker.bat "F:\Defect Dropbox\defect\s3bishop\renderFarm" --worker-name RENDER-03 --render-with-unreal --local-uproject "D:\UnrealProjects\s3bishop\s3bishop.uproject" --unreal-editor-cmd "C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
 ```
 
 See [docs/render_farm_prototype.md](docs/render_farm_prototype.md) for the queue
