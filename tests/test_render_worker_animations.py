@@ -11,6 +11,7 @@ from portable_pipe_tools.render_farm.animations import (
     get_stage_sprite_paths,
     inspect_sprite_sheet,
 )
+from portable_pipe_tools.render_farm.worker import WorkerStage
 
 
 class RenderWorkerAnimationTests(unittest.TestCase):
@@ -26,6 +27,10 @@ class RenderWorkerAnimationTests(unittest.TestCase):
         for sprite_path in sprite_paths.values():
             self.assertTrue(sprite_path.is_file(), sprite_path)
             self.assertGreater(inspect_sprite_sheet(sprite_path).frame_count, 0)
+
+        stopped_sprite = sprite_paths[WorkerStage.STOPPED]
+        self.assertEqual("Base_Death.png", stopped_sprite.name)
+        self.assertEqual(5, inspect_sprite_sheet(stopped_sprite).frame_count)
 
     def test_valid_transparent_sprite_sheet_reports_frame_count(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

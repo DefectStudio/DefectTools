@@ -16,6 +16,7 @@ DEFAULT_ANIMATION_SPRITE_FOLDER = (
 )
 
 STAGE_SPRITE_FILENAMES: dict[WorkerStage, str] = {
+    WorkerStage.STOPPED: "Base_Death.png",
     WorkerStage.WAITING: "Base_Idle.png",
     WorkerStage.MOVING: "Base_Run.png",
     WorkerStage.RENDERING: "Base_WateringCan.png",

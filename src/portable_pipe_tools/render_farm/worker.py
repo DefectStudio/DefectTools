@@ -34,6 +34,7 @@ _StageResult = TypeVar("_StageResult")
 
 
 class WorkerStage(str, Enum):
+    STOPPED = "stopped"
     WAITING = "waiting"
     MOVING = "moving"
     RENDERING = "rendering"
@@ -41,6 +42,7 @@ class WorkerStage(str, Enum):
 
 
 WORKER_STAGE_LABELS: dict[WorkerStage, str] = {
+    WorkerStage.STOPPED: "Worker stopped",
     WorkerStage.WAITING: "Waiting to find a job",
     WorkerStage.MOVING: "Moving files and claiming the job",
     WorkerStage.RENDERING: "Rendering",

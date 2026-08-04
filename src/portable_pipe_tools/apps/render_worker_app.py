@@ -155,7 +155,7 @@ class RenderWorkerApp:
         )
         self.status_var = tk.StringVar(value="Ready")
         self.current_stage_var = tk.StringVar(
-            value=WORKER_STAGE_LABELS[WorkerStage.WAITING]
+            value=WORKER_STAGE_LABELS[WorkerStage.STOPPED]
         )
         self.current_job_var = tk.StringVar(value=NO_ACTIVE_JOB_TEXT)
 
@@ -165,7 +165,7 @@ class RenderWorkerApp:
         self._listener_configuration: ListenerConfiguration | None = None
         self._listener_after_id: str | None = None
         self._listener_seconds_remaining = 0
-        self._active_stage = WorkerStage.WAITING
+        self._active_stage = WorkerStage.STOPPED
         self._log_queue: Queue[str] = Queue()
         self._stage_queue: Queue[WorkerStage] = Queue()
         self._job_queue: Queue[dict[str, Any]] = Queue()
@@ -188,7 +188,7 @@ class RenderWorkerApp:
         self._build_ui()
         detected_show_root = self._refresh_derived_show_file_server_path()
         self._load_animation_assets()
-        self._set_worker_stage(WorkerStage.WAITING)
+        self._set_worker_stage(WorkerStage.STOPPED)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._schedule_queue_poll()
 
@@ -816,7 +816,7 @@ class RenderWorkerApp:
         self._listener_state.active = False
         self._listener_state.stop_requested = False
         self._listener_state.job_running = False
-        self._set_worker_stage(WorkerStage.WAITING)
+        self._set_worker_stage(WorkerStage.STOPPED)
         self._clear_current_job()
         self.status_var.set("Worker stopped")
         self._refresh_control_states()
@@ -1021,7 +1021,7 @@ class RenderWorkerApp:
     ) -> None:
         self._set_busy(False, "Ready")
         if completion.error is not None:
-            self._set_worker_stage(WorkerStage.WAITING)
+            self._set_idle_or_stopped_stage()
             self._clear_current_job()
             self._log(
                 f"ERROR during {completion.label}: "
@@ -1039,7 +1039,7 @@ class RenderWorkerApp:
 
         completion.on_success(completion.result)
         self._log(f"{completion.label} finished.")
-        self._set_worker_stage(WorkerStage.WAITING)
+        self._set_idle_or_stopped_stage()
 
     def _set_busy(self, busy: bool, status: str) -> None:
         self._busy = busy
@@ -1185,6 +1185,15 @@ class RenderWorkerApp:
     def _clear_current_job(self) -> None:
         self.current_job_var.set(NO_ACTIVE_JOB_TEXT)
 
+    def _set_idle_or_stopped_stage(self) -> None:
+        stage = (
+            WorkerStage.WAITING
+            if self._listener_state.active
+            else WorkerStage.STOPPED
+        )
+        if self._active_stage is not stage:
+            self._set_worker_stage(stage)
+
     def _set_worker_stage(self, stage: WorkerStage) -> None:
         self._active_stage = stage
         self.current_stage_var.set(WORKER_STAGE_LABELS[stage])
@@ -1203,11 +1212,18 @@ class RenderWorkerApp:
             )
             return
 
-        frame = frames[self._animation_frame_index % len(frames)]
+        frame_index = min(self._animation_frame_index, len(frames) - 1)
+        frame = frames[frame_index]
         self.animation_image_label.configure(image=frame, text="")
-        self._animation_frame_index = (
-            self._animation_frame_index + 1
-        ) % len(frames)
+
+        if (
+            self._active_stage is WorkerStage.STOPPED
+            and frame_index == len(frames) - 1
+        ):
+            self._animation_after_id = None
+            return
+
+        self._animation_frame_index = (frame_index + 1) % len(frames)
         self._animation_after_id = self.root.after(
             SPRITE_FRAME_INTERVAL_MS,
             self._show_next_animation_frame,
