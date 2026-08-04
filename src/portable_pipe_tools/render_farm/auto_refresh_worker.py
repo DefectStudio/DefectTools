@@ -67,6 +67,12 @@ class AutoRefreshWorker:
             if self._thread is thread:
                 self._thread = None
 
+    def set_interval_seconds(self, interval_seconds: float) -> None:
+        if interval_seconds <= 0:
+            raise ValueError("Auto-refresh interval must be greater than zero")
+        with self._state_lock:
+            self.interval_seconds = interval_seconds
+
     def _run(self) -> None:
         while not self._stop_event.wait(self.interval_seconds):
             repository_path = self.repository_path_provider()

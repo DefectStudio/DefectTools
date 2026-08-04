@@ -64,6 +64,18 @@ class AutoRefreshWorkerTests(unittest.TestCase):
                 interval_seconds=0,
             )
 
+    def test_interval_can_be_changed(self) -> None:
+        worker = AutoRefreshWorker(
+            repository_path_provider=lambda: None,
+            result_queue=Queue(),
+        )
+
+        worker.set_interval_seconds(300)
+
+        self.assertEqual(300, worker.interval_seconds)
+        with self.assertRaises(ValueError):
+            worker.set_interval_seconds(0)
+
 
 if __name__ == "__main__":
     unittest.main()

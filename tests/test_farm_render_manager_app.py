@@ -10,7 +10,9 @@ from portable_pipe_tools.apps.farm_render_manager_app import (
     JOB_COLUMNS,
 )
 from portable_pipe_tools.render_farm.manager_settings import (
+    load_saved_auto_refresh_interval_minutes,
     save_auto_refresh_enabled,
+    save_auto_refresh_interval_minutes,
 )
 from portable_pipe_tools.render_farm.queue import (
     create_queue_folders,
@@ -50,6 +52,32 @@ class FarmRenderManagerAppTests(unittest.TestCase):
             "rendering",
             FarmRenderManagerApp._status_tag("  RENDERING  "),
         )
+
+    def test_refresh_interval_is_restored_and_saved_from_combobox(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "manager.json"
+            save_auto_refresh_enabled(False, settings_path)
+            save_auto_refresh_interval_minutes(5, settings_path)
+            app = FarmRenderManagerApp(
+                settings_path=settings_path,
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                self.assertEqual("5 minutes", app.auto_refresh_interval_var.get())
+                self.assertEqual(300, app.auto_refresh_worker.interval_seconds)
+
+                app.auto_refresh_interval_var.set("10 minutes")
+                app._on_auto_refresh_interval_selected()
+
+                self.assertEqual(600, app.auto_refresh_worker.interval_seconds)
+                self.assertEqual(
+                    10,
+                    load_saved_auto_refresh_interval_minutes(settings_path),
+                )
+            finally:
+                app._on_close()
 
     def test_refresh_restores_selected_job_after_queue_folder_move(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

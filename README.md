@@ -35,8 +35,9 @@ and recorded failure details used as fallbacks when the primary log is absent.
 The right panel groups the first selected job's metadata into General,
 Submission, Render, Worker & Timing, Output, Result, and Advanced sections.
 Auto-refresh is enabled by default and scans the connected repository on a
-background worker every 60 seconds. The toolbar checkbox can pause or resume it,
-and its state is remembered in the machine-local manager configuration.
+background worker at a selectable 1, 2, 5, or 10 minute interval. The toolbar
+checkbox can pause or resume it, and both its state and selected interval are
+remembered in the machine-local manager configuration.
 Manual refresh shows in-button progress and completion feedback, while the
 status bar records the most recent successful update time.
 The window and Windows taskbar use the bundled camera emoji icon.

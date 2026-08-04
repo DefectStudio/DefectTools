@@ -13,6 +13,11 @@ from portable_pipe_tools.render_farm.auto_refresh_worker import (
     AutoRefreshResult,
     AutoRefreshWorker,
 )
+from portable_pipe_tools.render_farm.auto_refresh_interval import (
+    AUTO_REFRESH_INTERVAL_LABELS,
+    format_auto_refresh_interval,
+    parse_auto_refresh_interval,
+)
 from portable_pipe_tools.render_farm.delete_render_jobs import delete_render_jobs
 from portable_pipe_tools.render_farm.get_all_render_jobs import (
     get_all_render_jobs,
@@ -24,8 +29,10 @@ from portable_pipe_tools.render_farm.get_render_job_details import (
 from portable_pipe_tools.render_farm.manager_settings import (
     get_default_manager_settings_path,
     load_saved_auto_refresh_enabled,
+    load_saved_auto_refresh_interval_minutes,
     load_saved_dropbox_folder,
     save_auto_refresh_enabled,
+    save_auto_refresh_interval_minutes,
     save_dropbox_folder,
 )
 from portable_pipe_tools.render_farm.render_job import RenderJob
@@ -93,6 +100,12 @@ class FarmRenderManagerApp:
         self.auto_refresh_var = tk.BooleanVar(
             value=load_saved_auto_refresh_enabled(self.settings_path)
         )
+        refresh_interval_minutes = load_saved_auto_refresh_interval_minutes(
+            self.settings_path
+        )
+        self.auto_refresh_interval_var = tk.StringVar(
+            value=format_auto_refresh_interval(refresh_interval_minutes)
+        )
         self.summary_var = tk.StringVar(
             value="Jobs: 0    Queued: 0    Rendering: 0    Completed: 0    Failed: 0"
         )
@@ -118,6 +131,7 @@ class FarmRenderManagerApp:
         self.auto_refresh_worker = AutoRefreshWorker(
             repository_path_provider=lambda: self.repository_path,
             result_queue=self._auto_refresh_results,
+            interval_seconds=refresh_interval_minutes * 60,
         )
 
         self._configure_styles()
@@ -414,7 +428,7 @@ class FarmRenderManagerApp:
     def _build_toolbar(self, parent: ttk.Frame) -> None:
         toolbar = ttk.Frame(parent, style="Toolbar.TFrame", padding=(8, 6))
         toolbar.grid(row=0, column=0, sticky="ew")
-        toolbar.columnconfigure(6, weight=1)
+        toolbar.columnconfigure(7, weight=1)
 
         ttk.Label(
             toolbar,
@@ -465,12 +479,31 @@ class FarmRenderManagerApp:
             style="Deadline.TCheckbutton",
         ).grid(row=0, column=5, sticky="w", padx=(8, 0))
 
+        self.auto_refresh_interval_combo = ttk.Combobox(
+            toolbar,
+            textvariable=self.auto_refresh_interval_var,
+            values=AUTO_REFRESH_INTERVAL_LABELS,
+            state="readonly",
+            width=10,
+            style="Deadline.TCombobox",
+        )
+        self.auto_refresh_interval_combo.grid(
+            row=0,
+            column=6,
+            sticky="w",
+            padx=(7, 0),
+        )
+        self.auto_refresh_interval_combo.bind(
+            "<<ComboboxSelected>>",
+            self._on_auto_refresh_interval_selected,
+        )
+
         self.repository_status_label = ttk.Label(
             toolbar,
             textvariable=self.repository_status_var,
             style="RepositoryDisconnected.TLabel",
         )
-        self.repository_status_label.grid(row=0, column=7, sticky="e")
+        self.repository_status_label.grid(row=0, column=8, sticky="e")
 
     def _create_panel(
         self,
@@ -875,10 +908,47 @@ class FarmRenderManagerApp:
 
         if enabled:
             self.auto_refresh_worker.start()
-            self.status_var.set("Auto-refresh enabled (every 60 seconds)")
+            self.status_var.set(
+                "Auto-refresh enabled (every "
+                f"{self.auto_refresh_interval_var.get()})"
+            )
         else:
             self.auto_refresh_worker.stop()
             self.status_var.set("Auto-refresh disabled")
+
+    def _on_auto_refresh_interval_selected(
+        self,
+        _event: tk.Event[tk.Misc] | None = None,
+    ) -> None:
+        previous_minutes = int(self.auto_refresh_worker.interval_seconds / 60)
+        try:
+            minutes = parse_auto_refresh_interval(
+                self.auto_refresh_interval_var.get()
+            )
+            save_auto_refresh_interval_minutes(minutes, self.settings_path)
+        except Exception as error:
+            self.auto_refresh_interval_var.set(
+                format_auto_refresh_interval(previous_minutes)
+            )
+            messagebox.showerror(
+                "Farm Render Manager",
+                f"Could not save the auto-refresh interval:\n{error}",
+                parent=self.root,
+            )
+            self.status_var.set(
+                f"Could not save auto-refresh interval: {error}"
+            )
+            return
+
+        was_running = self.auto_refresh_worker.running
+        if was_running:
+            self.auto_refresh_worker.stop()
+        self.auto_refresh_worker.set_interval_seconds(minutes * 60)
+        if was_running and self.auto_refresh_var.get():
+            self.auto_refresh_worker.start()
+        self.status_var.set(
+            f"Auto-refresh interval set to {format_auto_refresh_interval(minutes)}"
+        )
 
     def _schedule_auto_refresh_poll(self) -> None:
         self._auto_refresh_after_id = self.root.after(

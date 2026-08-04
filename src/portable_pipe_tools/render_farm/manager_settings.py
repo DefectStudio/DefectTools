@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from portable_pipe_tools.render_farm.auto_refresh_interval import (
+    AUTO_REFRESH_INTERVAL_MINUTES,
+    DEFAULT_AUTO_REFRESH_INTERVAL_MINUTES,
+)
 from portable_pipe_tools.render_farm.queue import (
     create_directory_with_retry,
     read_json_object,
@@ -9,7 +13,7 @@ from portable_pipe_tools.render_farm.queue import (
 )
 
 
-SETTINGS_SCHEMA_VERSION = 2
+SETTINGS_SCHEMA_VERSION = 3
 SETTINGS_FILENAME = "farm_render_manager_local_save.json"
 
 
@@ -46,6 +50,25 @@ def load_saved_auto_refresh_enabled(settings_path: Path | None = None) -> bool:
     return True
 
 
+def load_saved_auto_refresh_interval_minutes(
+    settings_path: Path | None = None,
+) -> int:
+    settings = load_manager_settings(settings_path)
+    value = settings.get(
+        "auto_refresh_interval_minutes",
+        DEFAULT_AUTO_REFRESH_INTERVAL_MINUTES,
+    )
+    if isinstance(value, bool):
+        return DEFAULT_AUTO_REFRESH_INTERVAL_MINUTES
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_AUTO_REFRESH_INTERVAL_MINUTES
+    if minutes not in AUTO_REFRESH_INTERVAL_MINUTES:
+        return DEFAULT_AUTO_REFRESH_INTERVAL_MINUTES
+    return minutes
+
+
 def save_dropbox_folder(
     dropbox_folder: str | Path,
     settings_path: Path | None = None,
@@ -68,6 +91,23 @@ def save_auto_refresh_enabled(
     settings = load_manager_settings(path)
     settings["schema_version"] = SETTINGS_SCHEMA_VERSION
     settings["auto_refresh_enabled"] = bool(enabled)
+
+    create_directory_with_retry(path.parent, parents=True, exist_ok=True)
+    write_json_atomic(path, settings)
+    return path
+
+
+def save_auto_refresh_interval_minutes(
+    minutes: int,
+    settings_path: Path | None = None,
+) -> Path:
+    if isinstance(minutes, bool) or minutes not in AUTO_REFRESH_INTERVAL_MINUTES:
+        raise ValueError(f"Unsupported auto-refresh interval: {minutes}")
+
+    path = settings_path or get_default_manager_settings_path()
+    settings = load_manager_settings(path)
+    settings["schema_version"] = SETTINGS_SCHEMA_VERSION
+    settings["auto_refresh_interval_minutes"] = minutes
 
     create_directory_with_retry(path.parent, parents=True, exist_ok=True)
     write_json_atomic(path, settings)
