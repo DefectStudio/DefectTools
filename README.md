@@ -8,6 +8,43 @@ Initial goals:
 - Support file-server pipeline workflows
 - Eventually integrate with ClickUp, Natron, DaVinci, RV, SyncSketch, and UnrealTools
 
+## Farm Render Manager
+
+Launch the render-farm monitoring interface:
+
+```bat
+tools\farm_render_manager.bat
+```
+
+The UI provides a project filter, a multi-column render-job list, expandable
+Deadline-style details for the selected job, and its current render log in a
+compact dark monitor layout.
+Click any Jobs column heading to sort by that field; click it again to reverse
+the order. The active heading shows the current direction.
+
+On first launch, the manager asks for this computer's Dropbox folder and saves
+the choice to `LocalSaveFiles\farm_render_manager_local_save.json`. This file is
+machine-local and ignored by Git. Use **File > Change Dropbox Folder...** to
+change the connection later.
+
+When connected, the manager scans each project's `renderFarm` folder and all
+five queue-state folders. Each job folder becomes a `RenderJob` object, and the
+resulting list populates the Jobs panel. Refresh performs the same scan again.
+Selecting a job loads its Unreal log into the bottom panel, with captured stdout
+and recorded failure details used as fallbacks when the primary log is absent.
+The right panel groups the first selected job's metadata into General,
+Submission, Render, Worker & Timing, Output, Result, and Advanced sections.
+Auto-refresh is enabled by default and scans the connected repository on a
+background worker every 60 seconds. The toolbar checkbox can pause or resume it,
+and its state is remembered in the machine-local manager configuration.
+Manual refresh shows in-button progress and completion feedback, while the
+status bar records the most recent successful update time.
+The window and Windows taskbar use the bundled camera emoji icon.
+Jobs can be permanently removed through the Jobs panel context menu or Delete
+key. Ctrl-click, Shift-click, and Ctrl+A support bulk selection; Edit also
+contains Select All and Clear Selection. Every delete route uses the same
+default-No confirmation prompt.
+
 ## Render farm worker
 
 The filesystem worker can publish a fake test job, atomically claim one queued
