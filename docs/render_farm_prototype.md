@@ -2,7 +2,7 @@
 
 This checkpoint supports supervised and continuous filesystem-queue processing,
 including real Unreal 5.8 Movie Render Graph launches and post-render output
-validation. Git synchronization and worker heartbeats remain separate checkpoints.
+validation. Worker heartbeats remain a separate checkpoint.
 
 ## Queue folders
 
@@ -26,6 +26,15 @@ Launch the Tkinter interface from the repository root:
 ```bat
 tools\render_worker_gui.bat
 ```
+
+The BAT launcher supplies its parent directory as the PortablePipeTools Git
+root and supervises automatic restarts. Before worker controls are enabled, the
+GUI requires that checkout to be clean and runs `git pull --ff-only` on its
+current upstream branch. If the pull changes the commit, the GUI exits with the
+dedicated restart code `75`; the BAT immediately relaunches the updated worker.
+If the repository is dirty, detached, missing an upstream, offline, or cannot
+fast-forward, the GUI reports the reason and leaves all job-processing controls
+disabled. This check occurs before the worker can listen to or claim a job.
 
 Use **Show Render Farm Base Folder** to select the show-specific `RenderFarm`
 folder that directly contains the five queue folders. The interface can:

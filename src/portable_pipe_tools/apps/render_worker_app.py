@@ -47,6 +47,12 @@ from portable_pipe_tools.render_farm.settings import (
     save_render_farm_root,
     save_unreal_editor_cmd,
 )
+from portable_pipe_tools.render_farm.self_update import (
+    RENDER_WORKER_RESTART_EXIT_CODE,
+    RenderWorkerUpdateResult,
+    resolve_render_worker_repository_root,
+    update_render_worker_checkout,
+)
 from portable_pipe_tools.render_farm.worker import (
     DEFAULT_MINIMUM_STAGE_SECONDS,
     WORKER_STAGE_LABELS,
@@ -153,7 +159,7 @@ class RenderWorkerApp:
         self.local_uproject_var = tk.StringVar(
             value=load_saved_local_uproject()
         )
-        self.status_var = tk.StringVar(value="Ready")
+        self.status_var = tk.StringVar(value="Starting")
         self.current_stage_var = tk.StringVar(
             value=WORKER_STAGE_LABELS[WorkerStage.STOPPED]
         )
@@ -161,6 +167,9 @@ class RenderWorkerApp:
 
         self._busy = False
         self._closing = False
+        self._startup_update_complete = False
+        self._restart_pending = False
+        self._exit_code = 0
         self._listener_state = ContinuousWorkerState()
         self._listener_configuration: ListenerConfiguration | None = None
         self._listener_after_id: str | None = None
@@ -171,6 +180,8 @@ class RenderWorkerApp:
         self._job_queue: Queue[dict[str, Any]] = Queue()
         self._completion_queue: Queue[BackgroundCompletion] = Queue()
         self._poll_after_id: str | None = None
+        self._startup_update_after_id: str | None = None
+        self._restart_after_id: str | None = None
         self._animation_after_id: str | None = None
         self._animation_frame_index = 0
         self._animation_frames: dict[WorkerStage, list[tk.PhotoImage]] = {}
@@ -191,8 +202,13 @@ class RenderWorkerApp:
         self._set_worker_stage(WorkerStage.STOPPED)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._schedule_queue_poll()
+        self._refresh_control_states()
+        self._startup_update_after_id = self.root.after(
+            0,
+            self._begin_startup_update_check,
+        )
 
-        self._log("Ready.")
+        self._log("Render Worker starting.")
         self._log(
             "Choose the show RenderFarm base folder. This is the folder that owns "
             "00_Submitting through 04_RenderFailed."
@@ -505,8 +521,78 @@ class RenderWorkerApp:
         ttk.Separator(outer, orient="horizontal").pack(fill="x", pady=(8, 4))
         ttk.Label(outer, textvariable=self.status_var).pack(anchor="w")
 
-    def run(self) -> None:
+    def run(self) -> int:
         self.root.mainloop()
+        return self._exit_code
+
+    def _begin_startup_update_check(self) -> None:
+        self._startup_update_after_id = None
+        if self._closing:
+            return
+
+        repository_root = resolve_render_worker_repository_root()
+        self.status_var.set("Checking for Render Worker updates")
+        self._log(
+            "Checking the Render Worker Git checkout before enabling worker "
+            f"controls: {repository_root}"
+        )
+        self._run_background(
+            label="Render Worker update check",
+            work=lambda: update_render_worker_checkout(repository_root),
+            on_success=self._startup_update_succeeded,
+            on_error=self._startup_update_failed,
+        )
+
+    def _startup_update_succeeded(
+        self,
+        result: RenderWorkerUpdateResult,
+    ) -> None:
+        git_pull = result.git_pull
+        if result.update_installed:
+            self._restart_pending = True
+            self.status_var.set("Render Worker updated — restarting")
+            self._log(
+                "Render Worker update installed: "
+                f"branch={git_pull.branch}, "
+                f"commit={git_pull.commit_before[:12]} -> "
+                f"{git_pull.commit_after[:12]}"
+            )
+            self._log("Restarting so the newly pulled worker code is loaded.")
+            self._refresh_control_states()
+            self._restart_after_id = self.root.after(
+                750,
+                self._restart_after_update,
+            )
+            return
+
+        self._startup_update_complete = True
+        self.status_var.set("Ready — Render Worker is up to date")
+        self._log(
+            "Render Worker is up to date: "
+            f"branch={git_pull.branch}, commit={git_pull.commit_after[:12]}"
+        )
+        self._refresh_control_states()
+
+    def _startup_update_failed(self, error: Exception) -> None:
+        self.status_var.set("Update check failed — worker controls are disabled")
+        self._log(
+            "The Render Worker will not listen for or render jobs until its own "
+            "Git checkout can be verified and updated."
+        )
+        self._refresh_control_states()
+        messagebox.showerror(
+            "Render Worker Update Failed",
+            "The Render Worker could not safely update itself, so job processing "
+            "remains disabled.\n\n"
+            f"{error}\n\n"
+            "Check the Git connection and make sure the PortablePipeTools checkout "
+            "has no local or untracked changes, then reopen the Render Worker.",
+            parent=self.root,
+        )
+
+    def _restart_after_update(self) -> None:
+        self._restart_after_id = None
+        self._shutdown_application(RENDER_WORKER_RESTART_EXIT_CODE)
 
     def _browse_farm_root(self) -> None:
         current_value = self.farm_root_var.get().strip()
@@ -625,6 +711,12 @@ class RenderWorkerApp:
         return interval
 
     def _start_worker(self) -> None:
+        if not self._startup_update_complete or self._restart_pending:
+            self._log(
+                "Start Worker ignored: the Render Worker update check has not "
+                "completed successfully."
+            )
+            return
         if self._listener_state.active:
             self._log("Start Worker ignored: the automatic worker is already active.")
             return
@@ -882,6 +974,12 @@ class RenderWorkerApp:
         )
 
     def _render_one_job_with_unreal(self) -> None:
+        if not self._startup_update_complete or self._restart_pending:
+            self._log(
+                "Render One Job ignored: the Render Worker update check has not "
+                "completed successfully."
+            )
+            return
         try:
             farm_root = self._get_farm_root()
             worker_name = self._get_worker_name()
@@ -1048,7 +1146,12 @@ class RenderWorkerApp:
         self._refresh_control_states()
 
     def _refresh_control_states(self) -> None:
-        configuration_locked = self._busy or self._listener_state.active
+        update_gate_locked = (
+            not self._startup_update_complete or self._restart_pending
+        )
+        configuration_locked = (
+            update_gate_locked or self._busy or self._listener_state.active
+        )
         button_state = "disabled" if configuration_locked else "normal"
         entry_state = "disabled" if configuration_locked else "normal"
         combo_state = "disabled" if configuration_locked else "readonly"
@@ -1256,10 +1359,23 @@ class RenderWorkerApp:
             )
             return
 
+        self._shutdown_application(0)
+
+    def _shutdown_application(self, exit_code: int) -> None:
+        if self._closing:
+            return
+
         self._closing = True
+        self._exit_code = exit_code
         if self._poll_after_id is not None:
             self.root.after_cancel(self._poll_after_id)
             self._poll_after_id = None
+        if self._startup_update_after_id is not None:
+            self.root.after_cancel(self._startup_update_after_id)
+            self._startup_update_after_id = None
+        if self._restart_after_id is not None:
+            self.root.after_cancel(self._restart_after_id)
+            self._restart_after_id = None
         if self._animation_after_id is not None:
             self.root.after_cancel(self._animation_after_id)
             self._animation_after_id = None
@@ -1268,10 +1384,10 @@ class RenderWorkerApp:
         self.root.destroy()
 
 
-def main() -> None:
+def main() -> int:
     app = RenderWorkerApp()
-    app.run()
+    return app.run()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

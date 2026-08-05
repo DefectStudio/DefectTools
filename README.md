@@ -58,6 +58,13 @@ Launch the Render Worker interface:
 tools\render_worker_gui.bat
 ```
 
+At startup, the GUI verifies the PortablePipeTools repository itself before it
+enables any worker controls. It requires a clean checkout and runs
+`git pull --ff-only` on the current upstream branch. When an update changes the
+checked-out commit, the GUI exits and the BAT launcher immediately restarts it
+using the newly pulled code. An update failure leaves job processing disabled,
+so an outdated worker cannot claim a farm job.
+
 Choose the show-specific `RenderFarm` base folder in the interface. The window
 can initialize the five queue folders, create a fake job, simulate one job, or
 render one real job with Unreal while displaying activity in its output log.
