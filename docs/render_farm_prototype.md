@@ -17,6 +17,10 @@ The worker creates these folders beneath the supplied farm root:
 Workers
 ```
 
+The default worker also creates `FilesystemCoordination` lazily when the first
+job enters its append-only claim election. It is coordination history, not a
+job queue, and is intentionally retained as an audit/fencing record.
+
 `00_Submitting` is never scanned by workers. A submission becomes visible only
 when its complete job folder is renamed into `01_NeedsRendering`.
 `Workers` is not a job queue; it contains live worker heartbeat and remote STOP
@@ -48,6 +52,20 @@ folder that directly contains the five queue folders. The interface can:
 - Claim and render one real queued job with UnrealEditor-Cmd.
 - Continuously listen for and process real jobs until stopped.
 - Display worker and filesystem activity in a live output log.
+
+The **Use Dropbox API sync** checkbox is directly below **Simulation Result**.
+It is a machine-local setting, defaults to off, and stays editable while the
+automatic listener runs. The setting is sampled at the beginning of each job
+check, so changing it does not alter an active claim; it applies to the next
+claim. When it is off, the existing filesystem-only behavior is unchanged.
+
+**Dropbox Credentials...** sits beside the checkbox and remains available while
+the listener runs. Enter the studio Dropbox App Key, authorize the app in the
+browser, and paste the authorization code displayed by Dropbox. This is an
+OAuth PKCE flow with offline access; the refresh credential is stored in
+Windows Credential Manager, not in the Git-ignored worker settings JSON. The
+worker never collects a Dropbox username or password. If API sync is enabled on
+an unconfigured computer and setup is cancelled, the checkbox returns to off.
 
 The **UnrealEditor-Cmd.exe** field is remembered in the same machine-local
 settings file as the farm folder. **Render One Job with Unreal** shows a
@@ -114,6 +132,57 @@ worker also fails, its name is appended and the same package is requeued again.
 A successful worker moves it normally to `03_RenderComplete` with the accumulated
 blacklist retained for diagnostics. Invalid or unreadable `job.json` packages
 still move to `04_RenderFailed` so malformed jobs cannot circulate forever.
+
+## Optional decentralized Dropbox API coordination
+
+When **Use Dropbox API sync** is enabled, workers still discover and move the
+job package through the local Dropbox filesystem, but they arbitrate ownership
+through `renderFarm/Coordination/<job-id>.json` in the Dropbox API. There is no
+central scheduler. Each worker attempts a conditional upload against the exact
+Dropbox revision it read; only one update can change a queued document to
+`claimed`. Ownership is tied to worker name, process session, a random claim
+token, and a monotonically increasing generation.
+
+After winning, the worker waits 30 seconds for the local Dropbox replica to
+settle, re-reads and verifies the API claim, and rejects a local package whose
+`attempt` predates the API state. It verifies ownership again before rendering
+and uses revision-conditional transitions for rendering, completion, release,
+and failed-attempt requeue. A failure merges the computer name into the API
+blacklist before the local job is returned to `01_NeedsRendering`. The next
+worker must observe the matching attempt before it can render that retry.
+
+This mode fails closed. Missing credentials, an unmappable local Dropbox path,
+authentication failure, timeout, or revision/ownership conflict aborts the
+claim and is reported to the worker log; there is no automatic fallback to a
+filesystem-only claim.
+
+For interactive setup, create one studio Dropbox developer app with scoped
+**Full Dropbox** content access. Enable `account_info.read`,
+`files.content.read`, and `files.content.write`, then use the App Key with the
+Worker Setup authorization button on every render computer. Dropbox users must
+authorize with an account that can access the shared team-space farm path.
+
+For managed environment-variable deployment, configure either:
+
+```text
+PORTABLE_PIPE_TOOLS_DROPBOX_ACCESS_TOKEN
+```
+
+or the long-lived refresh-token configuration:
+
+```text
+PORTABLE_PIPE_TOOLS_DROPBOX_APP_KEY
+PORTABLE_PIPE_TOOLS_DROPBOX_REFRESH_TOKEN
+PORTABLE_PIPE_TOOLS_DROPBOX_APP_SECRET   (optional)
+```
+
+The worker reads the Dropbox desktop client's `info.json` to translate the
+selected local farm root to a Dropbox API path, including Dropbox Business team
+space roots. Interactive credentials remain in Windows Credential Manager;
+managed environment credentials remain in the environment. Neither is saved in
+`LocalSaveFiles`. Use one coordination mode consistently across all workers for
+a farm session: a worker left in filesystem mode deliberately does not consult
+or honor an API claim.
 
 **Stop Worker** is graceful. If no job has been claimed, the current queue check
 stops before claiming one. If a render is already claimed, that render finishes
@@ -259,12 +328,40 @@ priorities render first; equal priorities use the oldest `submitted_utc` first.
 
 ## Claim behavior
 
-A claim is a direct directory rename from `01_NeedsRendering` to
-`02_IsRendering`, with `__WORKER-NAME` appended. No copy/delete fallback is used.
-When two workers race, only the worker whose rename succeeds owns the job.
+A local claim still finishes with a direct directory rename from
+`01_NeedsRendering` to `02_IsRendering`, with `__WORKER-NAME` appended. No
+copy/delete fallback is used. When Dropbox API sync is off, that rename is now
+preceded by a decentralized append-only election under:
 
-This assumes all queue folders are on the same filesystem/share. Atomic rename
-semantics must still be verified on the studio file server before production use.
+```text
+FilesystemCoordination/<job-id>/attempt-<number>/
+    Claims/<unique-token>.json
+    Seals/<winning-token>.json
+    Releases/<withdrawn-token>.json
+```
+
+Each worker hashes the complete queued package, publishes a unique immutable
+claim intent, and waits 30 seconds for Dropbox synchronization. It reads the
+claim set, waits another 10 seconds, then requires the same active claims,
+seals, and releases on both observations. All workers deterministically select
+the same token. The winner publishes an append-only seal, performs the local
+rename, waits 15 more seconds, and verifies it is still the unique active seal
+before changing `job.json` to rendering. A deterministic jitter of up to five
+seconds spreads workers that notice a job simultaneously.
+
+The attempt number fences retries: a completed or active attempt-zero seal
+prevents a stale attempt-zero Dropbox replica from rendering, while a requeued
+attempt-one package uses a fresh election. The package hash must remain
+unchanged throughout the pre-claim observations. New or malformed records,
+changed packages, mismatched replica fingerprints, and multiple active seals
+are treated as ambiguity and stop processing. A Git preflight failure or
+graceful stop publishes an append-only release so another claimant can win.
+
+This adds roughly 55–60 seconds to a normal default claim. It substantially
+reduces duplicate renders during ordinary Dropbox delays, but cannot provide a
+mathematical exclusivity guarantee during a network partition or a Dropbox
+delay longer than the observation windows. Dropbox API sync remains the mode
+with a server-enforced compare-and-swap winner.
 
 JSON updates are written to a temporary file beside `job.json` and published with
 `os.replace` so a process interruption is less likely to leave partial JSON.

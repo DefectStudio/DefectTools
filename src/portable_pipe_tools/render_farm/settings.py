@@ -28,13 +28,15 @@ def load_local_settings(settings_path: Path | None = None) -> dict:
 
 def update_local_settings(
     settings_path: Path | None = None,
-    **updates: str | Path | int,
+    **updates: str | Path | int | bool,
 ) -> Path:
     path = settings_path or get_default_settings_path()
     data = load_local_settings(path)
     data["schema_version"] = SETTINGS_SCHEMA_VERSION
     for key, value in updates.items():
-        data[key] = str(value)
+        # Preserve the existing string representation for paths and numeric
+        # settings, while storing checkbox values as real JSON booleans.
+        data[key] = value if isinstance(value, bool) else str(value)
 
     create_directory_with_retry(path.parent, parents=True, exist_ok=True)
     write_json_atomic(path, data)
@@ -59,6 +61,14 @@ def load_saved_local_uproject(settings_path: Path | None = None) -> str:
 def load_saved_poll_interval_seconds(settings_path: Path | None = None) -> str:
     data = load_local_settings(settings_path)
     return str(data.get("poll_interval_seconds") or "").strip()
+
+
+def load_saved_use_dropbox_api_sync(settings_path: Path | None = None) -> bool:
+    data = load_local_settings(settings_path)
+    value = data.get("use_dropbox_api_sync", False)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def save_render_farm_root(
@@ -98,4 +108,14 @@ def save_poll_interval_seconds(
     return update_local_settings(
         settings_path,
         poll_interval_seconds=poll_interval_seconds,
+    )
+
+
+def save_use_dropbox_api_sync(
+    enabled: bool,
+    settings_path: Path | None = None,
+) -> Path:
+    return update_local_settings(
+        settings_path,
+        use_dropbox_api_sync=bool(enabled),
     )

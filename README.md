@@ -79,6 +79,28 @@ render one real job with Unreal while displaying activity in its output log.
 (15 seconds by default); **Stop Worker** finishes an already-claimed render and
 stops before claiming another.
 
+**Use Dropbox API sync** appears directly below **Simulation Result** and is
+off by default. When enabled, each new job claim is arbitrated against a small
+Dropbox-hosted coordination document using a revision-conditional update. The
+checkbox remains editable while the automatic worker is running: the active
+job keeps the mode it started with, and the next queue check uses the current
+value. API errors stop that claim safely; the worker never silently falls back
+to the filesystem claim path.
+
+When API sync is off, the default path now performs a slower append-only claim
+election before its local directory rename. Workers publish unique claim
+intents, wait for Dropbox, compare the same intent set twice, deterministically
+select one winner, seal it, and verify that seal again after the rename. The
+default stabilization adds roughly 55–60 seconds before rendering. Changed
+packages, stale attempts, competing seals, and unreadable coordination records
+fail closed instead of launching Unreal.
+
+Use **Dropbox Credentials...** beside the checkbox to connect a worker. Enter
+the studio Dropbox App Key, approve the app in the browser, then paste the
+authorization code displayed by Dropbox. The worker uses OAuth PKCE and saves
+the resulting refresh credential in Windows Credential Manager. It never asks
+for or stores a Dropbox username or password.
+
 While automatic listening is active, the worker publishes
 `Workers\WORKERNAME_STATUS.json` every 10 seconds. It includes the worker state,
 session, current shot/version/render setting, and tools Git commit. A heartbeat
@@ -111,6 +133,19 @@ returns its package to `01_NeedsRendering`. That worker ignores the job on later
 queue scans, while another worker can claim and retry it. Each additional failed
 worker is added to the same list. Corrupt or unreadable job metadata still moves
 to `04_RenderFailed` because it cannot safely participate in automatic retries.
+
+The studio creates one scoped **Full Dropbox** developer app and enables
+`account_info.read`, `files.content.read`, and `files.content.write`. Individual
+workers authorize that app; engineers should not create a separate Dropbox app
+for each machine. For managed deployments, API sync also accepts either
+`PORTABLE_PIPE_TOOLS_DROPBOX_ACCESS_TOKEN`, or an OAuth refresh configuration
+using `PORTABLE_PIPE_TOOLS_DROPBOX_APP_KEY` and
+`PORTABLE_PIPE_TOOLS_DROPBOX_REFRESH_TOKEN`. An optional app secret can be set
+with `PORTABLE_PIPE_TOOLS_DROPBOX_APP_SECRET`. Credentials are read only when
+the checkbox is enabled and are never written to the worker settings file.
+All decentralized workers sharing a farm should use the same coordination mode
+during a render session; an intentionally uncoordinated filesystem worker does
+not participate in Dropbox API claims.
 
 The interface also displays transparent pixel-art animations for the worker's
 Stopped, Waiting, Moving Files, Rendering, and Finishing stages. The five

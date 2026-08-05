@@ -23,7 +23,15 @@ from portable_pipe_tools.render_farm.queue import (
 )
 from portable_pipe_tools.render_farm.test_job import create_test_job
 from portable_pipe_tools.render_farm.unreal_runner import UnrealExecutionResult
-from portable_pipe_tools.render_farm.worker import WorkerStage, run_once
+from portable_pipe_tools.render_farm.worker import WorkerStage, run_once as _run_once
+
+
+def run_once(*args, **kwargs):
+    kwargs.setdefault(
+        "filesystem_coordination_delays",
+        (0.0, 0.0, 0.0, 0.0),
+    )
+    return _run_once(*args, **kwargs)
 
 
 class RenderFarmPrototypeTests(unittest.TestCase):

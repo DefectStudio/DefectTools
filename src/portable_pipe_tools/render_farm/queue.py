@@ -341,42 +341,52 @@ def list_job_candidates(
 
 def claim_next_job(paths: QueuePaths, worker_name: str) -> Path | None:
     """Claim one job using a same-filesystem directory rename."""
-    safe_worker_name = safe_name(worker_name, "WORKER")
-
-    for candidate in list_job_candidates(paths, safe_worker_name):
-        claimed_folder = paths.is_rendering / f"{candidate.folder.name}__{safe_worker_name}"
-        if path_exists_with_retry(claimed_folder):
-            raise FileExistsError(
-                f"Claim destination already exists; manual inspection is required: "
-                f"{claimed_folder}"
-            )
-
-        try:
-            rename_path_with_retry(candidate.folder, claimed_folder)
-        except FileNotFoundError:
-            # Another worker won the rename race.
-            continue
-
-        # Re-read after the rename so a blacklist update that raced the initial
-        # queue scan cannot result in this worker rendering the job.
-        try:
-            claimed_job_path = claimed_folder / JOB_FILENAME
-            claimed_job = read_json_object(claimed_job_path)
-            if is_worker_blacklisted(
-                claimed_job,
-                safe_worker_name,
-                claimed_job_path,
-            ):
-                rename_path_with_retry(claimed_folder, candidate.folder)
-                continue
-        except (OSError, ValueError):
-            # Invalid packages are intentionally returned as claimed so the
-            # worker can move them to 04_RenderFailed instead of circulating.
-            pass
-
-        return claimed_folder
+    for candidate in list_job_candidates(paths, worker_name):
+        claimed_folder = claim_job_candidate(paths, candidate.folder, worker_name)
+        if claimed_folder is not None:
+            return claimed_folder
 
     return None
+
+
+def claim_job_candidate(
+    paths: QueuePaths,
+    candidate_folder: Path,
+    worker_name: str,
+) -> Path | None:
+    """Atomically claim one specific queued package for a selected worker."""
+    safe_worker_name = safe_name(worker_name, "WORKER")
+    claimed_folder = paths.is_rendering / f"{candidate_folder.name}__{safe_worker_name}"
+    if path_exists_with_retry(claimed_folder):
+        raise FileExistsError(
+            f"Claim destination already exists; manual inspection is required: "
+            f"{claimed_folder}"
+        )
+
+    try:
+        rename_path_with_retry(candidate_folder, claimed_folder)
+    except FileNotFoundError:
+        # Another local process or a newly synchronized Dropbox rename won.
+        return None
+
+    # Re-read after the rename so a blacklist update that raced the initial
+    # queue scan cannot result in this worker rendering the job.
+    try:
+        claimed_job_path = claimed_folder / JOB_FILENAME
+        claimed_job = read_json_object(claimed_job_path)
+        if is_worker_blacklisted(
+            claimed_job,
+            safe_worker_name,
+            claimed_job_path,
+        ):
+            rename_path_with_retry(claimed_folder, candidate_folder)
+            return None
+    except (OSError, ValueError):
+        # Invalid packages are intentionally returned as claimed so the worker
+        # can move them to 04_RenderFailed instead of circulating.
+        pass
+
+    return claimed_folder
 
 
 def validate_queued_job(job: dict[str, Any], job_path: Path) -> None:
