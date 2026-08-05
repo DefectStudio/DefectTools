@@ -10,7 +10,10 @@ from portable_pipe_tools.render_farm.create_development_test_jobs import (
 from portable_pipe_tools.render_farm.get_all_render_jobs import (
     get_all_render_jobs,
 )
-from portable_pipe_tools.render_farm.queue import QUEUE_FOLDER_NAMES
+from portable_pipe_tools.render_farm.queue import (
+    QUEUE_FOLDER_NAMES,
+    WORKERS_FOLDER,
+)
 
 
 class CreateDevelopmentTestJobsTests(unittest.TestCase):
@@ -30,7 +33,7 @@ class CreateDevelopmentTestJobsTests(unittest.TestCase):
             )
             render_farm = repository / "Development" / "renderFarm"
             self.assertEqual(
-                set(QUEUE_FOLDER_NAMES),
+                {*QUEUE_FOLDER_NAMES, WORKERS_FOLDER},
                 {folder.name for folder in render_farm.iterdir() if folder.is_dir()},
             )
 

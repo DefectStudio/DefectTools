@@ -34,6 +34,7 @@ NEEDS_RENDERING_FOLDER = "01_NeedsRendering"
 IS_RENDERING_FOLDER = "02_IsRendering"
 RENDER_COMPLETE_FOLDER = "03_RenderComplete"
 RENDER_FAILED_FOLDER = "04_RenderFailed"
+WORKERS_FOLDER = "Workers"
 
 QUEUE_FOLDER_NAMES: tuple[str, ...] = (
     SUBMITTING_FOLDER,
@@ -56,6 +57,7 @@ class QueuePaths:
     is_rendering: Path
     render_complete: Path
     render_failed: Path
+    workers: Path
 
     @classmethod
     def from_root(cls, farm_root: str | Path) -> QueuePaths:
@@ -68,6 +70,7 @@ class QueuePaths:
             is_rendering=root / IS_RENDERING_FOLDER,
             render_complete=root / RENDER_COMPLETE_FOLDER,
             render_failed=root / RENDER_FAILED_FOLDER,
+            workers=root / WORKERS_FOLDER,
         )
 
     def all_queue_folders(self) -> tuple[Path, ...]:
@@ -113,6 +116,7 @@ def create_queue_folders(farm_root: str | Path) -> QueuePaths:
     create_directory_with_retry(paths.root, parents=True, exist_ok=True)
     for folder in paths.all_queue_folders():
         create_directory_with_retry(folder, exist_ok=True)
+    create_directory_with_retry(paths.workers, exist_ok=True)
     return paths
 
 

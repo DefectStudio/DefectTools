@@ -46,6 +46,13 @@ key. Ctrl-click, Shift-click, and Ctrl+A support bulk selection; Edit also
 contains Select All and Clear Selection. Every delete route uses the same
 default-No confirmation prompt.
 
+The toolbar **Workers** button switches the Jobs panel to a live worker list;
+the same button becomes **Jobs** to switch back. Worker rows show their project,
+state, current job, last heartbeat, and PortablePipeTools commit. Selecting a
+worker displays its heartbeat details and raw status JSON. Right-clicking a
+worker and choosing **STOP Worker** creates an empty `WORKERNAME_STOP.json`
+marker in that show's `renderFarm\Workers` folder.
+
 ## Render farm worker
 
 The filesystem worker can publish a fake test job, atomically claim one queued
@@ -71,6 +78,14 @@ render one real job with Unreal while displaying activity in its output log.
 **Start Worker** keeps listening for real jobs at a configurable interval
 (15 seconds by default); **Stop Worker** finishes an already-claimed render and
 stops before claiming another.
+
+While automatic listening is active, the worker publishes
+`Workers\WORKERNAME_STATUS.json` every 10 seconds. It includes the worker state,
+session, current shot/version/render setting, and tools Git commit. A heartbeat
+older than 45 seconds is shown as stale. Empty `WORKERNAME_STOP.json` files are
+existence-only graceful-stop commands: waiting workers stop immediately, while
+active workers finish their current job and stop before claiming another. Both
+files are removed after a clean stop.
 
 Before every real job, the worker verifies that the selected Unreal checkout is
 clean and runs `git pull --ff-only` on its current upstream branch. The latest

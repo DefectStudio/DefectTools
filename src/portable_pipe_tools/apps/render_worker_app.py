@@ -60,10 +60,23 @@ from portable_pipe_tools.render_farm.worker import (
     WorkerStage,
     run_once,
 )
+from portable_pipe_tools.render_farm.workers import (
+    WorkerAlreadyActiveError,
+    WorkerHeartbeat,
+    WorkerStopRequestedError,
+)
 
 
 WORKER_LOGGER = logging.getLogger("render_worker")
 NO_ACTIVE_JOB_TEXT = "No Active Job"
+
+HEARTBEAT_STATUS_BY_STAGE = {
+    WorkerStage.STOPPED: "stopped",
+    WorkerStage.WAITING: "waiting",
+    WorkerStage.MOVING: "moving_files",
+    WorkerStage.RENDERING: "rendering",
+    WorkerStage.FINISHING: "finishing",
+}
 
 
 def format_job_activity(job: dict[str, Any]) -> str:
@@ -170,6 +183,10 @@ class RenderWorkerApp:
         self._startup_update_complete = False
         self._restart_pending = False
         self._exit_code = 0
+        self._worker_git_branch = ""
+        self._worker_git_commit = ""
+        self._worker_heartbeat: WorkerHeartbeat | None = None
+        self._stop_requested_remotely = False
         self._listener_state = ContinuousWorkerState()
         self._listener_configuration: ListenerConfiguration | None = None
         self._listener_after_id: str | None = None
@@ -548,6 +565,8 @@ class RenderWorkerApp:
         result: RenderWorkerUpdateResult,
     ) -> None:
         git_pull = result.git_pull
+        self._worker_git_branch = git_pull.branch
+        self._worker_git_commit = git_pull.commit_after
         if result.update_installed:
             self._restart_pending = True
             self.status_var.set("Render Worker updated — restarting")
@@ -761,10 +780,53 @@ class RenderWorkerApp:
             self._log("Automatic worker start cancelled.")
             return
 
+        heartbeat = WorkerHeartbeat(
+            configuration.farm_root,
+            configuration.worker_name,
+            worker_git_branch=self._worker_git_branch,
+            worker_git_commit=self._worker_git_commit,
+        )
+        try:
+            heartbeat.start()
+        except WorkerStopRequestedError as error:
+            self.status_var.set("Worker stopped by a pending remote request")
+            self._log(f"Remote STOP request honored before startup: {error}")
+            messagebox.showwarning(
+                "Render Worker Stopped Remotely",
+                "A pending empty STOP marker was found and consumed. The worker "
+                "was not started.",
+                parent=self.root,
+            )
+            return
+        except WorkerAlreadyActiveError as error:
+            self.status_var.set("Worker name is already active")
+            self._log(f"Worker start blocked: {error}")
+            messagebox.showerror(
+                "Worker Name Already Active",
+                str(error),
+                parent=self.root,
+            )
+            return
+        except Exception as error:
+            self.status_var.set("Could not publish worker heartbeat")
+            self._log(
+                "Worker start blocked by heartbeat error: "
+                f"{type(error).__name__}: {error}"
+            )
+            messagebox.showerror(
+                "Render Worker Heartbeat Failed",
+                str(error),
+                parent=self.root,
+            )
+            return
+
         if not self._listener_state.start():
+            heartbeat.stop()
             self._log("Start Worker ignored: the automatic worker is already active.")
             return
 
+        self._worker_heartbeat = heartbeat
+        self._stop_requested_remotely = False
         self._listener_configuration = configuration
         self._remember_farm_root(configuration.farm_root)
         self._remember_unreal_editor_cmd(configuration.unreal_editor_cmd)
@@ -786,20 +848,30 @@ class RenderWorkerApp:
         self._schedule_listener_check_now()
 
     def _stop_worker(self) -> None:
+        self._request_worker_stop(remotely=False)
+
+    def _request_worker_stop(self, *, remotely: bool) -> None:
         if not self._listener_state.active:
-            self._log("Stop Worker ignored: the automatic worker is not active.")
+            if not remotely:
+                self._log("Stop Worker ignored: the automatic worker is not active.")
             return
 
+        self._stop_requested_remotely = remotely
+        if self._worker_heartbeat is not None:
+            self._worker_heartbeat.request_stop()
         action = self._listener_state.request_stop()
         self._cancel_listener_countdown()
         self._refresh_control_states()
         if action is ListenerAction.FINISH_CURRENT:
             self.status_var.set(
-                "Stop requested — finishing the current job or queue check"
+                "Remote stop requested — finishing the current job or queue check"
+                if remotely
+                else "Stop requested — finishing the current job or queue check"
             )
             self._log(
-                "Stop requested. No new job will be claimed; an already-claimed "
-                "render will finish first."
+                ("Remote STOP marker detected. " if remotely else "Stop requested. ")
+                + "No new job will be claimed; an already-claimed render will "
+                "finish first."
             )
             return
 
@@ -904,16 +976,31 @@ class RenderWorkerApp:
             self._listener_after_id = None
 
     def _finish_listener_stopped(self) -> None:
+        stopped_remotely = self._stop_requested_remotely
         self._cancel_listener_countdown()
         self._listener_configuration = None
         self._listener_state.active = False
         self._listener_state.stop_requested = False
         self._listener_state.job_running = False
+        self._stop_worker_heartbeat()
         self._set_worker_stage(WorkerStage.STOPPED)
         self._clear_current_job()
-        self.status_var.set("Worker stopped")
+        self.status_var.set(
+            "Worker stopped remotely" if stopped_remotely else "Worker stopped"
+        )
         self._refresh_control_states()
-        self._log("Automatic worker stopped.")
+        self._log(
+            "Automatic worker stopped by remote request."
+            if stopped_remotely
+            else "Automatic worker stopped."
+        )
+        self._stop_requested_remotely = False
+
+    def _stop_worker_heartbeat(self) -> None:
+        heartbeat = self._worker_heartbeat
+        self._worker_heartbeat = None
+        if heartbeat is not None:
+            heartbeat.stop(remove_files=True)
 
     def _initialize_queue(self) -> None:
         try:
@@ -933,6 +1020,7 @@ class RenderWorkerApp:
         self._log(f"Queue folders ready: {paths.root}")
         for folder in paths.all_queue_folders():
             self._log(f"  {folder.name}")
+        self._log(f"  {paths.workers.name}")
 
     def _create_test_job(self) -> None:
         try:
@@ -1104,6 +1192,11 @@ class RenderWorkerApp:
             except Empty:
                 break
             self.current_job_var.set(format_job_activity(job))
+            if self._worker_heartbeat is not None:
+                self._worker_heartbeat.update_activity(
+                    HEARTBEAT_STATUS_BY_STAGE[self._active_stage],
+                    job,
+                )
 
         while True:
             try:
@@ -1112,7 +1205,24 @@ class RenderWorkerApp:
                 break
             self._handle_background_completion(completion)
 
+        self._poll_worker_heartbeat()
         self._schedule_queue_poll()
+
+    def _poll_worker_heartbeat(self) -> None:
+        heartbeat = self._worker_heartbeat
+        if heartbeat is None:
+            return
+        for error in heartbeat.pop_errors():
+            self._log(
+                "Worker heartbeat warning: "
+                f"{type(error).__name__}: {error}"
+            )
+        if (
+            heartbeat.remote_stop_event.is_set()
+            and self._listener_state.active
+            and not self._listener_state.stop_requested
+        ):
+            self._request_worker_stop(remotely=True)
 
     def _handle_background_completion(
         self,
@@ -1288,6 +1398,8 @@ class RenderWorkerApp:
 
     def _clear_current_job(self) -> None:
         self.current_job_var.set(NO_ACTIVE_JOB_TEXT)
+        if self._worker_heartbeat is not None:
+            self._worker_heartbeat.clear_current_job()
 
     def _set_idle_or_stopped_stage(self) -> None:
         stage = (
@@ -1301,6 +1413,10 @@ class RenderWorkerApp:
     def _set_worker_stage(self, stage: WorkerStage) -> None:
         self._active_stage = stage
         self.current_stage_var.set(WORKER_STAGE_LABELS[stage])
+        if self._worker_heartbeat is not None:
+            self._worker_heartbeat.update_activity(
+                HEARTBEAT_STATUS_BY_STAGE[stage]
+            )
         self._animation_frame_index = 0
         if self._animation_after_id is not None:
             self.root.after_cancel(self._animation_after_id)
@@ -1335,6 +1451,8 @@ class RenderWorkerApp:
 
     def _on_close(self) -> None:
         if self._listener_state.active:
+            if self._worker_heartbeat is not None:
+                self._worker_heartbeat.request_stop()
             action = self._listener_state.request_stop()
             self._cancel_listener_countdown()
             self._refresh_control_states()
@@ -1367,6 +1485,7 @@ class RenderWorkerApp:
 
         self._closing = True
         self._exit_code = exit_code
+        self._stop_worker_heartbeat()
         if self._poll_after_id is not None:
             self.root.after_cancel(self._poll_after_id)
             self._poll_after_id = None

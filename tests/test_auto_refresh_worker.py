@@ -11,6 +11,7 @@ from portable_pipe_tools.render_farm.auto_refresh_worker import (
 )
 from portable_pipe_tools.render_farm.queue import (
     create_queue_folders,
+    utc_now,
     write_json_atomic,
 )
 
@@ -23,6 +24,15 @@ class AutoRefreshWorkerTests(unittest.TestCase):
             job_folder = paths.needs_rendering / "job-1"
             job_folder.mkdir()
             write_json_atomic(job_folder / "job.json", {"job_id": "job-1"})
+            write_json_atomic(
+                paths.workers / "WORKER-01_STATUS.json",
+                {
+                    "worker_name": "WORKER-01",
+                    "session_id": "session-1",
+                    "status": "waiting",
+                    "last_heartbeat_utc": utc_now(),
+                },
+            )
             results: Queue[AutoRefreshResult] = Queue()
             worker = AutoRefreshWorker(
                 repository_path_provider=lambda: repository,
@@ -39,6 +49,8 @@ class AutoRefreshWorkerTests(unittest.TestCase):
             self.assertEqual(repository, result.repository_path)
             self.assertIsNone(result.error)
             self.assertEqual(1, len(result.jobs))
+            self.assertEqual(1, len(result.workers))
+            self.assertEqual("WORKER-01", result.workers[0].worker_name)
             self.assertFalse(worker.running)
 
     def test_worker_does_not_emit_without_a_connected_repository(self) -> None:

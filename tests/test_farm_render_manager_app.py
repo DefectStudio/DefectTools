@@ -8,6 +8,7 @@ from unittest.mock import patch
 from portable_pipe_tools.apps.farm_render_manager_app import (
     FarmRenderManagerApp,
     JOB_COLUMNS,
+    WORKER_COLUMNS,
 )
 from portable_pipe_tools.render_farm.manager_settings import (
     load_saved_auto_refresh_interval_minutes,
@@ -16,8 +17,10 @@ from portable_pipe_tools.render_farm.manager_settings import (
 )
 from portable_pipe_tools.render_farm.queue import (
     create_queue_folders,
+    utc_now,
     write_json_atomic,
 )
+from portable_pipe_tools.render_farm.workers import WorkerRecord
 
 
 def _click_tree_heading(
@@ -38,6 +41,44 @@ class FarmRenderManagerAppTests(unittest.TestCase):
     def test_job_name_is_the_leftmost_column(self) -> None:
         self.assertEqual("job_name", JOB_COLUMNS[0].key)
         self.assertEqual("Job Name", JOB_COLUMNS[0].heading)
+
+    def test_worker_name_is_the_leftmost_worker_column(self) -> None:
+        self.assertEqual("worker_name", WORKER_COLUMNS[0].key)
+        self.assertEqual("Worker", WORKER_COLUMNS[0].heading)
+
+    def test_worker_visual_status_prioritizes_stale_and_stop_requests(self) -> None:
+        base_values = {
+            "project": "show",
+            "farm_root": Path("show/renderFarm"),
+            "status_file": Path("WORKER_STATUS.json"),
+            "stop_file": Path("WORKER_STOP.json"),
+            "worker_name": "WORKER",
+            "machine_name": "WORKER",
+            "session_id": "session",
+            "status": "rendering",
+            "started_utc": "",
+            "last_heartbeat_utc": "",
+            "heartbeat_age_seconds": 2.0,
+            "stop_requested": False,
+            "current_job_id": "",
+            "shot_name": "",
+            "render_version": "",
+            "render_setting": "",
+            "worker_git_branch": "main",
+            "worker_git_commit": "a" * 40,
+            "process_id": 1,
+            "raw_data": {},
+        }
+        rendering = WorkerRecord(stale=False, **base_values)
+        stopping = WorkerRecord(
+            stale=False,
+            **{**base_values, "stop_requested": True},
+        )
+        stale = WorkerRecord(stale=True, **base_values)
+
+        self.assertEqual("rendering", FarmRenderManagerApp._worker_status_tag(rendering))
+        self.assertEqual("stopping", FarmRenderManagerApp._worker_status_tag(stopping))
+        self.assertEqual("stale", FarmRenderManagerApp._worker_status_tag(stale))
 
     def test_statuses_map_to_the_expected_visual_groups(self) -> None:
         self.assertEqual("queued", FarmRenderManagerApp._status_tag("pending"))
@@ -149,6 +190,81 @@ class FarmRenderManagerAppTests(unittest.TestCase):
                     app.refresh_button.cget("style"),
                 )
                 self.assertNotEqual("Last update: --", app.last_update_var.get())
+            finally:
+                app._on_close()
+
+    def test_workers_toggle_lists_heartbeats_and_creates_empty_stop_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            settings_path = repository / "manager.json"
+            save_auto_refresh_enabled(False, settings_path)
+            paths = create_queue_folders(repository / "show" / "renderFarm")
+            write_json_atomic(
+                paths.workers / "VENGEANCE_STATUS.json",
+                {
+                    "worker_name": "VENGEANCE",
+                    "machine_name": "VENGEANCE",
+                    "session_id": "vengeance-session",
+                    "status": "rendering",
+                    "last_heartbeat_utc": utc_now(),
+                    "current_job_id": "job-1",
+                    "shot_name": "JNG_000_0330",
+                    "render_version": "v011",
+                    "render_setting": "beauty_LowHDsRGB",
+                },
+            )
+            app = FarmRenderManagerApp(
+                settings_path=settings_path,
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+                self.assertEqual("Workers", app.view_toggle_button.cget("text"))
+
+                app._toggle_list_view()
+
+                self.assertEqual("Jobs", app.view_toggle_button.cget("text"))
+                self.assertEqual("Workers", app.list_title_var.get())
+                worker_items = app.worker_tree.get_children()
+                self.assertEqual(1, len(worker_items))
+                worker_item = worker_items[0]
+                self.assertEqual(
+                    "VENGEANCE",
+                    app.worker_tree.set(worker_item, "worker_name"),
+                )
+                self.assertEqual(
+                    "Rendering",
+                    app.worker_tree.set(worker_item, "status"),
+                )
+
+                app.worker_tree.selection_set(worker_item)
+                app._on_worker_selected(None)
+                self.assertEqual(
+                    "Worker Details - VENGEANCE",
+                    app.details_title_var.get(),
+                )
+
+                with patch(
+                    "portable_pipe_tools.apps.farm_render_manager_app."
+                    "messagebox.askyesno",
+                    return_value=True,
+                ):
+                    app._stop_selected_worker()
+
+                stop_file = paths.workers / "VENGEANCE_STOP.json"
+                self.assertTrue(stop_file.is_file())
+                self.assertEqual(0, stop_file.stat().st_size)
+                refreshed_item = app.worker_tree.get_children()[0]
+                self.assertEqual(
+                    "Stop Requested",
+                    app.worker_tree.set(refreshed_item, "status"),
+                )
+
+                app._toggle_list_view()
+                self.assertEqual("Workers", app.view_toggle_button.cget("text"))
+                self.assertEqual("Jobs", app.list_title_var.get())
             finally:
                 app._on_close()
 

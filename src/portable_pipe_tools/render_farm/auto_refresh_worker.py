@@ -10,6 +10,10 @@ from portable_pipe_tools.render_farm.get_all_render_jobs import (
     get_all_render_jobs,
 )
 from portable_pipe_tools.render_farm.render_job import RenderJob
+from portable_pipe_tools.render_farm.workers import (
+    WorkerRecord,
+    list_render_workers,
+)
 
 
 AUTO_REFRESH_INTERVAL_SECONDS = 60.0
@@ -19,6 +23,7 @@ AUTO_REFRESH_INTERVAL_SECONDS = 60.0
 class AutoRefreshResult:
     repository_path: Path
     jobs: tuple[RenderJob, ...] = ()
+    workers: tuple[WorkerRecord, ...] = ()
     error: Exception | None = None
 
 
@@ -80,6 +85,7 @@ class AutoRefreshWorker:
                 continue
             try:
                 jobs = tuple(get_all_render_jobs(repository_path))
+                workers = tuple(list_render_workers(repository_path))
             except Exception as error:
                 result = AutoRefreshResult(
                     repository_path=repository_path,
@@ -89,5 +95,6 @@ class AutoRefreshWorker:
                 result = AutoRefreshResult(
                     repository_path=repository_path,
                     jobs=jobs,
+                    workers=workers,
                 )
             self.result_queue.put(result)

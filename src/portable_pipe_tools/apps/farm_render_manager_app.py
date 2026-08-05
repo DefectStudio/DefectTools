@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
+import json
 from pathlib import Path
 from queue import Empty, Queue
 import tkinter as tk
@@ -40,6 +41,11 @@ from portable_pipe_tools.render_farm.sort_render_jobs import (
     default_sort_descending,
     sort_render_jobs,
 )
+from portable_pipe_tools.render_farm.workers import (
+    WorkerRecord,
+    create_worker_stop_request,
+    list_render_workers,
+)
 from portable_pipe_tools.apps.farm_render_manager_icon import (
     apply_farm_render_manager_icon,
     configure_windows_app_identity,
@@ -76,8 +82,20 @@ JOB_COLUMNS = (
     ListColumn("submitted", "Submitted", 135),
 )
 
+WORKER_COLUMNS = (
+    ListColumn("worker_name", "Worker", 145, stretch=True),
+    ListColumn("project", "Project", 100),
+    ListColumn("status", "Status", 135),
+    ListColumn("current_job", "Current Job", 170),
+    ListColumn("last_seen", "Last Seen", 85),
+    ListColumn("commit", "Commit", 90),
+)
+
 PROJECT_CHOICES = ("All Projects",)
 JobSelectionKey = tuple[str, str]
+WorkerSelectionKey = tuple[str, str, str]
+JOBS_VIEW = "jobs"
+WORKERS_VIEW = "workers"
 
 
 class FarmRenderManagerApp:
@@ -109,10 +127,13 @@ class FarmRenderManagerApp:
         self.summary_var = tk.StringVar(
             value="Jobs: 0    Queued: 0    Rendering: 0    Completed: 0    Failed: 0"
         )
+        self.list_title_var = tk.StringVar(value="Jobs")
+        self.list_count_var = tk.StringVar(value="Render queue")
         self.details_title_var = tk.StringVar(
             value="Job Details - No Job Selected"
         )
         self.detail_count_var = tk.StringVar(value="0 properties")
+        self.log_title_var = tk.StringVar(value="Render Log - Current Output")
         self.log_source_var = tk.StringVar(value="Waiting for selection")
         self.status_var = tk.StringVar(value="Ready")
         self.last_update_var = tk.StringVar(value="Last update: --")
@@ -120,10 +141,13 @@ class FarmRenderManagerApp:
             value="Repository: Not connected"
         )
         self.repository_path: Path | None = None
+        self.view_mode = JOBS_VIEW
         self.all_jobs: list[RenderJob] = []
+        self.all_workers: list[WorkerRecord] = []
         self.job_sort_column: str | None = None
         self.job_sort_descending = False
         self._jobs_by_item: dict[str, RenderJob] = {}
+        self._workers_by_item: dict[str, WorkerRecord] = {}
         self._auto_refresh_results: Queue[AutoRefreshResult] = Queue()
         self._auto_refresh_after_id: str | None = None
         self._refresh_feedback_after_id: str | None = None
@@ -408,8 +432,8 @@ class FarmRenderManagerApp:
 
         jobs_shell, jobs_content = self._create_panel(
             horizontal_pane,
-            title="Jobs",
-            count_text="Render queue",
+            title_variable=self.list_title_var,
+            count_variable=self.list_count_var,
         )
         horizontal_pane.add(jobs_shell, weight=6)
 
@@ -420,7 +444,18 @@ class FarmRenderManagerApp:
         )
         horizontal_pane.add(details_shell, weight=4)
 
-        self._build_job_list(jobs_content)
+        self.job_list_frame = ttk.Frame(jobs_content, style="Panel.TFrame")
+        self.job_list_frame.grid(row=0, column=0, sticky="nsew")
+        self.job_list_frame.columnconfigure(0, weight=1)
+        self.job_list_frame.rowconfigure(0, weight=1)
+        self.worker_list_frame = ttk.Frame(jobs_content, style="Panel.TFrame")
+        self.worker_list_frame.grid(row=0, column=0, sticky="nsew")
+        self.worker_list_frame.columnconfigure(0, weight=1)
+        self.worker_list_frame.rowconfigure(0, weight=1)
+
+        self._build_job_list(self.job_list_frame)
+        self._build_worker_list(self.worker_list_frame)
+        self.job_list_frame.tkraise()
         self._build_job_detail_list(details_content)
         self._build_log_panel(log_container)
         self._build_status_bar(outer)
@@ -498,12 +533,25 @@ class FarmRenderManagerApp:
             self._on_auto_refresh_interval_selected,
         )
 
+        self.view_toggle_button = ttk.Button(
+            toolbar,
+            text="Workers",
+            style="Deadline.TButton",
+            command=self._toggle_list_view,
+        )
+        self.view_toggle_button.grid(
+            row=0,
+            column=8,
+            sticky="e",
+            padx=(8, 12),
+        )
+
         self.repository_status_label = ttk.Label(
             toolbar,
             textvariable=self.repository_status_var,
             style="RepositoryDisconnected.TLabel",
         )
-        self.repository_status_label.grid(row=0, column=8, sticky="e")
+        self.repository_status_label.grid(row=0, column=9, sticky="e")
 
     def _create_panel(
         self,
@@ -577,6 +625,30 @@ class FarmRenderManagerApp:
             label="Delete",
             accelerator="Del",
             command=self._delete_selected_jobs,
+        )
+
+    def _build_worker_list(self, parent: ttk.Frame) -> None:
+        self.worker_tree = self._create_tree(
+            parent,
+            WORKER_COLUMNS,
+            selectmode="browse",
+        )
+        self._configure_status_tags(self.worker_tree)
+        self.worker_tree.bind("<<TreeviewSelect>>", self._on_worker_selected)
+        self.worker_tree.bind("<Button-3>", self._show_worker_context_menu)
+
+        self.worker_context_menu = tk.Menu(
+            self.root,
+            tearoff=False,
+            background="#303236",
+            foreground=TEXT_COLOR,
+            activebackground="#8a3e3e",
+            activeforeground="#ffffff",
+            borderwidth=0,
+        )
+        self.worker_context_menu.add_command(
+            label="STOP Worker",
+            command=self._stop_selected_worker,
         )
 
     def _build_job_detail_list(self, parent: ttk.Frame) -> None:
@@ -679,11 +751,14 @@ class FarmRenderManagerApp:
         tree.tag_configure("rendering", foreground="#74d680")
         tree.tag_configure("done", foreground="#70aee8")
         tree.tag_configure("failed", foreground="#ff7777")
+        tree.tag_configure("waiting", foreground="#74d680")
+        tree.tag_configure("stopping", foreground="#e6c56c")
+        tree.tag_configure("stale", foreground="#ff7777")
 
     def _build_log_panel(self, parent: ttk.Frame) -> None:
         log_shell, log_content = self._create_panel(
             parent,
-            title="Render Log - Current Output",
+            title_variable=self.log_title_var,
             count_variable=self.log_source_var,
         )
         log_shell.grid(row=0, column=0, sticky="nsew", pady=(5, 0))
@@ -739,6 +814,23 @@ class FarmRenderManagerApp:
             style="Status.TLabel",
         ).grid(row=0, column=2, sticky="e")
 
+    def _toggle_list_view(self) -> None:
+        if self.view_mode == JOBS_VIEW:
+            self.view_mode = WORKERS_VIEW
+            self.worker_list_frame.tkraise()
+            self.list_title_var.set("Workers")
+            self.list_count_var.set("Farm workers")
+            self.log_title_var.set("Worker Status - Heartbeat JSON")
+            self.view_toggle_button.configure(text="Jobs")
+        else:
+            self.view_mode = JOBS_VIEW
+            self.job_list_frame.tkraise()
+            self.list_title_var.set("Jobs")
+            self.list_count_var.set("Render queue")
+            self.log_title_var.set("Render Log - Current Output")
+            self.view_toggle_button.configure(text="Workers")
+        self._apply_project_filter()
+
     def set_projects(self, projects: Iterable[str]) -> None:
         """Replace the project filter choices while preserving All Projects."""
         choices = [PROJECT_CHOICES[0]]
@@ -746,6 +838,11 @@ class FarmRenderManagerApp:
         self.project_combo.configure(values=tuple(choices))
         if self.project_var.get() not in choices:
             self.project_var.set(PROJECT_CHOICES[0])
+
+    def _update_project_choices(self) -> None:
+        projects = {job.project for job in self.all_jobs}
+        projects.update(worker.project for worker in self.all_workers)
+        self.set_projects(sorted(projects, key=str.casefold))
 
     def _initialize_repository(self) -> None:
         saved_folder = load_saved_dropbox_folder(self.settings_path)
@@ -826,9 +923,15 @@ class FarmRenderManagerApp:
             for item_id in self.job_tree.selection()
             if (job := self._jobs_by_item.get(item_id)) is not None
         )
+        selected_worker_keys = tuple(
+            (worker.project.casefold(), worker.worker_name.casefold(), worker.session_id)
+            for item_id in self.worker_tree.selection()
+            if (worker := self._workers_by_item.get(item_id)) is not None
+        )
 
         try:
             jobs = get_all_render_jobs(self.repository_path)
+            workers = list_render_workers(self.repository_path)
         except Exception as error:
             self.status_var.set(f"Could not load render jobs: {error}")
             messagebox.showerror(
@@ -839,15 +942,18 @@ class FarmRenderManagerApp:
             return False
 
         self.all_jobs = jobs
-        self.set_projects(sorted({job.project for job in jobs}, key=str.casefold))
-        self._apply_project_filter(selected_job_keys)
+        self.all_workers = workers
+        self._update_project_choices()
+        self._apply_project_filter(selected_job_keys, selected_worker_keys)
         unreadable_count = sum(job.load_error is not None for job in jobs)
         warning = (
             f" ({unreadable_count} with incomplete metadata)"
             if unreadable_count
             else ""
         )
-        self.status_var.set(f"Loaded {len(jobs)} render jobs{warning}")
+        self.status_var.set(
+            f"Loaded {len(jobs)} render jobs and {len(workers)} workers{warning}"
+        )
         self.last_update_var.set(
             f"Last update: {datetime.now().astimezone().strftime('%H:%M:%S')}"
         )
@@ -980,12 +1086,21 @@ class FarmRenderManagerApp:
                 for item_id in self.job_tree.selection()
                 if (job := self._jobs_by_item.get(item_id)) is not None
             )
-            jobs = list(result.jobs)
-            self.all_jobs = jobs
-            self.set_projects(
-                sorted({job.project for job in jobs}, key=str.casefold)
+            selected_worker_keys = tuple(
+                (
+                    worker.project.casefold(),
+                    worker.worker_name.casefold(),
+                    worker.session_id,
+                )
+                for item_id in self.worker_tree.selection()
+                if (worker := self._workers_by_item.get(item_id)) is not None
             )
-            self._apply_project_filter(selected_job_keys)
+            jobs = list(result.jobs)
+            workers = list(result.workers)
+            self.all_jobs = jobs
+            self.all_workers = workers
+            self._update_project_choices()
+            self._apply_project_filter(selected_job_keys, selected_worker_keys)
             unreadable_count = sum(job.load_error is not None for job in jobs)
             warning = (
                 f" ({unreadable_count} with incomplete metadata)"
@@ -993,7 +1108,8 @@ class FarmRenderManagerApp:
                 else ""
             )
             self.status_var.set(
-                f"Auto-refreshed {len(jobs)} render jobs{warning}"
+                f"Auto-refreshed {len(jobs)} render jobs and "
+                f"{len(workers)} workers{warning}"
             )
             self.last_update_var.set(
                 "Last update: "
@@ -1005,14 +1121,29 @@ class FarmRenderManagerApp:
     def _apply_project_filter(
         self,
         selected_job_keys: tuple[JobSelectionKey, ...] = (),
+        selected_worker_keys: tuple[WorkerSelectionKey, ...] = (),
     ) -> None:
         selected_project = self.project_var.get()
-        if selected_project == PROJECT_CHOICES[0]:
-            visible_jobs = self.all_jobs
-        else:
-            visible_jobs = [
+        if self.view_mode == WORKERS_VIEW:
+            visible_workers = (
+                self.all_workers
+                if selected_project == PROJECT_CHOICES[0]
+                else [
+                    worker
+                    for worker in self.all_workers
+                    if worker.project == selected_project
+                ]
+            )
+            self.set_workers(visible_workers, selected_worker_keys)
+            return
+
+        visible_jobs = (
+            self.all_jobs
+            if selected_project == PROJECT_CHOICES[0]
+            else [
                 job for job in self.all_jobs if job.project == selected_project
             ]
+        )
         if self.job_sort_column is not None:
             visible_jobs = sort_render_jobs(
                 visible_jobs,
@@ -1095,6 +1226,163 @@ class FarmRenderManagerApp:
             self.job_tree.focus(restored_items[0])
             self.job_tree.see(restored_items[0])
             self._on_job_selected(None)
+
+    def set_workers(
+        self,
+        workers: Iterable[WorkerRecord],
+        selected_worker_keys: tuple[WorkerSelectionKey, ...] = (),
+    ) -> None:
+        self.worker_tree.delete(*self.worker_tree.get_children())
+        self._workers_by_item.clear()
+        self.details_title_var.set("Worker Details - No Worker Selected")
+        self.set_worker_details(None)
+        self._set_log_text("", "Waiting for selection")
+        worker_list = list(workers)
+        items_by_worker_key: dict[WorkerSelectionKey, str] = {}
+
+        for worker in worker_list:
+            values = (
+                worker.worker_name,
+                worker.project,
+                worker.status_label,
+                worker.current_job_label,
+                worker.last_seen_label,
+                worker.worker_git_commit[:8] or "Unknown",
+            )
+            item_id = self.worker_tree.insert(
+                "",
+                "end",
+                values=values,
+                tags=(self._worker_status_tag(worker),),
+            )
+            self._workers_by_item[item_id] = worker
+            key = (
+                worker.project.casefold(),
+                worker.worker_name.casefold(),
+                worker.session_id,
+            )
+            items_by_worker_key[key] = item_id
+
+        self._update_worker_summary(worker_list)
+        restored_items = [
+            items_by_worker_key[key]
+            for key in selected_worker_keys
+            if key in items_by_worker_key
+        ]
+        if restored_items:
+            selected_item = restored_items[0]
+            self.worker_tree.selection_set(selected_item)
+            self.worker_tree.focus(selected_item)
+            self.worker_tree.see(selected_item)
+            self._on_worker_selected(None)
+
+    def set_worker_details(self, worker: WorkerRecord | None) -> None:
+        self.job_detail_tree.delete(*self.job_detail_tree.get_children())
+        if worker is None:
+            self.detail_count_var.set("0 properties")
+            return
+
+        sections = (
+            (
+                "Worker",
+                (
+                    ("Worker Name", worker.worker_name),
+                    ("Machine Name", worker.machine_name or "Unknown"),
+                    ("Project", worker.project),
+                    ("Status", worker.status_label),
+                    ("Last Seen", worker.last_seen_label),
+                    ("Stop Requested", "Yes" if worker.stop_requested else "No"),
+                ),
+            ),
+            (
+                "Current Job",
+                (
+                    ("Job ID", worker.current_job_id or "—"),
+                    ("Shot", worker.shot_name or "—"),
+                    ("Version", worker.render_version or "—"),
+                    ("Render Setting", worker.render_setting or "—"),
+                ),
+            ),
+            (
+                "Session",
+                (
+                    ("Session ID", worker.session_id or "Unknown"),
+                    ("Process ID", str(worker.process_id or "Unknown")),
+                    ("Started UTC", worker.started_utc or "Unknown"),
+                    ("Last Heartbeat UTC", worker.last_heartbeat_utc or "Unknown"),
+                    ("Git Branch", worker.worker_git_branch or "Unknown"),
+                    ("Git Commit", worker.worker_git_commit or "Unknown"),
+                    ("Status File", str(worker.status_file)),
+                    ("STOP File", str(worker.stop_file)),
+                ),
+            ),
+        )
+
+        property_count = 0
+        for section_name, details in sections:
+            section_item = self.job_detail_tree.insert(
+                "",
+                "end",
+                text=section_name,
+                values=("",),
+                tags=("section",),
+                open=True,
+            )
+            for property_name, value in details:
+                status_tag = (
+                    self._worker_status_tag(worker)
+                    if property_name == "Status"
+                    else ""
+                )
+                self.job_detail_tree.insert(
+                    section_item,
+                    "end",
+                    text=property_name,
+                    values=(value,),
+                    tags=(status_tag,) if status_tag else (),
+                )
+                property_count += 1
+
+        suffix = "property" if property_count == 1 else "properties"
+        self.detail_count_var.set(f"{property_count} {suffix}")
+
+    def _update_worker_summary(self, workers: list[WorkerRecord]) -> None:
+        online = sum(not worker.stale for worker in workers)
+        rendering = sum(
+            not worker.stale and worker.status == "rendering"
+            for worker in workers
+        )
+        stopping = sum(
+            not worker.stale
+            and (
+                worker.stop_requested
+                or worker.status == "stopping_after_current_job"
+            )
+            for worker in workers
+        )
+        stale = sum(worker.stale for worker in workers)
+        self.summary_var.set(
+            f"Workers: {len(workers)}    Online: {online}    "
+            f"Rendering: {rendering}    Stopping: {stopping}    Stale: {stale}"
+        )
+
+    @staticmethod
+    def _worker_status_tag(worker: WorkerRecord) -> str:
+        if worker.stale:
+            return "stale"
+        if worker.stop_requested or worker.status == "stopping_after_current_job":
+            return "stopping"
+        if worker.status == "rendering":
+            return "rendering"
+        return "waiting"
+
+    def _set_log_text(self, text: str, source: str) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        if text:
+            self.log_text.insert("1.0", text)
+        self.log_text.configure(state="disabled")
+        self.log_source_var.set(source)
 
     def set_job_details(self, job: RenderJob | None) -> None:
         """Display grouped property rows for the selected render job."""
@@ -1192,10 +1480,101 @@ class FarmRenderManagerApp:
             self.job_context_menu.grab_release()
         return "break"
 
+    def _on_worker_selected(self, _event: tk.Event[tk.Misc] | None) -> None:
+        selection = self.worker_tree.selection()
+        if not selection:
+            return
+        worker = self._workers_by_item.get(selection[0])
+        if worker is None:
+            return
+
+        self.details_title_var.set(f"Worker Details - {worker.worker_name}")
+        self.set_worker_details(worker)
+        heartbeat_text = json.dumps(worker.raw_data, indent=4, ensure_ascii=False)
+        if worker.load_error:
+            heartbeat_text = (
+                f"Could not read worker status:\n{worker.load_error}\n\n"
+                f"Status file: {worker.status_file}"
+            )
+        self._set_log_text(heartbeat_text, worker.worker_name)
+        self.status_var.set(
+            f"Selected worker: {worker.worker_name} ({worker.status_label})"
+        )
+
+    def _show_worker_context_menu(self, event: tk.Event[tk.Misc]) -> str:
+        row_id = self.worker_tree.identify_row(event.y)
+        if not row_id:
+            return "break"
+        self.worker_tree.selection_set(row_id)
+        self.worker_tree.focus(row_id)
+        self._on_worker_selected(None)
+        worker = self._workers_by_item.get(row_id)
+        menu_state = (
+            "disabled"
+            if worker is None or worker.stop_requested
+            else "normal"
+        )
+        self.worker_context_menu.entryconfigure(0, state=menu_state)
+        try:
+            self.worker_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.worker_context_menu.grab_release()
+        return "break"
+
+    def _stop_selected_worker(self) -> None:
+        selection = self.worker_tree.selection()
+        if not selection:
+            return
+        worker = self._workers_by_item.get(selection[0])
+        if worker is None:
+            return
+
+        active_job_note = (
+            "\n\nThe worker will finish its current job before stopping."
+            if worker.current_job_id or worker.status == "rendering"
+            else "\n\nThe waiting worker will stop without claiming another job."
+        )
+        if worker.stale:
+            active_job_note = (
+                "\n\nThis worker is stale. The STOP marker will remain pending "
+                "and will be honored if that worker returns."
+            )
+        confirmed = messagebox.askyesno(
+            "STOP Render Worker",
+            f'Create an empty STOP marker for "{worker.worker_name}"?'
+            f"{active_job_note}",
+            icon="warning",
+            default="no",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        try:
+            stop_file = create_worker_stop_request(
+                worker.farm_root,
+                worker.worker_name,
+            )
+        except Exception as error:
+            messagebox.showerror(
+                "STOP Render Worker",
+                f"Could not create the STOP marker:\n{error}",
+                parent=self.root,
+            )
+            self.status_var.set(f"Could not stop {worker.worker_name}: {error}")
+            return
+
+        self.status_var.set(
+            f"STOP requested for {worker.worker_name}: {stop_file.name}"
+        )
+        self._refresh_jobs()
+
     def _select_all_jobs(
         self,
         _event: tk.Event[tk.Misc] | None = None,
     ) -> str:
+        if self.view_mode == WORKERS_VIEW:
+            return "break"
         items = self.job_tree.get_children()
         if items:
             self.job_tree.selection_set(items)
@@ -1204,6 +1583,12 @@ class FarmRenderManagerApp:
         return "break"
 
     def _clear_job_selection(self) -> None:
+        if self.view_mode == WORKERS_VIEW:
+            self.worker_tree.selection_remove(self.worker_tree.selection())
+            self.details_title_var.set("Worker Details - No Worker Selected")
+            self.set_worker_details(None)
+            self._set_log_text("", "Waiting for selection")
+            return
         self.job_tree.selection_remove(self.job_tree.selection())
         self.details_title_var.set("Job Details - No Job Selected")
         self.set_job_details(None)

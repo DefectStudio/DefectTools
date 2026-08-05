@@ -2,7 +2,7 @@
 
 This checkpoint supports supervised and continuous filesystem-queue processing,
 including real Unreal 5.8 Movie Render Graph launches and post-render output
-validation. Worker heartbeats remain a separate checkpoint.
+validation, worker heartbeats, and filesystem-based remote stopping.
 
 ## Queue folders
 
@@ -14,10 +14,13 @@ The worker creates these folders beneath the supplied farm root:
 02_IsRendering
 03_RenderComplete
 04_RenderFailed
+Workers
 ```
 
 `00_Submitting` is never scanned by workers. A submission becomes visible only
 when its complete job folder is renamed into `01_NeedsRendering`.
+`Workers` is not a job queue; it contains live worker heartbeat and remote STOP
+marker files.
 
 ## Render Worker interface
 
@@ -98,6 +101,30 @@ continues listening.
 stops before claiming one. If a render is already claimed, that render finishes
 and reaches its terminal queue folder before the listener stops. It never kills
 Unreal in the middle of a render.
+
+## Worker heartbeat and remote STOP protocol
+
+Starting the automatic worker publishes
+`Workers\WORKERNAME_STATUS.json` immediately and updates it every 10 seconds.
+The JSON includes the worker and machine names, a unique session ID, process ID,
+activity state, current job fields, PortablePipeTools branch and commit, and UTC
+heartbeat timestamps. A fresh status file with the same worker name blocks a
+second listener session. Heartbeats older than 45 seconds are treated as stale,
+allowing a crashed or disconnected machine to remain visible without appearing
+online.
+
+`Workers\WORKERNAME_STOP.json` is an existence-only command and may be a
+completely empty, zero-byte file. The worker checks for it during every
+heartbeat. A waiting worker stops immediately; a worker with an active queue
+check or render finishes safely and stops before claiming another job. The
+status changes to `stopping_after_current_job` while draining. After a clean
+stop, the worker removes both its status and STOP files. A marker created while
+the worker is offline remains pending and prevents its next startup.
+
+Farm Render Manager's **Workers** toolbar button toggles the left panel between
+Jobs and Workers. The Workers view shows project, status, current job, last seen,
+and tools commit; the right panel shows worker details and the bottom panel shows
+the raw heartbeat JSON. Right-click **STOP Worker** creates the empty marker.
 
 The animation sheets are loaded automatically from the repository-level
 `spriteImages` folder:
