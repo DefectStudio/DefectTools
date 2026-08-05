@@ -65,6 +65,12 @@ render one real job with Unreal while displaying activity in its output log.
 (15 seconds by default); **Stop Worker** finishes an already-claimed render and
 stops before claiming another.
 
+Before every real job, the worker verifies that the selected Unreal checkout is
+clean and runs `git pull --ff-only` on its current upstream branch. The latest
+pulled commit is rendered even when it is newer than the job's submitted
+commit. If Git cannot update safely, the job remains in `01_NeedsRendering`
+instead of being claimed and failed.
+
 Each render computer can select its own **Local Unreal Project (.uproject)**.
 That machine-local path overrides the absolute project path recorded by the
 submitting computer, so workers may use different drive letters and checkout
@@ -78,8 +84,8 @@ If output already exists, the job is failed safely with instructions to submit a
 new render version instead of silently overwriting an earlier render.
 
 The interface also displays transparent pixel-art animations for the worker's
-Waiting, Moving Files, Rendering, and Finishing stages. The four sheets are
-loaded automatically from the repository's `spriteImages` folder. Source
+Stopped, Waiting, Moving Files, Rendering, and Finishing stages. The five
+sheets are loaded automatically from the repository's `spriteImages` folder. Source
 frames are 48x48 and are displayed at a crisp 2x scale. While a job is active,
 the activity panel shows its shot, version, and render setting. Every entered
 worker stage remains visible for at least five seconds.

@@ -159,6 +159,7 @@ The claimed/final job folder records:
 
 ```text
 render_command.txt    Exact command used for diagnosis
+git_pull.log          Git commands and output from the successful pre-job pull
 unreal.log            Unreal's normal absolute log
 unreal_stdout.log     Captured process output
 unreal_result.json    Explicit executor success/failure and reported outputs
@@ -169,10 +170,15 @@ An exit code of zero is not sufficient on its own. The job completes only when
 Unreal also writes a matching, successful `unreal_result.json`; otherwise it is
 moved to `04_RenderFailed` with the diagnostic files kept beside it.
 
-This checkpoint intentionally renders the worker computer's current project
-checkout. It records `rendered_git_commit` and
-`worker_sync_policy: current_checkout` in `job.json`, but it does not reset,
-clean, pull, or otherwise change the artist's checkout.
+Before claiming each real job, the worker requires a clean checkout, verifies
+that the current branch has an upstream, and runs `git pull --ff-only`. It then
+requires the local branch to exactly match that upstream. The latest pulled
+commit is rendered regardless of the job's `submitted_git_commit` value.
+
+A successful pull is recorded in `git_pull.log` and in the job's `git_*`
+fields, with `worker_sync_policy: latest_branch_git_pull_ff_only`. If this
+preflight fails, the job remains in `01_NeedsRendering`; the automatic worker
+waits for its next polling interval before trying again.
 
 ## Manual walking test
 

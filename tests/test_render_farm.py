@@ -5,6 +5,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from portable_pipe_tools.render_farm.git_sync import (
+    GIT_PULL_LOG_FILENAME,
+    GitPullError,
+    GitPullResult,
+)
 from portable_pipe_tools.render_farm.queue import (
     JOB_FILENAME,
     RESULT_FILENAME,
@@ -139,6 +144,89 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         self.assertEqual(0, result_json["exit_code"])
         self.assertTrue(result_json["unreal_reported_success"])
         self.assertEqual(100, result_json["output_file_count"])
+
+    def test_real_job_pulls_before_claim_and_records_latest_commit(self) -> None:
+        queued_folder = create_test_job(self.farm_root)
+        worker_uproject = self.farm_root / "worker" / "s3bishop.uproject"
+        worker_uproject.parent.mkdir()
+        worker_uproject.write_text("{}", encoding="utf-8")
+        commit_before = "a" * 40
+        commit_after = "b" * 40
+
+        def successful_git_sync(project_directory: Path) -> GitPullResult:
+            self.assertEqual(worker_uproject.parent, project_directory)
+            self.assertTrue(queued_folder.is_dir())
+            self.assertEqual([], list(self.paths.is_rendering.iterdir()))
+            return GitPullResult(
+                repository_root=worker_uproject.parent,
+                branch="main",
+                upstream="origin/main",
+                commit_before=commit_before,
+                commit_after=commit_after,
+                summary="Fast-forward",
+                transcript="$ git pull --ff-only\nFast-forward\n[exit code 0]\n",
+            )
+
+        def successful_runner(**kwargs) -> UnrealExecutionResult:
+            self.assertFalse(queued_folder.exists())
+            self.assertEqual(
+                "latest_branch_git_pull_ff_only",
+                kwargs["job"]["worker_sync_policy"],
+            )
+            self.assertEqual(commit_after, kwargs["job"]["git_commit_after_pull"])
+            return UnrealExecutionResult(
+                success=True,
+                reason="Real render completed",
+                exit_code=0,
+                unreal_result={"success": True, "output_file_count": 1},
+            )
+
+        result = run_once(
+            self.farm_root,
+            "RENDER-GIT",
+            simulate_success=False,
+            minimum_stage_seconds=0.0,
+            render_with_unreal=True,
+            unreal_runner=successful_runner,
+            local_uproject=worker_uproject,
+            git_sync=successful_git_sync,
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        job = read_json_object(result.final_folder / JOB_FILENAME)
+        self.assertEqual("main", job["git_branch"])
+        self.assertEqual("origin/main", job["git_upstream"])
+        self.assertEqual(commit_after, job["rendered_git_commit"])
+        self.assertTrue((result.final_folder / GIT_PULL_LOG_FILENAME).is_file())
+
+    def test_git_pull_failure_leaves_job_queued(self) -> None:
+        queued_folder = create_test_job(self.farm_root)
+        worker_uproject = self.farm_root / "worker" / "s3bishop.uproject"
+        worker_uproject.parent.mkdir()
+        worker_uproject.write_text("{}", encoding="utf-8")
+
+        def failed_git_sync(project_directory: Path) -> GitPullResult:
+            self.assertEqual(worker_uproject.parent, project_directory)
+            raise GitPullError("Git pull --ff-only failed")
+
+        with self.assertRaisesRegex(GitPullError, "Git pull --ff-only failed"):
+            run_once(
+                self.farm_root,
+                "RENDER-GIT-FAIL",
+                simulate_success=False,
+                minimum_stage_seconds=0.0,
+                render_with_unreal=True,
+                unreal_runner=lambda **kwargs: self.fail(
+                    f"Render should not run: {kwargs}"
+                ),
+                local_uproject=worker_uproject,
+                git_sync=failed_git_sync,
+            )
+
+        self.assertTrue(queued_folder.is_dir())
+        self.assertEqual([], list(self.paths.is_rendering.iterdir()))
+        self.assertEqual([], list(self.paths.render_failed.iterdir()))
 
     def test_real_runner_exception_moves_claimed_job_to_failed(self) -> None:
         create_test_job(self.farm_root)

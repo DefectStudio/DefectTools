@@ -11,6 +11,7 @@ import subprocess
 from threading import Thread
 from typing import Any
 
+from portable_pipe_tools.render_farm.git_sync import GIT_PULL_LOG_FILENAME
 from portable_pipe_tools.render_farm.local_paths import (
     prepare_worker_output_mapping,
 )
@@ -63,6 +64,7 @@ class UnrealExecutionResult:
             "unreal_log_file": UNREAL_LOG_FILENAME,
             "unreal_stdout_file": UNREAL_STDOUT_FILENAME,
             "render_command_file": RENDER_COMMAND_FILENAME,
+            "git_pull_log_file": GIT_PULL_LOG_FILENAME,
         }
 
 
@@ -414,16 +416,35 @@ def execute_unreal_job(
         )
 
     rendered_commit = _query_git_commit(uproject.parent)
+    worker_sync_policy = str(
+        job.get("worker_sync_policy") or "current_checkout"
+    ).strip()
+    if worker_sync_policy == "latest_branch_git_pull_ff_only":
+        pulled_commit = str(job.get("git_commit_after_pull") or "").strip()
+        if not rendered_commit or rendered_commit.casefold() != pulled_commit.casefold():
+            raise RuntimeError(
+                "The worker Git checkout changed after the pre-job pull: "
+                f"pulled commit={pulled_commit or 'unknown'}, "
+                f"current commit={rendered_commit or 'unknown'}."
+            )
+
     job["worker_uproject"] = str(uproject)
     job["rendered_git_commit"] = rendered_commit
-    job["worker_sync_policy"] = "current_checkout"
+    job["worker_sync_policy"] = worker_sync_policy
     write_json_atomic(job_path, job)
     if rendered_commit:
         LOGGER.info("Render checkout Git commit: %s", rendered_commit)
     LOGGER.info("Worker-local Unreal project: %s", uproject)
-    LOGGER.warning(
-        "Git sync is not enabled in this checkpoint; rendering the worker's current checkout."
-    )
+    if worker_sync_policy == "latest_branch_git_pull_ff_only":
+        LOGGER.info(
+            "Git sync verified: rendering the latest pulled '%s' branch at %s.",
+            job.get("git_branch") or "current",
+            rendered_commit,
+        )
+    else:
+        LOGGER.warning(
+            "No pre-job Git pull was recorded; rendering the worker's current checkout."
+        )
 
     command_text = subprocess.list2cmdline(command)
     _write_text_with_retry(command_path, command_text + "\n")

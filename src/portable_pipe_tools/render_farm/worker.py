@@ -10,7 +10,14 @@ import sys
 import time
 from typing import TypeVar
 
+from portable_pipe_tools.render_farm.git_sync import (
+    GIT_PULL_LOG_FILENAME,
+    GitPullResult,
+    pull_latest_branch,
+    write_git_pull_log,
+)
 from portable_pipe_tools.render_farm.queue import (
+    JOB_FILENAME,
     QueuePaths,
     claim_next_job,
     create_queue_folders,
@@ -19,12 +26,16 @@ from portable_pipe_tools.render_farm.queue import (
     finish_claimed_job,
     list_job_candidates,
     mark_job_rendering,
+    read_json_object,
     safe_name,
+    utc_now,
+    write_json_atomic,
 )
 from portable_pipe_tools.render_farm.unreal_runner import (
     DEFAULT_RENDER_TIMEOUT_SECONDS,
     UnrealExecutionResult,
     execute_unreal_job,
+    resolve_unreal_project,
 )
 
 
@@ -51,6 +62,7 @@ WORKER_STAGE_LABELS: dict[WorkerStage, str] = {
 
 StageCallback = Callable[[WorkerStage], None]
 JobCallback = Callable[[dict], None]
+GitSyncCallback = Callable[[Path], GitPullResult]
 
 
 @dataclass(frozen=True)
@@ -65,6 +77,51 @@ class _ClaimedJob:
     folder: Path
     job: dict | None
     failure_reason: str | None = None
+
+
+def _git_project_directory_for_candidate(
+    candidate_folder: Path,
+    local_uproject: str | Path | None,
+) -> Path | None:
+    try:
+        preview_job = read_json_object(candidate_folder / JOB_FILENAME)
+    except (OSError, ValueError) as error:
+        LOGGER.warning(
+            "Skipping Git preflight for unreadable queued job %s; it will be "
+            "claimed and failed normally. Error: %s",
+            candidate_folder,
+            error,
+        )
+        return None
+
+    uproject = resolve_unreal_project(preview_job, local_uproject)
+    return uproject.parent
+
+
+def _record_git_pull(
+    claimed_folder: Path,
+    job: dict,
+    result: GitPullResult,
+) -> None:
+    job["worker_sync_policy"] = "latest_branch_git_pull_ff_only"
+    job["git_sync_status"] = "success"
+    job["git_branch"] = result.branch
+    job["git_upstream"] = result.upstream
+    job["git_commit_before_pull"] = result.commit_before
+    job["git_commit_after_pull"] = result.commit_after
+    job["git_pull_summary"] = result.summary
+    job["git_pull_completed_utc"] = utc_now()
+    job["rendered_git_commit"] = result.commit_after
+    write_git_pull_log(claimed_folder / GIT_PULL_LOG_FILENAME, result)
+    write_json_atomic(claimed_folder / JOB_FILENAME, job)
+
+    submitted_commit = str(job.get("submitted_git_commit") or "").strip()
+    if submitted_commit and submitted_commit.casefold() != result.commit_after.casefold():
+        LOGGER.info(
+            "Latest-branch policy selected: submitted commit=%s, pulled commit=%s",
+            submitted_commit,
+            result.commit_after,
+        )
 
 
 def _run_stage(
@@ -103,6 +160,7 @@ def run_once(
     should_stop_before_claim: Callable[[], bool] | None = None,
     job_callback: JobCallback | None = None,
     local_uproject: str | Path | None = None,
+    git_sync: GitSyncCallback | None = None,
 ) -> WorkerResult | None:
     if minimum_stage_seconds < 0:
         raise ValueError("minimum_stage_seconds cannot be negative")
@@ -128,6 +186,23 @@ def run_once(
         LOGGER.info("Stop requested before claiming the next queued job.")
         return None
 
+    git_pull_result: GitPullResult | None = None
+    should_sync_git = render_with_unreal and (
+        unreal_runner is None or git_sync is not None
+    )
+    if should_sync_git:
+        project_directory = _git_project_directory_for_candidate(
+            queued_candidates[0].folder,
+            local_uproject,
+        )
+        if project_directory is not None:
+            LOGGER.info(
+                "Queued job found. Pulling the latest Git branch before claim: %s",
+                project_directory,
+            )
+            sync_operation = git_sync or pull_latest_branch
+            git_pull_result = sync_operation(project_directory)
+
     def claim_and_prepare_job() -> _ClaimedJob | None:
         if should_stop_before_claim is not None and should_stop_before_claim():
             LOGGER.info("Stop requested before claiming the next queued job.")
@@ -150,6 +225,8 @@ def run_once(
                 job=None,
                 failure_reason=reason,
             )
+        if git_pull_result is not None:
+            _record_git_pull(claimed_folder, job, git_pull_result)
         if job_callback is not None:
             try:
                 job_callback(dict(job))

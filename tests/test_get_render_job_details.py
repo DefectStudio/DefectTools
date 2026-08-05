@@ -66,6 +66,12 @@ class GetRenderJobDetailsTests(unittest.TestCase):
                     "submitted_git_commit": "abc123",
                     "rendered_git_commit": "def456",
                     "sync_policy": "submitted_commit",
+                    "worker_sync_policy": "latest_branch_git_pull_ff_only",
+                    "git_branch": "main",
+                    "git_upstream": "origin/main",
+                    "git_commit_before_pull": "abc123",
+                    "git_commit_after_pull": "def456",
+                    "git_pull_summary": "Fast-forward",
                 },
             )
             write_json_atomic(
@@ -112,6 +118,15 @@ class GetRenderJobDetailsTests(unittest.TestCase):
             self.assertEqual(
                 "Render completed successfully.",
                 section_map["Result"]["Reason"],
+            )
+            self.assertEqual(
+                "latest_branch_git_pull_ff_only",
+                section_map["Advanced"]["Worker Sync Policy"],
+            )
+            self.assertEqual("main", section_map["Advanced"]["Git Branch"])
+            self.assertEqual(
+                "origin/main",
+                section_map["Advanced"]["Git Upstream"],
             )
 
     def test_missing_optional_values_have_a_consistent_placeholder(self) -> None:

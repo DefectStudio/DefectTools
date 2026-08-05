@@ -134,7 +134,28 @@ def get_render_job_details(job: RenderJob) -> tuple[JobDetailSection, ...]:
                 "Rendered Git Commit",
                 _display(data.get("rendered_git_commit")),
             ),
-            JobDetail("Sync Policy", _display(data.get("sync_policy"))),
+            JobDetail(
+                "Submission Sync Policy",
+                _display(data.get("sync_policy")),
+            ),
+            JobDetail(
+                "Worker Sync Policy",
+                _display(data.get("worker_sync_policy")),
+            ),
+            JobDetail("Git Branch", _display(data.get("git_branch"))),
+            JobDetail("Git Upstream", _display(data.get("git_upstream"))),
+            JobDetail(
+                "Git Commit Before Pull",
+                _display(data.get("git_commit_before_pull")),
+            ),
+            JobDetail(
+                "Git Commit After Pull",
+                _display(data.get("git_commit_after_pull")),
+            ),
+            JobDetail(
+                "Git Pull Summary",
+                _display(data.get("git_pull_summary")),
+            ),
             JobDetail("Job Folder", str(job.job_folder)),
             JobDetail("Job JSON", str(job.job_json_path)),
             JobDetail("Result JSON", _existing_path_or_missing(job.result_json_path)),

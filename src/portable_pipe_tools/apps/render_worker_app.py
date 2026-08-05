@@ -656,8 +656,9 @@ class RenderWorkerApp:
             "The worker will continuously claim and render real Unreal jobs "
             f"until stopped.\n\nWhen the queue is empty it will check every "
             f"{configuration.poll_interval_seconds} seconds. Stop Worker will "
-            "finish an already-claimed render before stopping.\n\nAutomatic Git "
-            "sync is not enabled; jobs render from the current checkout.\n\n"
+            "finish an already-claimed render before stopping.\n\nBefore every job, "
+            "the worker requires a clean Git checkout and pulls the latest "
+            "upstream branch using git pull --ff-only.\n\n"
             f"Local Unreal project:\n{local_project_message}\n\n"
             "Show path derived from Render Farm folder:\n"
             f"{configuration.local_show_file_server_path}\n\n"
@@ -897,8 +898,8 @@ class RenderWorkerApp:
         confirmed = messagebox.askyesno(
             "Render One Farm Job with Unreal",
             "This will claim the next queued job and launch a real Unreal render.\n\n"
-            "This checkpoint renders the worker's current project checkout; "
-            "automatic Git sync is not enabled yet.\n\n"
+            "Before claiming the job, the worker requires a clean Git checkout "
+            "and pulls the latest upstream branch using git pull --ff-only.\n\n"
             f"Local Unreal project:\n{local_project_message}\n\n"
             "Show path derived from Render Farm folder:\n"
             f"{local_show_file_server_path}\n\n"
