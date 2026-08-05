@@ -9,9 +9,8 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any
-import webbrowser
 
 from portable_pipe_tools.render_farm.animations import (
     DEFAULT_ANIMATION_SPRITE_FOLDER,
@@ -37,33 +36,16 @@ from portable_pipe_tools.render_farm.listener import (
 from portable_pipe_tools.render_farm.local_paths import (
     derive_show_file_server_path,
 )
-from portable_pipe_tools.render_farm.dropbox_api import (
-    DROPBOX_APP_KEY_ENV,
-    DropboxConfigurationError,
-    DropboxCredentials,
-    DropboxHttpJsonStore,
-)
-from portable_pipe_tools.render_farm.dropbox_credentials import (
-    load_saved_dropbox_credentials,
-    save_dropbox_credentials,
-)
-from portable_pipe_tools.render_farm.dropbox_oauth import (
-    api_credentials_from_stored,
-    create_pkce_authorization,
-    exchange_authorization_code,
-)
 from portable_pipe_tools.render_farm.test_job import create_test_job
 from portable_pipe_tools.render_farm.settings import (
     load_saved_local_uproject,
     load_saved_poll_interval_seconds,
     load_saved_render_farm_root,
     load_saved_unreal_editor_cmd,
-    load_saved_use_dropbox_api_sync,
     save_local_uproject,
     save_poll_interval_seconds,
     save_render_farm_root,
     save_unreal_editor_cmd,
-    save_use_dropbox_api_sync,
 )
 from portable_pipe_tools.render_farm.self_update import (
     RENDER_WORKER_RESTART_EXIT_CODE,
@@ -163,9 +145,6 @@ class RenderWorkerApp:
         self.farm_root_var = tk.StringVar(value=load_saved_render_farm_root())
         self.worker_name_var = tk.StringVar(value=default_worker_name())
         self.simulate_result_var = tk.StringVar(value="success")
-        self.use_dropbox_api_sync_var = tk.BooleanVar(
-            value=load_saved_use_dropbox_api_sync()
-        )
         saved_poll_interval = load_saved_poll_interval_seconds()
         self.poll_interval_var = tk.StringVar(
             value=saved_poll_interval or str(DEFAULT_POLL_INTERVAL_SECONDS)
@@ -272,10 +251,6 @@ class RenderWorkerApp:
                 "real farm jobs."
             )
         self._log(
-            "Dropbox API sync is "
-            + ("enabled." if self.use_dropbox_api_sync_var.get() else "disabled.")
-        )
-        self._log(
             f"Project animation sprites: {DEFAULT_ANIMATION_SPRITE_FOLDER}"
         )
 
@@ -368,31 +343,6 @@ class RenderWorkerApp:
             setup_frame,
             text="Used only by the Simulate One Job button.",
         ).grid(row=5, column=2, sticky="w", padx=(8, 0), pady=4)
-
-        self.use_dropbox_api_sync_checkbox = ttk.Checkbutton(
-            setup_frame,
-            text="Use Dropbox API sync",
-            variable=self.use_dropbox_api_sync_var,
-            command=self._use_dropbox_api_sync_changed,
-        )
-        self.use_dropbox_api_sync_checkbox.grid(
-            row=6,
-            column=1,
-            sticky="w",
-            pady=4,
-        )
-        self.dropbox_credentials_button = ttk.Button(
-            setup_frame,
-            text="Dropbox Credentials...",
-            command=self._configure_dropbox_credentials,
-        )
-        self.dropbox_credentials_button.grid(
-            row=6,
-            column=2,
-            sticky="w",
-            padx=(8, 0),
-            pady=4,
-        )
 
         ttk.Label(setup_frame, text="UnrealEditor-Cmd.exe").grid(
             row=3,
@@ -944,7 +894,6 @@ class RenderWorkerApp:
                 self._finish_listener_stopped()
             return
 
-        use_dropbox_api_sync = bool(self.use_dropbox_api_sync_var.get())
         started = self._run_background(
             label="Automatic worker job check",
             work=lambda: run_once(
@@ -960,7 +909,6 @@ class RenderWorkerApp:
                     lambda: self._listener_state.stop_requested
                 ),
                 job_callback=self._job_queue.put,
-                use_dropbox_api_sync=use_dropbox_api_sync,
             ),
             on_success=self._listener_job_check_finished,
             on_error=self._listener_job_check_errored,
@@ -1099,7 +1047,6 @@ class RenderWorkerApp:
             return
 
         simulate_success = self.simulate_result_var.get() == "success"
-        use_dropbox_api_sync = bool(self.use_dropbox_api_sync_var.get())
         self._remember_farm_root(farm_root)
         self._run_background(
             label="Process one job",
@@ -1110,7 +1057,6 @@ class RenderWorkerApp:
                 minimum_stage_seconds=DEFAULT_MINIMUM_STAGE_SECONDS,
                 stage_callback=self._stage_queue.put,
                 job_callback=self._job_queue.put,
-                use_dropbox_api_sync=use_dropbox_api_sync,
             ),
             on_success=self._job_processed,
         )
@@ -1135,7 +1081,6 @@ class RenderWorkerApp:
             return
 
         local_project_message = str(local_uproject)
-        use_dropbox_api_sync = bool(self.use_dropbox_api_sync_var.get())
         confirmed = messagebox.askyesno(
             "Render One Farm Job with Unreal",
             "This will claim the next queued job and launch a real Unreal render.\n\n"
@@ -1166,7 +1111,6 @@ class RenderWorkerApp:
                 unreal_editor_cmd=unreal_editor_cmd,
                 local_uproject=local_uproject,
                 job_callback=self._job_queue.put,
-                use_dropbox_api_sync=use_dropbox_api_sync,
             ),
             on_success=self._job_processed,
         )
@@ -1344,10 +1288,6 @@ class RenderWorkerApp:
         self.unreal_editor_cmd_browse_button.configure(state=button_state)
         self.local_uproject_entry.configure(state=entry_state)
         self.local_uproject_browse_button.configure(state=button_state)
-        # This remains live while the automatic listener is active. The UI
-        # samples it immediately before each new run_once invocation.
-        self.use_dropbox_api_sync_checkbox.configure(state="normal")
-        self.dropbox_credentials_button.configure(state="normal")
 
     def _clear_log(self) -> None:
         self.log_text.configure(state="normal")
@@ -1402,156 +1342,6 @@ class RenderWorkerApp:
             save_poll_interval_seconds(poll_interval_seconds)
         except Exception as error:
             self._log(f"WARNING: Could not remember polling interval: {error}")
-
-    def _use_dropbox_api_sync_changed(self) -> None:
-        enabled = bool(self.use_dropbox_api_sync_var.get())
-        try:
-            save_use_dropbox_api_sync(enabled)
-        except Exception as error:
-            self._log(
-                "WARNING: Could not remember Dropbox API sync setting: "
-                f"{error}"
-            )
-        self._log(
-            "Dropbox API sync "
-            + (
-                "enabled for the next job claim."
-                if enabled
-                else "disabled for the next job claim."
-            )
-        )
-        if not enabled:
-            return
-        try:
-            DropboxCredentials.from_sources()
-        except DropboxConfigurationError:
-            configure_now = messagebox.askyesno(
-                "Dropbox Credentials Required",
-                "Dropbox API sync needs authorization on this computer. "
-                "Configure Dropbox credentials now?",
-                parent=self.root,
-            )
-            if configure_now:
-                self.root.after_idle(self._configure_dropbox_credentials)
-                return
-            self._disable_dropbox_sync_without_credentials()
-
-    def _configure_dropbox_credentials(self) -> None:
-        try:
-            saved_credentials = load_saved_dropbox_credentials()
-        except Exception as error:
-            self._log(f"DROPBOX CREDENTIAL ERROR: {error}")
-            messagebox.showerror(
-                "Dropbox Credentials",
-                f"Windows Credential Manager could not be read:\n\n{error}",
-                parent=self.root,
-            )
-            return
-
-        app_key = simpledialog.askstring(
-            "Dropbox Credentials",
-            "Enter the studio Dropbox App Key. Dropbox will open in your "
-            "browser so you can authorize this worker.",
-            initialvalue=(
-                saved_credentials.app_key
-                if saved_credentials
-                else str(os.environ.get(DROPBOX_APP_KEY_ENV) or "").strip()
-            ),
-            parent=self.root,
-        )
-        if app_key is None:
-            self._disable_dropbox_sync_without_credentials()
-            return
-
-        try:
-            authorization = create_pkce_authorization(app_key)
-        except ValueError as error:
-            self._show_input_error(error)
-            return
-
-        self._log("Opening Dropbox authorization in the default browser.")
-        browser_opened = webbrowser.open(authorization.authorization_url, new=2)
-        if not browser_opened:
-            messagebox.showwarning(
-                "Open Dropbox Authorization",
-                "The browser could not be opened automatically. Copy this URL "
-                f"into a browser:\n\n{authorization.authorization_url}",
-                parent=self.root,
-            )
-
-        authorization_code = simpledialog.askstring(
-            "Authorize Dropbox",
-            "Approve the PortablePipeTools app in Dropbox, then paste the "
-            "authorization code shown by Dropbox here.",
-            parent=self.root,
-        )
-        if authorization_code is None:
-            self._log("Dropbox authorization cancelled.")
-            self._disable_dropbox_sync_without_credentials()
-            return
-
-        self.status_var.set("Connecting Dropbox API")
-        self.root.update_idletasks()
-        try:
-            stored_credentials = exchange_authorization_code(
-                authorization,
-                authorization_code,
-            )
-            api_credentials = api_credentials_from_stored(stored_credentials)
-            DropboxHttpJsonStore(api_credentials).prepare()
-            save_dropbox_credentials(stored_credentials)
-        except Exception as error:
-            self._log(
-                "DROPBOX AUTHORIZATION ERROR: "
-                f"{type(error).__name__}: {error}"
-            )
-            messagebox.showerror(
-                "Dropbox Authorization Failed",
-                str(error),
-                parent=self.root,
-            )
-            self.status_var.set("Dropbox authorization failed")
-            self._set_idle_or_stopped_stage()
-            self._disable_dropbox_sync_without_credentials()
-            return
-
-        self._log(
-            "Dropbox authorization verified and saved in Windows Credential "
-            "Manager."
-        )
-        messagebox.showinfo(
-            "Dropbox Connected",
-            "This worker is authorized for Dropbox API sync. The refresh "
-            "credential is stored in Windows Credential Manager.",
-            parent=self.root,
-        )
-        self.status_var.set(
-            "Dropbox connected — applies to the next claim"
-            if self._listener_state.active
-            else "Dropbox connected — ready"
-        )
-        self._set_idle_or_stopped_stage()
-
-    def _disable_dropbox_sync_without_credentials(self) -> None:
-        try:
-            DropboxCredentials.from_sources()
-            return
-        except DropboxConfigurationError:
-            pass
-        if not self.use_dropbox_api_sync_var.get():
-            return
-        self.use_dropbox_api_sync_var.set(False)
-        try:
-            save_use_dropbox_api_sync(False)
-        except Exception as error:
-            self._log(
-                "WARNING: Could not turn off the saved Dropbox API sync "
-                f"setting: {error}"
-            )
-        self._log(
-            "Dropbox API sync turned back off because credentials were not "
-            "configured."
-        )
 
     def _load_animation_assets(self) -> None:
         if self._animation_after_id is not None:

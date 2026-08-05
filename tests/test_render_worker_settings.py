@@ -9,14 +9,11 @@ from portable_pipe_tools.render_farm.settings import (
     load_saved_poll_interval_seconds,
     load_saved_render_farm_root,
     load_saved_unreal_editor_cmd,
-    load_saved_use_dropbox_api_sync,
     save_local_uproject,
     save_poll_interval_seconds,
     save_render_farm_root,
     save_unreal_editor_cmd,
-    save_use_dropbox_api_sync,
 )
-from portable_pipe_tools.render_farm.queue import read_json_object
 
 
 class RenderWorkerSettingsTests(unittest.TestCase):
@@ -69,22 +66,6 @@ class RenderWorkerSettingsTests(unittest.TestCase):
             save_poll_interval_seconds(15, settings_path)
 
             self.assertEqual("15", load_saved_poll_interval_seconds(settings_path))
-
-    def test_dropbox_api_sync_defaults_off_and_round_trips(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            settings_path = Path(temporary_directory) / "render_worker.json"
-
-            self.assertFalse(load_saved_use_dropbox_api_sync(settings_path))
-
-            save_use_dropbox_api_sync(True, settings_path)
-            self.assertTrue(load_saved_use_dropbox_api_sync(settings_path))
-            self.assertIs(
-                True,
-                read_json_object(settings_path)["use_dropbox_api_sync"],
-            )
-
-            save_use_dropbox_api_sync(False, settings_path)
-            self.assertFalse(load_saved_use_dropbox_api_sync(settings_path))
 
 
 if __name__ == "__main__":
