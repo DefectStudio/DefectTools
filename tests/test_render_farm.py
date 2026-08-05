@@ -42,6 +42,7 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         self.assertEqual("queued", job["status"])
         self.assertEqual(1001, job["frame_start"])
         self.assertEqual(1100, job["frame_end"])
+        self.assertEqual([], job["blacklisted_workers"])
 
     def test_claim_prefers_higher_priority_then_older_submission(self) -> None:
         self._queue_job("low", priority=10, submitted_utc="2026-08-03T01:00:00.000Z")
@@ -63,6 +64,39 @@ class RenderFarmPrototypeTests(unittest.TestCase):
 
         self.assertIsNotNone(first_claim)
         self.assertIsNone(second_claim)
+
+    def test_claim_skips_jobs_that_blacklist_the_worker(self) -> None:
+        self._queue_job("high", priority=90, submitted_utc="2026-08-03T01:00:00.000Z")
+        self._queue_job("low", priority=10, submitted_utc="2026-08-03T02:00:00.000Z")
+        high_job_path = self.paths.needs_rendering / "high" / JOB_FILENAME
+        high_job = read_json_object(high_job_path)
+        high_job["blacklisted_workers"] = ["render-03"]
+        write_json_atomic(high_job_path, high_job)
+
+        claimed = claim_next_job(self.paths, "RENDER-03")
+
+        self.assertIsNotNone(claimed)
+        assert claimed is not None
+        self.assertEqual("low__RENDER-03", claimed.name)
+        self.assertTrue((self.paths.needs_rendering / "high").is_dir())
+
+    def test_claim_rechecks_blacklist_after_winning_rename(self) -> None:
+        self._queue_job("race", priority=50, submitted_utc="2026-08-03T01:00:00.000Z")
+        candidates_before_blacklist = list_job_candidates(self.paths)
+        job_path = self.paths.needs_rendering / "race" / JOB_FILENAME
+        job = read_json_object(job_path)
+        job["blacklisted_workers"] = ["RENDER-RACE"]
+        write_json_atomic(job_path, job)
+
+        with patch(
+            "portable_pipe_tools.render_farm.queue.list_job_candidates",
+            return_value=candidates_before_blacklist,
+        ):
+            claimed = claim_next_job(self.paths, "RENDER-RACE")
+
+        self.assertIsNone(claimed)
+        self.assertTrue((self.paths.needs_rendering / "race").is_dir())
+        self.assertEqual([], list(self.paths.is_rendering.iterdir()))
 
     def test_successful_simulation_updates_and_moves_job(self) -> None:
         create_test_job(self.farm_root)
@@ -86,8 +120,8 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         self.assertEqual("complete", result_json["status"])
         self.assertEqual([], list(self.paths.is_rendering.iterdir()))
 
-    def test_failed_simulation_updates_and_moves_job(self) -> None:
-        create_test_job(self.farm_root)
+    def test_failed_simulation_blacklists_worker_and_requeues_job(self) -> None:
+        queued_folder = create_test_job(self.farm_root)
 
         result = run_once(
             self.farm_root,
@@ -98,11 +132,62 @@ class RenderFarmPrototypeTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertEqual("failed", result.status)
-        self.assertEqual(self.paths.render_failed, result.final_folder.parent)
+        self.assertEqual("requeued", result.status)
+        self.assertEqual(queued_folder, result.final_folder)
+        self.assertEqual(self.paths.needs_rendering, result.final_folder.parent)
+        job = read_json_object(result.final_folder / JOB_FILENAME)
         result_json = read_json_object(result.final_folder / RESULT_FILENAME)
+        self.assertEqual("queued", job["status"])
+        self.assertEqual(["RENDER-04"], job["blacklisted_workers"])
+        self.assertIsNone(job["worker"])
+        self.assertEqual(1, job["attempt"])
+        self.assertEqual("failed", job["last_failure"]["status"])
         self.assertEqual(1, result_json["exit_code"])
         self.assertEqual("Simulated render failure", result_json["reason"])
+        self.assertEqual([], list(self.paths.render_failed.iterdir()))
+
+    def test_failures_accumulate_blacklist_until_another_worker_succeeds(self) -> None:
+        queued_folder = create_test_job(self.farm_root)
+
+        first_failure = run_once(
+            self.farm_root,
+            "RENDER-A",
+            simulate_success=False,
+            minimum_stage_seconds=0.0,
+        )
+        same_worker_retry = run_once(
+            self.farm_root,
+            "render-a",
+            simulate_success=True,
+            minimum_stage_seconds=0.0,
+        )
+        second_failure = run_once(
+            self.farm_root,
+            "RENDER-B",
+            simulate_success=False,
+            minimum_stage_seconds=0.0,
+        )
+
+        self.assertIsNotNone(first_failure)
+        self.assertIsNone(same_worker_retry)
+        self.assertIsNotNone(second_failure)
+        retry_job = read_json_object(queued_folder / JOB_FILENAME)
+        self.assertEqual(["RENDER-A", "RENDER-B"], retry_job["blacklisted_workers"])
+        self.assertEqual(2, retry_job["attempt"])
+
+        success = run_once(
+            self.farm_root,
+            "RENDER-C",
+            simulate_success=True,
+            minimum_stage_seconds=0.0,
+        )
+
+        self.assertIsNotNone(success)
+        assert success is not None
+        self.assertEqual("complete", success.status)
+        completed_job = read_json_object(success.final_folder / JOB_FILENAME)
+        self.assertEqual(["RENDER-A", "RENDER-B"], completed_job["blacklisted_workers"])
+        self.assertEqual(3, completed_job["attempt"])
 
     def test_successful_real_runner_result_is_not_marked_simulated(self) -> None:
         create_test_job(self.farm_root)
@@ -228,7 +313,7 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         self.assertEqual([], list(self.paths.is_rendering.iterdir()))
         self.assertEqual([], list(self.paths.render_failed.iterdir()))
 
-    def test_real_runner_exception_moves_claimed_job_to_failed(self) -> None:
+    def test_real_runner_exception_blacklists_worker_and_requeues_job(self) -> None:
         create_test_job(self.farm_root)
 
         def broken_runner(**kwargs) -> UnrealExecutionResult:
@@ -246,8 +331,11 @@ class RenderFarmPrototypeTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertEqual("failed", result.status)
+        self.assertEqual("requeued", result.status)
+        self.assertEqual(self.paths.needs_rendering, result.final_folder.parent)
+        job = read_json_object(result.final_folder / JOB_FILENAME)
         result_json = read_json_object(result.final_folder / RESULT_FILENAME)
+        self.assertEqual(["RENDER-BROKEN"], job["blacklisted_workers"])
         self.assertFalse(result_json["simulated"])
         self.assertIsNone(result_json["exit_code"])
         self.assertIn("FileNotFoundError", result_json["reason"])

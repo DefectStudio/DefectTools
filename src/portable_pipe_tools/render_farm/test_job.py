@@ -72,6 +72,7 @@ def create_test_job(
         "render_started_utc": None,
         "render_finished_utc": None,
         "attempt": 0,
+        "blacklisted_workers": [],
         "result": None,
         "test_job": True,
     }

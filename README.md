@@ -105,6 +105,13 @@ Before Unreal starts, the worker checks the local MP4 and EXR version targets.
 If output already exists, the job is failed safely with instructions to submit a
 new render version instead of silently overwriting an earlier render.
 
+When a valid render attempt fails, the worker appends its normalized name to the
+job's `blacklisted_workers` array, resets the job to `queued`, and atomically
+returns its package to `01_NeedsRendering`. That worker ignores the job on later
+queue scans, while another worker can claim and retry it. Each additional failed
+worker is added to the same list. Corrupt or unreadable job metadata still moves
+to `04_RenderFailed` because it cannot safely participate in automatic retries.
+
 The interface also displays transparent pixel-art animations for the worker's
 Stopped, Waiting, Moving Files, Rendering, and Finishing stages. The five
 sheets are loaded automatically from the repository's `spriteImages` folder. Source

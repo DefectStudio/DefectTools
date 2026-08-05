@@ -80,8 +80,9 @@ After Movie Render Graph finishes, the Unreal executor collects files from MRG
 must exist, and an enabled EXR output must contain at least the job's expected
 frame count. Validation details and the final file count are preserved in
 `unreal_result.json`, `result.json`, and the terminal job manifest. Missing
-outputs move the job to `04_RenderFailed` even if Unreal's pipeline callback
-reported success.
+outputs count as a failed attempt even if Unreal's pipeline callback reported
+success; the worker blacklists itself from that job and returns the package to
+`01_NeedsRendering` for another worker.
 
 **Start Worker** begins continuous real-job processing. The polling interval is
 configurable from 1 to 3600 seconds and defaults to 15 seconds. When the queue is
@@ -93,9 +94,26 @@ Waiting for jobs — next check in 12 seconds
 
 Only one automatic listener can exist in a GUI instance, and the supervised
 buttons and worker configuration are locked while it is active. After a job
-completes or fails, the listener immediately checks for another. After an empty
-queue or unexpected worker error, it waits for the configured interval and then
-continues listening.
+completes or is requeued following a failed attempt, the listener immediately
+checks for another. The failed job is ignored because it now blacklists that
+worker. After an empty eligible queue or unexpected worker error, the listener
+waits for the configured interval and then continues listening.
+
+## Failed-attempt blacklist and retry protocol
+
+A valid job that fails to render is not moved to `04_RenderFailed`. Before the
+claimed package is returned to `01_NeedsRendering`, its `job.json` is reset to
+`status: queued` and the worker's normalized name is appended to the
+`blacklisted_workers` array. The failed attempt remains available in
+`last_failure` and `result.json`, and `attempt` remains incremented.
+
+Workers filter the queue using `blacklisted_workers` before Git preflight and
+again before the atomic claim. Matching is case-insensitive. A blacklisted
+worker ignores the package, but any worker not in the list can claim it. If that
+worker also fails, its name is appended and the same package is requeued again.
+A successful worker moves it normally to `03_RenderComplete` with the accumulated
+blacklist retained for diagnostics. Invalid or unreadable `job.json` packages
+still move to `04_RenderFailed` so malformed jobs cannot circulate forever.
 
 **Stop Worker** is graceful. If no job has been claimed, the current queue check
 stops before claiming one. If a render is already claimed, that render finishes
@@ -140,7 +158,7 @@ Each sheet is one row of transparent 48x48 PNG frames. The GUI slices the sheets
 at runtime and displays them with pixel-preserving 2x integer scaling. The stage
 name is always shown directly beneath the animation. Once a job is claimed, a
 second line shows the active shot, zero-padded version, and short render-setting
-name until the job reaches Render Complete or Render Failed.
+name until the job reaches Render Complete or is requeued after a failed attempt.
 
 The default minimum stage duration is five seconds. This timer surrounds the
 real stage operation: a fast simulated action remains visible for five seconds,
@@ -203,8 +221,9 @@ result.json           Farm terminal state written by the external worker
 ```
 
 An exit code of zero is not sufficient on its own. The job completes only when
-Unreal also writes a matching, successful `unreal_result.json`; otherwise it is
-moved to `04_RenderFailed` with the diagnostic files kept beside it.
+Unreal also writes a matching, successful `unreal_result.json`; otherwise the
+worker is added to `blacklisted_workers` and the job is requeued with the
+diagnostic files kept beside it for the next worker.
 
 Before claiming each real job, the worker requires a clean checkout, verifies
 that the current branch has an upstream, and runs `git pull --ff-only`. It then
@@ -225,16 +244,18 @@ tools\create_test_render_job.bat D:\RenderFarmPrototype
 tools\render_worker.bat D:\RenderFarmPrototype --worker-name RENDER-03 --simulate-result success
 ```
 
-To test the failed path:
+To test the failed-attempt retry path:
 
 ```bat
 tools\create_test_render_job.bat D:\RenderFarmPrototype
 tools\render_worker.bat D:\RenderFarmPrototype --worker-name RENDER-03 --simulate-result failure
 ```
 
-The worker processes at most one job and exits. An empty queue is a successful
-no-op. Higher numeric priorities render first; equal priorities use the oldest
-`submitted_utc` first.
+The worker processes at most one eligible job and exits. A failed simulation
+returns the package to `01_NeedsRendering` and blacklists `RENDER-03` from it.
+Running the same command again ignores that package; using a different worker
+name claims it. An empty eligible queue is a successful no-op. Higher numeric
+priorities render first; equal priorities use the oldest `submitted_utc` first.
 
 ## Claim behavior
 
@@ -265,9 +286,9 @@ writes still treat access denied as a real permission failure immediately.
 
 - A Windows service
 - Git or Git LFS synchronization
-- Worker heartbeats or stalled-job recovery
-- Automatic retries
+- Stalled-job recovery
+- Cross-machine retry limits or escalation after every known worker is blacklisted
 
 The pixel worker can now take supervised single steps or continuously process
-one real job at a time. Heartbeats and stalled-job recovery remain the next
-unattended-operation safety checkpoint.
+one real job at a time. Stalled-job recovery remains the next unattended-operation
+safety checkpoint.

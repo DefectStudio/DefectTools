@@ -172,14 +172,18 @@ def run_once(
 
     queued_candidates = _run_stage(
         stage=WorkerStage.WAITING,
-        operation=lambda: list_job_candidates(paths),
+        operation=lambda: list_job_candidates(paths, worker),
         minimum_stage_seconds=minimum_stage_seconds,
         stage_callback=stage_callback,
         sleep=sleep_function,
         monotonic=monotonic_function,
     )
     if not queued_candidates:
-        LOGGER.info("Queue is empty: %s", paths.needs_rendering)
+        LOGGER.info(
+            "No queued jobs are eligible for worker %s: %s",
+            worker,
+            paths.needs_rendering,
+        )
         return None
 
     if should_stop_before_claim is not None and should_stop_before_claim():
@@ -323,7 +327,7 @@ def run_once(
             reason=reason,
             result_details=result_details,
         )
-        status = "complete" if success else "failed"
+        status = "complete" if success else "requeued"
         LOGGER.info("Job %s: %s", status, final_folder)
         return WorkerResult(status, final_folder, reason)
 

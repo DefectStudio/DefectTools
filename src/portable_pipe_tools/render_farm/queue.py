@@ -18,6 +18,7 @@ from uuid import uuid4
 SCHEMA_VERSION = 1
 JOB_FILENAME = "job.json"
 RESULT_FILENAME = "result.json"
+BLACKLISTED_WORKERS_FIELD = "blacklisted_workers"
 
 WINDOWS_LOCK_RETRY_TIMEOUT_SECONDS = 15.0
 WINDOWS_LOCK_RETRY_INITIAL_DELAY_SECONDS = 0.1
@@ -252,7 +253,42 @@ def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
                 )
 
 
-def list_job_candidates(paths: QueuePaths) -> list[JobCandidate]:
+def _validated_blacklisted_workers(
+    job: dict[str, Any],
+    job_path: Path,
+) -> list[str]:
+    raw_blacklisted_workers = job.get(BLACKLISTED_WORKERS_FIELD, [])
+    if not isinstance(raw_blacklisted_workers, list):
+        raise ValueError(
+            f"Invalid {BLACKLISTED_WORKERS_FIELD} in {job_path}; expected a list"
+        )
+
+    blacklisted_workers: list[str] = []
+    for worker_name in raw_blacklisted_workers:
+        if not isinstance(worker_name, str) or not worker_name.strip():
+            raise ValueError(
+                f"Invalid worker name in {BLACKLISTED_WORKERS_FIELD} in {job_path}"
+            )
+        blacklisted_workers.append(worker_name.strip())
+    return blacklisted_workers
+
+
+def is_worker_blacklisted(
+    job: dict[str, Any],
+    worker_name: str,
+    job_path: Path,
+) -> bool:
+    selected_worker = safe_name(worker_name, "WORKER").casefold()
+    return any(
+        blacklisted_worker.casefold() == selected_worker
+        for blacklisted_worker in _validated_blacklisted_workers(job, job_path)
+    )
+
+
+def list_job_candidates(
+    paths: QueuePaths,
+    worker_name: str | None = None,
+) -> list[JobCandidate]:
     candidates: list[JobCandidate] = []
     queue_entries = retry_transient_windows_lock(
         operation=lambda: list(paths.needs_rendering.iterdir()),
@@ -273,7 +309,14 @@ def list_job_candidates(paths: QueuePaths) -> list[JobCandidate]:
         priority = -1_000_000
         submitted_utc = "9999-12-31T23:59:59.999Z"
         try:
-            job = read_json_object(folder / JOB_FILENAME)
+            job_path = folder / JOB_FILENAME
+            job = read_json_object(job_path)
+            if worker_name is not None and is_worker_blacklisted(
+                job,
+                worker_name,
+                job_path,
+            ):
+                continue
             raw_priority = job.get("priority", priority)
             if isinstance(raw_priority, int) and not isinstance(raw_priority, bool):
                 priority = raw_priority
@@ -300,7 +343,7 @@ def claim_next_job(paths: QueuePaths, worker_name: str) -> Path | None:
     """Claim one job using a same-filesystem directory rename."""
     safe_worker_name = safe_name(worker_name, "WORKER")
 
-    for candidate in list_job_candidates(paths):
+    for candidate in list_job_candidates(paths, safe_worker_name):
         claimed_folder = paths.is_rendering / f"{candidate.folder.name}__{safe_worker_name}"
         if path_exists_with_retry(claimed_folder):
             raise FileExistsError(
@@ -313,6 +356,23 @@ def claim_next_job(paths: QueuePaths, worker_name: str) -> Path | None:
         except FileNotFoundError:
             # Another worker won the rename race.
             continue
+
+        # Re-read after the rename so a blacklist update that raced the initial
+        # queue scan cannot result in this worker rendering the job.
+        try:
+            claimed_job_path = claimed_folder / JOB_FILENAME
+            claimed_job = read_json_object(claimed_job_path)
+            if is_worker_blacklisted(
+                claimed_job,
+                safe_worker_name,
+                claimed_job_path,
+            ):
+                rename_path_with_retry(claimed_folder, candidate.folder)
+                continue
+        except (OSError, ValueError):
+            # Invalid packages are intentionally returned as claimed so the
+            # worker can move them to 04_RenderFailed instead of circulating.
+            pass
 
         return claimed_folder
 
@@ -342,6 +402,8 @@ def validate_queued_job(job: dict[str, Any], job_path: Path) -> None:
     attempt = job.get("attempt", 0)
     if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 0:
         raise ValueError(f"Invalid attempt in {job_path}")
+
+    _validated_blacklisted_workers(job, job_path)
 
 
 def mark_job_rendering(claimed_folder: Path, worker_name: str) -> dict[str, Any]:
@@ -394,17 +456,70 @@ def finish_claimed_job(
     result["render_started_utc"] = job.get("render_started_utc")
     result["render_finished_utc"] = finished_utc
 
+    if not success:
+        return requeue_failed_job(
+            paths=paths,
+            claimed_folder=claimed_folder,
+            job=job,
+            worker_name=worker_name,
+            result=result,
+        )
+
     job["status"] = status
     job["render_finished_utc"] = finished_utc
     job["result"] = result
     write_json_atomic(claimed_folder / JOB_FILENAME, job)
     write_json_atomic(claimed_folder / RESULT_FILENAME, result)
 
-    destination_root = paths.render_complete if success else paths.render_failed
-    destination = destination_root / claimed_folder.name
+    destination = paths.render_complete / claimed_folder.name
     if path_exists_with_retry(destination):
         raise FileExistsError(
             f"Terminal job destination already exists; manual inspection is required: "
+            f"{destination}"
+        )
+    rename_path_with_retry(claimed_folder, destination)
+    return destination
+
+
+def requeue_failed_job(
+    paths: QueuePaths,
+    claimed_folder: Path,
+    job: dict[str, Any],
+    worker_name: str,
+    result: dict[str, Any],
+) -> Path:
+    """Blacklist the failed worker and atomically return the job to the queue."""
+    safe_worker_name = safe_name(worker_name, "WORKER")
+    job_path = claimed_folder / JOB_FILENAME
+    blacklisted_workers = _validated_blacklisted_workers(job, job_path)
+    if not any(
+        existing_worker.casefold() == safe_worker_name.casefold()
+        for existing_worker in blacklisted_workers
+    ):
+        blacklisted_workers.append(safe_worker_name)
+
+    job[BLACKLISTED_WORKERS_FIELD] = blacklisted_workers
+    job["status"] = "queued"
+    job["worker"] = None
+    job["claimed_utc"] = None
+    job["render_started_utc"] = None
+    job["render_finished_utc"] = None
+    job["result"] = None
+    job["last_failure"] = result
+    write_json_atomic(job_path, job)
+    write_json_atomic(claimed_folder / RESULT_FILENAME, result)
+
+    claimed_suffix = f"__{safe_worker_name}"
+    if not claimed_folder.name.casefold().endswith(claimed_suffix.casefold()):
+        raise ValueError(
+            "Claimed job folder does not end with its worker name: "
+            f"{claimed_folder}"
+        )
+    queued_name = claimed_folder.name[: -len(claimed_suffix)]
+    destination = paths.needs_rendering / queued_name
+    if path_exists_with_retry(destination):
+        raise FileExistsError(
+            f"Requeued job destination already exists; manual inspection is required: "
             f"{destination}"
         )
     rename_path_with_retry(claimed_folder, destination)
