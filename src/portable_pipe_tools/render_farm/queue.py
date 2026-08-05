@@ -24,11 +24,12 @@ WINDOWS_LOCK_RETRY_TIMEOUT_SECONDS = 15.0
 WINDOWS_LOCK_RETRY_INITIAL_DELAY_SECONDS = 0.1
 WINDOWS_LOCK_RETRY_MAX_DELAY_SECONDS = 1.0
 TRANSIENT_WINDOWS_LOCK_ERRORS = frozenset((32, 33))
-# Dropbox can report a directory rename lock first as a sharing violation and
-# then as access denied while it finishes observing the folder. Limit WinError
-# 5 retries to directory renames so genuine read/write permission failures still
-# fail immediately.
-TRANSIENT_WINDOWS_RENAME_ERRORS = TRANSIENT_WINDOWS_LOCK_ERRORS | frozenset((5,))
+# Dropbox can report an atomic replacement or directory rename lock first as a
+# sharing violation and then as access denied while it finishes observing the
+# path. Limit WinError 5 retries to publish/rename operations so genuine
+# read/write permission failures still fail immediately.
+TRANSIENT_WINDOWS_PUBLISH_ERRORS = TRANSIENT_WINDOWS_LOCK_ERRORS | frozenset((5,))
+TRANSIENT_WINDOWS_RENAME_ERRORS = TRANSIENT_WINDOWS_PUBLISH_ERRORS
 
 SUBMITTING_FOLDER = "00_Submitting"
 NEEDS_RENDERING_FOLDER = "01_NeedsRendering"
@@ -235,6 +236,7 @@ def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
         retry_transient_windows_lock(
             operation=lambda: os.replace(temporary_path, path),
             description=f"Publish JSON {path}",
+            transient_winerrors=TRANSIENT_WINDOWS_PUBLISH_ERRORS,
         )
     finally:
         for temporary_path in temporary_paths:

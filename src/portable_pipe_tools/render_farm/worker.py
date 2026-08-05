@@ -216,21 +216,28 @@ def run_once(
             return None
 
         LOGGER.info("Claimed job: %s", claimed_folder)
+        job: dict | None = None
         try:
             job = mark_job_rendering(claimed_folder, worker)
+            if git_pull_result is not None:
+                _record_git_pull(claimed_folder, job, git_pull_result)
         except Exception as error:
-            reason = (
-                f"Claimed job is invalid or unreadable: "
-                f"{type(error).__name__}: {error}"
-            )
-            LOGGER.error(reason)
+            if job is None:
+                reason = (
+                    f"Claimed job is invalid or unreadable: "
+                    f"{type(error).__name__}: {error}"
+                )
+            else:
+                reason = (
+                    f"Post-claim job preparation failed: "
+                    f"{type(error).__name__}: {error}"
+                )
+            LOGGER.exception(reason)
             return _ClaimedJob(
                 folder=claimed_folder,
                 job=None,
                 failure_reason=reason,
             )
-        if git_pull_result is not None:
-            _record_git_pull(claimed_folder, job, git_pull_result)
         if job_callback is not None:
             try:
                 job_callback(dict(job))

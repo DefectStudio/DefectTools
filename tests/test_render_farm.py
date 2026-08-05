@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -313,6 +314,48 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         self.assertEqual([], list(self.paths.is_rendering.iterdir()))
         self.assertEqual([], list(self.paths.render_failed.iterdir()))
 
+    def test_post_claim_preparation_failure_moves_job_to_failed(self) -> None:
+        queued_folder = create_test_job(self.farm_root)
+        worker_uproject = self.farm_root / "worker" / "s3bishop.uproject"
+        worker_uproject.parent.mkdir()
+        worker_uproject.write_text("{}", encoding="utf-8")
+        git_result = GitPullResult(
+            repository_root=worker_uproject.parent,
+            branch="main",
+            upstream="origin/main",
+            commit_before="a" * 40,
+            commit_after="b" * 40,
+            summary="Already up to date.",
+            transcript="$ git pull --ff-only\nAlready up to date.\n[exit code 0]\n",
+        )
+
+        with patch(
+            "portable_pipe_tools.render_farm.worker._record_git_pull",
+            side_effect=PermissionError("Dropbox kept job.json locked"),
+        ):
+            result = run_once(
+                self.farm_root,
+                "RENDER-PREP-FAIL",
+                simulate_success=False,
+                minimum_stage_seconds=0.0,
+                render_with_unreal=True,
+                unreal_runner=lambda **kwargs: self.fail(
+                    f"Render should not run: {kwargs}"
+                ),
+                local_uproject=worker_uproject,
+                git_sync=lambda project_directory: git_result,
+            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("failed", result.status)
+        self.assertEqual(self.paths.render_failed, result.final_folder.parent)
+        self.assertFalse(queued_folder.exists())
+        self.assertEqual([], list(self.paths.is_rendering.iterdir()))
+        failure = read_json_object(result.final_folder / RESULT_FILENAME)
+        self.assertIn("Post-claim job preparation failed", failure["reason"])
+        self.assertIn("Dropbox kept job.json locked", failure["reason"])
+
     def test_real_runner_exception_blacklists_worker_and_requeues_job(self) -> None:
         create_test_job(self.farm_root)
 
@@ -494,6 +537,32 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         self.assertEqual(2, attempts)
         self.assertFalse(source.exists())
         self.assertTrue(destination.is_dir())
+
+    def test_atomic_json_publish_retries_dropbox_access_denied(self) -> None:
+        output_path = self.paths.submitting / JOB_FILENAME
+        write_json_atomic(output_path, {"status": "queued"})
+        original_replace = os.replace
+        attempts = 0
+
+        def flaky_replace(source: str | Path, destination: str | Path) -> None:
+            nonlocal attempts
+            if Path(destination) == output_path:
+                attempts += 1
+                if attempts == 1:
+                    raise self._windows_error(5)
+            original_replace(source, destination)
+
+        with (
+            patch(
+                "portable_pipe_tools.render_farm.queue.os.replace",
+                new=flaky_replace,
+            ),
+            patch("portable_pipe_tools.render_farm.queue.time.sleep"),
+        ):
+            write_json_atomic(output_path, {"status": "rendering"})
+
+        self.assertEqual(2, attempts)
+        self.assertEqual("rendering", read_json_object(output_path)["status"])
 
     def test_transient_lock_retry_stops_at_timeout(self) -> None:
         clock_values = iter((0.0, 2.0))
