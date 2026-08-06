@@ -23,11 +23,12 @@ BLACKLISTED_WORKERS_FIELD = "blacklisted_workers"
 WINDOWS_LOCK_RETRY_TIMEOUT_SECONDS = 15.0
 WINDOWS_LOCK_RETRY_INITIAL_DELAY_SECONDS = 0.1
 WINDOWS_LOCK_RETRY_MAX_DELAY_SECONDS = 1.0
+COMPLETED_JOB_RECONCILIATION_GRACE_SECONDS = 60.0
 TRANSIENT_WINDOWS_LOCK_ERRORS = frozenset((32, 33))
 # Dropbox can report an atomic replacement or directory rename lock first as a
 # sharing violation and then as access denied while it finishes observing the
-# path. Limit WinError 5 retries to publish/rename operations so genuine
-# read/write permission failures still fail immediately.
+# path. Limit WinError 5 retries to existence/publish/rename operations so
+# genuine content read/write permission failures still fail immediately.
 TRANSIENT_WINDOWS_PUBLISH_ERRORS = TRANSIENT_WINDOWS_LOCK_ERRORS | frozenset((5,))
 TRANSIENT_WINDOWS_RENAME_ERRORS = TRANSIENT_WINDOWS_PUBLISH_ERRORS
 
@@ -189,6 +190,7 @@ def path_exists_with_retry(path: Path) -> bool:
     return retry_transient_windows_lock(
         operation=check_path,
         description=f"Check path {path}",
+        transient_winerrors=TRANSIENT_WINDOWS_PUBLISH_ERRORS,
     )
 
 
@@ -421,6 +423,106 @@ def mark_job_rendering(claimed_folder: Path, worker_name: str) -> dict[str, Any]
     job["attempt"] = job.get("attempt", 0) + 1
     write_json_atomic(job_path, job)
     return job
+
+
+def reconcile_completed_jobs(paths: QueuePaths) -> list[Path]:
+    """Move completed packages stranded in 02_IsRendering to completion."""
+    try:
+        entries = retry_transient_windows_lock(
+            operation=lambda: list(paths.is_rendering.iterdir()),
+            description=f"Scan for completed jobs in {paths.is_rendering}",
+            transient_winerrors=TRANSIENT_WINDOWS_PUBLISH_ERRORS,
+        )
+    except OSError as error:
+        LOGGER.warning(
+            "Could not scan for completed jobs to reconcile; a later worker "
+            "check will retry: %s: %s",
+            type(error).__name__,
+            error,
+        )
+        return []
+
+    recovered: list[Path] = []
+    for folder in sorted(entries, key=lambda entry: entry.name.casefold()):
+        try:
+            if not folder.is_dir():
+                continue
+            job = read_json_object(folder / JOB_FILENAME)
+        except (OSError, ValueError) as error:
+            LOGGER.debug(
+                "Skipping unreconcilable package %s: %s: %s",
+                folder,
+                type(error).__name__,
+                error,
+            )
+            continue
+
+        if job.get("status") != "complete":
+            continue
+
+        finished_utc = job.get("render_finished_utc")
+        if not isinstance(finished_utc, str) or not finished_utc.strip():
+            continue
+        try:
+            finished_at = datetime.fromisoformat(
+                finished_utc.strip().replace("Z", "+00:00")
+            )
+        except ValueError:
+            continue
+        if finished_at.tzinfo is None:
+            continue
+        completion_age_seconds = (
+            datetime.now(timezone.utc) - finished_at.astimezone(timezone.utc)
+        ).total_seconds()
+        if completion_age_seconds < COMPLETED_JOB_RECONCILIATION_GRACE_SECONDS:
+            continue
+
+        try:
+            result = read_json_object(folder / RESULT_FILENAME)
+        except (OSError, ValueError) as error:
+            LOGGER.debug(
+                "Completed package is not ready for reconciliation %s: %s: %s",
+                folder,
+                type(error).__name__,
+                error,
+            )
+            continue
+        if result.get("status") != "complete":
+            continue
+
+        destination = paths.render_complete / folder.name
+        try:
+            if path_exists_with_retry(destination):
+                # Another worker may have completed the same reconciliation
+                # after this scan captured its directory entry.
+                if not path_exists_with_retry(folder):
+                    continue
+                LOGGER.error(
+                    "Completed job remains stranded because its destination "
+                    "already exists: source=%s, destination=%s",
+                    folder,
+                    destination,
+                )
+                continue
+            rename_path_with_retry(folder, destination)
+        except FileNotFoundError:
+            # Another worker won the recovery rename.
+            continue
+        except OSError as error:
+            LOGGER.warning(
+                "Completed job remains in 02_IsRendering; a later worker check "
+                "will retry: %s -> %s (%s: %s)",
+                folder,
+                destination,
+                type(error).__name__,
+                error,
+            )
+            continue
+
+        LOGGER.info("Reconciled completed job: %s", destination)
+        recovered.append(destination)
+
+    return recovered
 
 
 def finish_claimed_job(

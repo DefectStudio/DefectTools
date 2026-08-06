@@ -17,7 +17,9 @@ from portable_pipe_tools.render_farm.queue import (
     claim_next_job,
     create_queue_folders,
     list_job_candidates,
+    path_exists_with_retry,
     read_json_object,
+    reconcile_completed_jobs,
     rename_path_with_retry,
     retry_transient_windows_lock,
     write_json_atomic,
@@ -120,6 +122,103 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         self.assertEqual(1, job["attempt"])
         self.assertEqual("complete", result_json["status"])
         self.assertEqual([], list(self.paths.is_rendering.iterdir()))
+
+    def test_worker_reconciles_completed_job_before_queue_scan(self) -> None:
+        queued_folder = create_test_job(self.farm_root)
+        claimed_folder = claim_next_job(self.paths, "BUCKET")
+        self.assertIsNotNone(claimed_folder)
+        assert claimed_folder is not None
+        job_path = claimed_folder / JOB_FILENAME
+        job = read_json_object(job_path)
+        job["status"] = "complete"
+        job["worker"] = "BUCKET"
+        job["render_finished_utc"] = "2000-01-01T00:00:00.000Z"
+        write_json_atomic(job_path, job)
+        write_json_atomic(
+            claimed_folder / RESULT_FILENAME,
+            {"status": "complete", "job_id": job["job_id"]},
+        )
+
+        result = run_once(
+            self.farm_root,
+            "RECOVERY-WORKER",
+            simulate_success=True,
+            minimum_stage_seconds=0.0,
+        )
+
+        destination = self.paths.render_complete / claimed_folder.name
+        self.assertIsNone(result)
+        self.assertFalse(queued_folder.exists())
+        self.assertFalse(claimed_folder.exists())
+        self.assertTrue(destination.is_dir())
+
+    def test_reconciliation_retries_complete_job_on_later_check(self) -> None:
+        create_test_job(self.farm_root)
+        claimed_folder = claim_next_job(self.paths, "BUCKET")
+        self.assertIsNotNone(claimed_folder)
+        assert claimed_folder is not None
+        job_path = claimed_folder / JOB_FILENAME
+        job = read_json_object(job_path)
+        job["status"] = "complete"
+        job["render_finished_utc"] = "2000-01-01T00:00:00.000Z"
+        write_json_atomic(job_path, job)
+        write_json_atomic(
+            claimed_folder / RESULT_FILENAME,
+            {"status": "complete", "job_id": job["job_id"]},
+        )
+
+        with patch(
+            "portable_pipe_tools.render_farm.queue.rename_path_with_retry",
+            side_effect=self._windows_error(5),
+        ):
+            first_recovery = reconcile_completed_jobs(self.paths)
+
+        self.assertEqual([], first_recovery)
+        self.assertTrue(claimed_folder.is_dir())
+
+        second_recovery = reconcile_completed_jobs(self.paths)
+
+        destination = self.paths.render_complete / claimed_folder.name
+        self.assertEqual([destination], second_recovery)
+        self.assertFalse(claimed_folder.exists())
+        self.assertTrue(destination.is_dir())
+
+    def test_reconciliation_waits_for_completion_grace_period(self) -> None:
+        create_test_job(self.farm_root)
+        claimed_folder = claim_next_job(self.paths, "BUCKET")
+        self.assertIsNotNone(claimed_folder)
+        assert claimed_folder is not None
+        job_path = claimed_folder / JOB_FILENAME
+        job = read_json_object(job_path)
+        job["status"] = "complete"
+        job["render_finished_utc"] = "9999-01-01T00:00:00.000Z"
+        write_json_atomic(job_path, job)
+        write_json_atomic(
+            claimed_folder / RESULT_FILENAME,
+            {"status": "complete", "job_id": job["job_id"]},
+        )
+
+        recovered = reconcile_completed_jobs(self.paths)
+
+        self.assertEqual([], recovered)
+        self.assertTrue(claimed_folder.is_dir())
+        self.assertEqual([], list(self.paths.render_complete.iterdir()))
+
+    def test_reconciliation_does_not_move_active_render(self) -> None:
+        create_test_job(self.farm_root)
+        claimed_folder = claim_next_job(self.paths, "BUCKET")
+        self.assertIsNotNone(claimed_folder)
+        assert claimed_folder is not None
+        job_path = claimed_folder / JOB_FILENAME
+        job = read_json_object(job_path)
+        job["status"] = "rendering"
+        write_json_atomic(job_path, job)
+
+        recovered = reconcile_completed_jobs(self.paths)
+
+        self.assertEqual([], recovered)
+        self.assertTrue(claimed_folder.is_dir())
+        self.assertEqual([], list(self.paths.render_complete.iterdir()))
 
     def test_failed_simulation_blacklists_worker_and_requeues_job(self) -> None:
         queued_folder = create_test_job(self.farm_root)
@@ -537,6 +636,28 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         self.assertEqual(2, attempts)
         self.assertFalse(source.exists())
         self.assertTrue(destination.is_dir())
+
+    def test_path_existence_retries_dropbox_access_denied(self) -> None:
+        destination = self.paths.render_complete / "dropbox-existence-check"
+        original_stat = Path.stat
+        attempts = 0
+
+        def flaky_stat(path: Path, *args: object, **kwargs: object):
+            nonlocal attempts
+            if path == destination:
+                attempts += 1
+                if attempts == 1:
+                    raise self._windows_error(5)
+            return original_stat(path, *args, **kwargs)
+
+        with (
+            patch.object(Path, "stat", new=flaky_stat),
+            patch("portable_pipe_tools.render_farm.queue.time.sleep"),
+        ):
+            exists = path_exists_with_retry(destination)
+
+        self.assertFalse(exists)
+        self.assertEqual(2, attempts)
 
     def test_atomic_json_publish_retries_dropbox_access_denied(self) -> None:
         output_path = self.paths.submitting / JOB_FILENAME

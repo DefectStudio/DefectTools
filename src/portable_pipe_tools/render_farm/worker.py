@@ -27,6 +27,7 @@ from portable_pipe_tools.render_farm.queue import (
     list_job_candidates,
     mark_job_rendering,
     read_json_object,
+    reconcile_completed_jobs,
     safe_name,
     utc_now,
     write_json_atomic,
@@ -170,9 +171,18 @@ def run_once(
     paths = create_queue_folders(farm_root)
     worker = safe_name(worker_name, "WORKER")
 
+    def reconcile_and_list_candidates():
+        reconciled_folders = reconcile_completed_jobs(paths)
+        if reconciled_folders:
+            LOGGER.info(
+                "Recovered %d completed job(s) before checking the render queue.",
+                len(reconciled_folders),
+            )
+        return list_job_candidates(paths, worker)
+
     queued_candidates = _run_stage(
         stage=WorkerStage.WAITING,
-        operation=lambda: list_job_candidates(paths, worker),
+        operation=reconcile_and_list_candidates,
         minimum_stage_seconds=minimum_stage_seconds,
         stage_callback=stage_callback,
         sleep=sleep_function,
