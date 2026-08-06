@@ -8,6 +8,23 @@ Initial goals:
 - Support file-server pipeline workflows
 - Eventually integrate with ClickUp, Natron, DaVinci, RV, SyncSketch, and UnrealTools
 
+## Auto Comp - Natron GUI concept
+
+Launch the static Auto Comp interface concept:
+
+```bat
+tools\auto_comp_natron.bat
+```
+
+The window shows placeholder Show, Sequence, and Shot browsers plus Hero and EXR
+options. On first launch it asks for the shared repository folder and saves the
+choice to `LocalSaveFiles\auto_comp_natron_local_save.json`. The toolbar reports
+whether that saved repository is connected, and its Repository button or
+**File > Change Repository Folder...** can change the connection later. The
+three browser panels list shows, sequences, and shots from that repository and
+remember the last selection between launches. Natron comp creation is not
+implemented yet.
+
 ## Farm Render Manager
 
 Launch the render-farm monitoring interface:
