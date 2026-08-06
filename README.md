@@ -23,7 +23,22 @@ whether that saved repository is connected, and its Repository button or
 **File > Change Repository Folder...** can change the connection later. The
 three browser panels list shows, sequences, and shots from that repository and
 remember the last selection between launches. Natron comp creation is not
-implemented yet.
+automatic, but a shot can be right-clicked and **Create Comp** chosen. The tool
+copies a sequence-specific `SEQUENCE_000_0000` Natron template when available,
+otherwise falls back to `ZZZ_000_0000`, and never overwrites an existing comp.
+Multiple shots can be highlighted and processed sequentially from the same
+context-menu action. A sequence can also be right-clicked and **Create All
+Comps** chosen to process every production shot in that sequence; its special
+`SEQUENCE_000_0000` template shot is excluded.
+Create Comp results and errors appear in the status bar at the bottom of the
+window without interrupting the artist with a pop-up. Batch results report the
+number of successful and failed comp creations.
+
+The Shot context menu also provides **Create and Open Comp** and **Open Comp**.
+Create and Open uses the normal template fallback when needed, or opens the
+existing comp unchanged. Open Comp requires an existing file. Both launch the
+`.ntp` file through the operating system's configured Natron file association
+and report their result in the status bar.
 
 ## Farm Render Manager
 

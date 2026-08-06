@@ -3,9 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from portable_pipe_tools.apps.auto_comp_natron_app import AutoCompNatronApp
+from portable_pipe_tools.auto_comp_natron.create_comp import (
+    CompAlreadyExistsError,
+    CompTemplateNotFoundError,
+    CreateCompResult,
+)
+from portable_pipe_tools.auto_comp_natron.open_comp import (
+    CompNotFoundError,
+    OpenCompResult,
+)
 from portable_pipe_tools.auto_comp_natron.settings import (
     load_saved_browser_selection,
     load_saved_repository_folder,
@@ -32,6 +41,7 @@ class AutoCompNatronAppTests(unittest.TestCase):
         try:
             self.assertEqual("Auto Comp - Natron", app.root.title())
             self.assertEqual("Repository Connected: No", app.repository_status_var.get())
+            self.assertEqual("Ready", app.status_var.get())
             self.assertEqual([], app.show_names)
             self.assertEqual([], app.sequence_names)
             self.assertEqual([], app.shot_names)
@@ -190,6 +200,396 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 self.assertEqual(
                     "RepositoryConnected.TLabel",
                     app.repository_status_label.cget("style"),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_shot_context_menu_contains_create_comp(self) -> None:
+        app = AutoCompNatronApp(prompt_on_startup=False)
+        app.root.withdraw()
+        try:
+            self.assertEqual(
+                "Create Comp",
+                app.shot_context_menu.entrycget(0, "label"),
+            )
+            self.assertEqual(
+                "Create and Open Comp",
+                app.shot_context_menu.entrycget(1, "label"),
+            )
+            self.assertEqual(
+                "Open Comp",
+                app.shot_context_menu.entrycget(2, "label"),
+            )
+        finally:
+            app.root.destroy()
+
+    def test_sequence_context_menu_contains_create_all_comps(self) -> None:
+        app = AutoCompNatronApp(prompt_on_startup=False)
+        app.root.withdraw()
+        try:
+            self.assertEqual(
+                "Create All Comps",
+                app.sequence_context_menu.entrycget(0, "label"),
+            )
+        finally:
+            app.root.destroy()
+
+    def test_create_comp_action_uses_current_show_sequence_and_shot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            target_path = (
+                repository
+                / "alpha"
+                / "sequences"
+                / "AAA"
+                / "AAA_000_0010"
+                / "comp"
+                / "natron"
+                / "AAA_000_0010_comp_v001.ntp"
+            )
+            result = CreateCompResult(
+                target_path=target_path,
+                template_path=Path("AAA template.ntp"),
+                used_fallback_template=False,
+            )
+
+            try:
+                app._set_repository_connected(repository)
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app.create_comp",
+                    return_value=result,
+                ) as create_mock:
+                    app._create_selected_comp()
+
+                create_mock.assert_called_once_with(
+                    repository / "alpha",
+                    "AAA",
+                    "AAA_000_0010",
+                )
+                self.assertEqual(
+                    "Create Comps complete — Succeeded: 1; Failed: 0.",
+                    app.status_var.get(),
+                )
+                self.assertEqual(
+                    "StatusSuccess.TLabel",
+                    app.status_label.cget("style"),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_existing_comp_action_reports_no_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            existing_path = Path("existing_comp.ntp")
+
+            try:
+                app._set_repository_connected(repository)
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app.create_comp",
+                    side_effect=CompAlreadyExistsError(existing_path),
+                ):
+                    app._create_selected_comp()
+
+                self.assertEqual(
+                    "Create Comps complete — Succeeded: 0; Failed: 1. "
+                    "Last failure: AAA_000_0010 already has a comp.",
+                    app.status_var.get(),
+                )
+                self.assertEqual(
+                    "StatusError.TLabel",
+                    app.status_label.cget("style"),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_create_comp_failure_uses_status_bar_without_popup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            missing_templates = (Path("AAA template.ntp"), Path("ZZZ template.ntp"))
+
+            try:
+                app._set_repository_connected(repository)
+                with (
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app.create_comp",
+                        side_effect=CompTemplateNotFoundError(missing_templates),
+                    ),
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app.messagebox"
+                    ) as messagebox_mock,
+                ):
+                    app._create_selected_comp()
+
+                messagebox_mock.assert_not_called()
+                self.assertEqual(
+                    "Create Comps complete — Succeeded: 0; Failed: 1. "
+                    "Last failure: no template was found for AAA_000_0010.",
+                    app.status_var.get(),
+                )
+                self.assertEqual(
+                    "StatusError.TLabel",
+                    app.status_label.cget("style"),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_multiple_selected_shots_are_processed_in_display_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            success_result = CreateCompResult(
+                target_path=Path("AAA_000_0010_comp_v001.ntp"),
+                template_path=Path("AAA template.ntp"),
+                used_fallback_template=False,
+            )
+
+            try:
+                app._set_repository_connected(repository)
+                app.shot_list.selection_clear(0, "end")
+                app.shot_list.selection_set(0, 1)
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app.create_comp",
+                    side_effect=[
+                        success_result,
+                        CompAlreadyExistsError(Path("existing.ntp")),
+                    ],
+                ) as create_mock:
+                    app._create_selected_comp()
+
+                self.assertEqual(
+                    [
+                        call(
+                            repository / "alpha",
+                            "AAA",
+                            "AAA_000_0010",
+                        ),
+                        call(
+                            repository / "alpha",
+                            "AAA",
+                            "AAA_000_0020",
+                        ),
+                    ],
+                    create_mock.call_args_list,
+                )
+                self.assertEqual(
+                    "Create Comps complete — Succeeded: 1; Failed: 1. "
+                    "Last failure: AAA_000_0020 already has a comp.",
+                    app.status_var.get(),
+                )
+                self.assertEqual(
+                    "StatusWarning.TLabel",
+                    app.status_label.cget("style"),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_context_click_on_selected_shot_preserves_multi_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+                app.shot_list.selection_clear(0, "end")
+                app.shot_list.selection_set(0, 1)
+
+                app._select_shot_for_context_menu(1)
+
+                self.assertEqual((0, 1), app.shot_list.curselection())
+            finally:
+                app.root.destroy()
+
+    def test_create_all_sequence_comps_processes_every_production_shot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            template_shot = (
+                repository / "alpha" / "sequences" / "AAA" / "AAA_000_0000"
+            )
+            template_shot.mkdir()
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            success_result = CreateCompResult(
+                target_path=Path("created.ntp"),
+                template_path=Path("AAA template.ntp"),
+                used_fallback_template=False,
+            )
+
+            try:
+                app._set_repository_connected(repository)
+                self.assertIn("AAA_000_0000", app.shot_names)
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app.create_comp",
+                    return_value=success_result,
+                ) as create_mock:
+                    app._create_all_sequence_comps()
+
+                self.assertEqual(
+                    [
+                        call(
+                            repository / "alpha",
+                            "AAA",
+                            "AAA_000_0010",
+                        ),
+                        call(
+                            repository / "alpha",
+                            "AAA",
+                            "AAA_000_0020",
+                        ),
+                    ],
+                    create_mock.call_args_list,
+                )
+                self.assertEqual(
+                    "Create All Comps for AAA complete — Succeeded: 2; Failed: 0.",
+                    app.status_var.get(),
+                )
+                self.assertEqual(
+                    "StatusSuccess.TLabel",
+                    app.status_label.cget("style"),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_create_and_open_targets_the_right_clicked_shot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            comp_path = Path("AAA_000_0020_comp_v001.ntp")
+
+            try:
+                app._set_repository_connected(repository)
+                app.shot_list.selection_clear(0, "end")
+                app.shot_list.selection_set(0, 1)
+                app._select_shot_for_context_menu(1)
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app."
+                    "create_and_open_comp",
+                    return_value=OpenCompResult(
+                        comp_path=comp_path,
+                        created=True,
+                    ),
+                ) as create_open_mock:
+                    app._create_and_open_selected_comp()
+
+                create_open_mock.assert_called_once_with(
+                    repository / "alpha",
+                    "AAA",
+                    "AAA_000_0020",
+                )
+                self.assertEqual(
+                    "Successfully created and opened comp: "
+                    "AAA_000_0020_comp_v001.ntp.",
+                    app.status_var.get(),
+                )
+                self.assertEqual(
+                    "StatusSuccess.TLabel",
+                    app.status_label.cget("style"),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_create_and_open_opens_existing_comp_without_create_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app."
+                    "create_and_open_comp",
+                    return_value=OpenCompResult(
+                        comp_path=Path("AAA_000_0010_comp_v001.ntp"),
+                        created=False,
+                    ),
+                ):
+                    app._create_and_open_selected_comp()
+
+                self.assertEqual(
+                    "Opened existing comp: AAA_000_0010_comp_v001.ntp.",
+                    app.status_var.get(),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_open_comp_uses_active_shot_and_reports_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            missing_path = Path("AAA_000_0010_comp_v001.ntp")
+
+            try:
+                app._set_repository_connected(repository)
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app.open_comp",
+                    side_effect=CompNotFoundError(missing_path),
+                ) as open_mock:
+                    app._open_selected_comp()
+
+                open_mock.assert_called_once_with(
+                    repository / "alpha",
+                    "AAA",
+                    "AAA_000_0010",
+                )
+                self.assertIn("does not exist", app.status_var.get())
+                self.assertEqual(
+                    "StatusError.TLabel",
+                    app.status_label.cget("style"),
                 )
             finally:
                 app.root.destroy()

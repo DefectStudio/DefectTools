@@ -4,6 +4,16 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from portable_pipe_tools.auto_comp_natron.create_comp import (
+    CompAlreadyExistsError,
+    CompTemplateNotFoundError,
+    create_comp,
+)
+from portable_pipe_tools.auto_comp_natron.open_comp import (
+    CompNotFoundError,
+    create_and_open_comp,
+    open_comp,
+)
 from portable_pipe_tools.auto_comp_natron.settings import (
     get_default_settings_path,
     load_saved_browser_selection,
@@ -46,6 +56,7 @@ class AutoCompNatronApp:
         self.repository_status_var = tk.StringVar(
             value="Repository Connected: No"
         )
+        self.status_var = tk.StringVar(value="Ready")
         self.show_names: list[str] = []
         self.show_paths_by_name: dict[str, Path] = {}
         self.sequence_names: list[str] = []
@@ -144,6 +155,30 @@ class AutoCompNatronApp:
             background=[("active", PANEL_BACKGROUND)],
             foreground=[("active", "#ffffff")],
         )
+        style.configure(
+            "Status.TLabel",
+            background=TOOLBAR_BACKGROUND,
+            foreground=MUTED_TEXT,
+            font=("Segoe UI", 9),
+        )
+        style.configure(
+            "StatusSuccess.TLabel",
+            background=TOOLBAR_BACKGROUND,
+            foreground="#74d680",
+            font=("Segoe UI", 9),
+        )
+        style.configure(
+            "StatusWarning.TLabel",
+            background=TOOLBAR_BACKGROUND,
+            foreground="#ffb45f",
+            font=("Segoe UI", 9),
+        )
+        style.configure(
+            "StatusError.TLabel",
+            background=TOOLBAR_BACKGROUND,
+            foreground="#ff7b72",
+            font=("Segoe UI", 9),
+        )
 
     def _build_menu(self) -> None:
         menu_options = {
@@ -194,15 +229,72 @@ class AutoCompNatronApp:
             right_padding=5,
         )
         self.sequence_list.bind("<<ListboxSelect>>", self._on_sequence_selected)
+        self.sequence_list.bind("<Button-3>", self._show_sequence_context_menu)
+
+        self.sequence_context_menu = tk.Menu(
+            self.root,
+            tearoff=False,
+            background="#303236",
+            foreground=TEXT_COLOR,
+            activebackground=SELECTION_COLOR,
+            activeforeground="#ffffff",
+            borderwidth=0,
+        )
+        self.sequence_context_menu.add_command(
+            label="Create All Comps",
+            command=self._create_all_sequence_comps,
+        )
+
         self.shot_list = self._create_browser_panel(
             workspace,
             column=2,
             title="Shot",
             left_padding=5,
+            selectmode=tk.EXTENDED,
         )
         self.shot_list.bind("<<ListboxSelect>>", self._on_shot_selected)
+        self.shot_list.bind("<Button-3>", self._show_shot_context_menu)
+
+        self.shot_context_menu = tk.Menu(
+            self.root,
+            tearoff=False,
+            background="#303236",
+            foreground=TEXT_COLOR,
+            activebackground=SELECTION_COLOR,
+            activeforeground="#ffffff",
+            borderwidth=0,
+        )
+        self.shot_context_menu.add_command(
+            label="Create Comp",
+            command=self._create_selected_comp,
+        )
+        self.shot_context_menu.add_command(
+            label="Create and Open Comp",
+            command=self._create_and_open_selected_comp,
+        )
+        self.shot_context_menu.add_command(
+            label="Open Comp",
+            command=self._open_selected_comp,
+        )
 
         self._build_options_panel(workspace)
+        self._build_status_bar(outer)
+
+    def _build_status_bar(self, parent: ttk.Frame) -> None:
+        status_bar = ttk.Frame(
+            parent,
+            style="Toolbar.TFrame",
+            padding=(12, 6),
+        )
+        status_bar.grid(row=2, column=0, sticky="ew")
+        status_bar.columnconfigure(0, weight=1)
+        self.status_label = ttk.Label(
+            status_bar,
+            textvariable=self.status_var,
+            style="Status.TLabel",
+            anchor="w",
+        )
+        self.status_label.grid(row=0, column=0, sticky="ew")
 
     def _build_toolbar(self, parent: ttk.Frame) -> None:
         toolbar = ttk.Frame(parent, style="Toolbar.TFrame", padding=(16, 10))
@@ -438,6 +530,222 @@ class AutoCompNatronApp:
             return
         self._save_current_selection()
 
+    def _show_sequence_context_menu(self, event: tk.Event) -> str:
+        if not self.sequence_names:
+            return "break"
+        index = self.sequence_list.nearest(event.y)
+        row_bounds = self.sequence_list.bbox(index)
+        if row_bounds is None:
+            return "break"
+        _x, row_y, _width, row_height = row_bounds
+        if not row_y <= event.y < row_y + row_height:
+            return "break"
+
+        self._select_sequence_for_context_menu(index)
+        try:
+            self.sequence_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.sequence_context_menu.grab_release()
+        return "break"
+
+    def _select_sequence_for_context_menu(self, index: int) -> None:
+        self.sequence_list.selection_clear(0, tk.END)
+        self.sequence_list.selection_set(index)
+        self.sequence_list.activate(index)
+        self._on_sequence_selected(None)
+
+    def _show_shot_context_menu(self, event: tk.Event) -> str:
+        if not self.shot_names:
+            return "break"
+        index = self.shot_list.nearest(event.y)
+        row_bounds = self.shot_list.bbox(index)
+        if row_bounds is None:
+            return "break"
+        _x, row_y, _width, row_height = row_bounds
+        if not row_y <= event.y < row_y + row_height:
+            return "break"
+
+        self._select_shot_for_context_menu(index)
+        try:
+            self.shot_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.shot_context_menu.grab_release()
+        return "break"
+
+    def _select_shot_for_context_menu(self, index: int) -> None:
+        selected_indexes = set(self.shot_list.curselection())
+        if index not in selected_indexes:
+            self.shot_list.selection_clear(0, tk.END)
+            self.shot_list.selection_set(index)
+        self.shot_list.activate(index)
+        self._on_shot_selected(None)
+
+    def _create_selected_comp(self) -> None:
+        show_path = self._selected_show_path()
+        sequence_name = self._selected_value(
+            self.sequence_list,
+            self.sequence_names,
+        )
+        shot_names = self._selected_values(self.shot_list, self.shot_names)
+        if show_path is None or not sequence_name or not shot_names:
+            self._set_status(
+                "Select a show, sequence, and at least one shot first.",
+                "warning",
+            )
+            return
+
+        self._create_comps(
+            show_path,
+            sequence_name,
+            shot_names,
+            status_action="Create Comps",
+        )
+
+    def _create_and_open_selected_comp(self) -> None:
+        show_path = self._selected_show_path()
+        sequence_name = self._selected_value(
+            self.sequence_list,
+            self.sequence_names,
+        )
+        shot_name = self._active_selected_shot_name()
+        if show_path is None or not sequence_name or not shot_name:
+            self._set_status(
+                "Right-click a shot to create and open its comp.",
+                "warning",
+            )
+            return
+
+        try:
+            result = create_and_open_comp(
+                show_path,
+                sequence_name,
+                shot_name,
+            )
+        except Exception as error:
+            self._set_status(
+                f"Failed to create and open comp for {shot_name}: {error}",
+                "error",
+            )
+            return
+
+        action = "Successfully created and opened" if result.created else "Opened existing"
+        self._set_status(
+            f"{action} comp: {result.comp_path.name}.",
+            "success",
+        )
+
+    def _open_selected_comp(self) -> None:
+        show_path = self._selected_show_path()
+        sequence_name = self._selected_value(
+            self.sequence_list,
+            self.sequence_names,
+        )
+        shot_name = self._active_selected_shot_name()
+        if show_path is None or not sequence_name or not shot_name:
+            self._set_status("Right-click a shot to open its comp.", "warning")
+            return
+
+        try:
+            result = open_comp(show_path, sequence_name, shot_name)
+        except CompNotFoundError as error:
+            self._set_status(
+                f"Failed to open comp for {shot_name}: {error.comp_path} does not exist.",
+                "error",
+            )
+            return
+        except Exception as error:
+            self._set_status(
+                f"Failed to open comp for {shot_name}: {error}",
+                "error",
+            )
+            return
+
+        self._set_status(
+            f"Opened comp: {result.comp_path.name}.",
+            "success",
+        )
+
+    def _create_all_sequence_comps(self) -> None:
+        show_path = self._selected_show_path()
+        sequence_name = self._selected_value(
+            self.sequence_list,
+            self.sequence_names,
+        )
+        if show_path is None or not sequence_name:
+            self._set_status("Select a show and sequence first.", "warning")
+            return
+
+        template_shot_name = f"{sequence_name}_000_0000"
+        shot_names = [
+            shot_name
+            for shot_name in self.shot_names
+            if shot_name != template_shot_name
+        ]
+        if not shot_names:
+            self._set_status(
+                f"No production shots were found in sequence {sequence_name}.",
+                "warning",
+            )
+            return
+
+        self._create_comps(
+            show_path,
+            sequence_name,
+            shot_names,
+            status_action=f"Create All Comps for {sequence_name}",
+        )
+
+    def _create_comps(
+        self,
+        show_path: Path,
+        sequence_name: str,
+        shot_names: list[str],
+        *,
+        status_action: str,
+    ) -> None:
+
+        succeeded = 0
+        failed = 0
+        last_failure = ""
+        for shot_name in shot_names:
+            try:
+                create_comp(show_path, sequence_name, shot_name)
+            except CompAlreadyExistsError:
+                failed += 1
+                last_failure = f"{shot_name} already has a comp"
+            except CompTemplateNotFoundError:
+                failed += 1
+                last_failure = f"no template was found for {shot_name}"
+            except Exception as error:
+                failed += 1
+                last_failure = f"{shot_name}: {error}"
+            else:
+                succeeded += 1
+
+        message = f"{status_action} complete — Succeeded: {succeeded}; Failed: {failed}."
+        if last_failure:
+            message += f" Last failure: {last_failure}."
+        level = (
+            "success"
+            if failed == 0
+            else "error"
+            if succeeded == 0
+            else "warning"
+        )
+        self._set_status(message, level)
+
+    def _set_status(self, message: str, level: str = "normal") -> None:
+        style_by_level = {
+            "normal": "Status.TLabel",
+            "success": "StatusSuccess.TLabel",
+            "warning": "StatusWarning.TLabel",
+            "error": "StatusError.TLabel",
+        }
+        self.status_var.set(message)
+        self.status_label.configure(
+            style=style_by_level.get(level, "Status.TLabel")
+        )
+
     def _save_current_selection(self) -> None:
         if self.repository_path is None:
             return
@@ -472,6 +780,24 @@ class AutoCompNatronApp:
             return ""
         index = int(selection[0])
         return values[index] if 0 <= index < len(values) else ""
+
+    @staticmethod
+    def _selected_values(listbox: tk.Listbox, values: list[str]) -> list[str]:
+        return [
+            values[int(index)]
+            for index in listbox.curselection()
+            if 0 <= int(index) < len(values)
+        ]
+
+    def _active_selected_shot_name(self) -> str:
+        selected_indexes = {int(index) for index in self.shot_list.curselection()}
+        if not selected_indexes:
+            return ""
+        active_index = int(self.shot_list.index(tk.ACTIVE))
+        if active_index in selected_indexes and active_index < len(self.shot_names):
+            return self.shot_names[active_index]
+        first_selected = min(selected_indexes)
+        return self.shot_names[first_selected]
 
     @staticmethod
     def _replace_list_values(listbox: tk.Listbox, values: list[str]) -> None:
@@ -516,6 +842,7 @@ class AutoCompNatronApp:
         title: str,
         left_padding: int = 0,
         right_padding: int = 0,
+        selectmode: str = tk.BROWSE,
     ) -> tk.Listbox:
         shell = tk.Frame(
             parent,
@@ -553,7 +880,7 @@ class AutoCompNatronApp:
             exportselection=False,
             activestyle="none",
             font=("Consolas", 11),
-            selectmode=tk.BROWSE,
+            selectmode=selectmode,
         )
         listbox.grid(row=1, column=0, sticky="nsew", padx=1, pady=(0, 1))
 
