@@ -40,6 +40,17 @@ existing comp unchanged. Open Comp requires an existing file. Both launch the
 `.ntp` file through the operating system's configured Natron file association
 and report their result in the status bar.
 
+## Natron Smart Read PyPlug
+
+The first Smart Read custom-node scaffold lives in `natron_plugins`. Launch
+Natron with `tools\natron_with_portable_plugins.bat` so Natron discovers the
+source-controlled PyPlug through `NATRON_PLUGIN_PATH`. In Natron's node menu,
+the node is listed as `PortablePipeTools > SmartRead`.
+
+This initial scaffold wraps Natron's native Read node and exposes File, First
+Frame, and Last Frame controls. Pipeline-aware selection and version-resolution
+behavior will be added after the production GUI is defined.
+
 ## Farm Render Manager
 
 Launch the render-farm monitoring interface:
