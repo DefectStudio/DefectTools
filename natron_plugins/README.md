@@ -8,6 +8,12 @@ installation. Natron scans PyPlugs during startup, so restart Natron after
 changing plug-in metadata or adding a new PyPlug.
 
 `SmartRead.py` contains the PyPlug structure and user parameters.
-`SmartReadExt.py` contains hand-written Natron callbacks.
-`smart_read_core.py` is reserved for Natron-independent pipeline logic.
+`SmartReadExt.py` contains the Natron callbacks that populate and operate the
+version controls. `smart_read_core.py` scans beauty EXR versions relative to a
+project saved in the required `SHOT/comp/natron` location.
 
+Each Smart Read has an Element value and selects matching `SHOT_ELEMENT_v###`
+directories under `SHOT/lite/unreal/_output`. With **Latest** enabled it uses
+the highest populated version. The **File** combo always lists the discovered
+versions; choosing one turns Latest off. Refresh rescans the current element
+without reopening the project.

@@ -17,8 +17,10 @@ from portable_pipe_tools.auto_comp_natron.open_comp import (
 from portable_pipe_tools.auto_comp_natron.settings import (
     get_default_settings_path,
     load_saved_browser_selection,
+    load_saved_natron_executable,
     load_saved_repository_folder,
     save_browser_selection,
+    save_natron_executable,
     save_repository_folder,
 )
 from portable_pipe_tools.show_manager.shot_manager_core import (
@@ -53,6 +55,7 @@ class AutoCompNatronApp:
 
         self.settings_path = settings_path or get_default_settings_path()
         self.repository_path: Path | None = None
+        self.natron_executable_path: Path | None = None
         self.repository_status_var = tk.StringVar(
             value="Repository Connected: No"
         )
@@ -70,7 +73,7 @@ class AutoCompNatronApp:
         self._build_menu()
         self._build_ui()
         if prompt_on_startup:
-            self.root.after_idle(self._initialize_repository)
+            self.root.after_idle(self._initialize_startup_settings)
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self.root)
@@ -193,6 +196,10 @@ class AutoCompNatronApp:
         file_menu.add_command(
             label="Change Repository Folder...",
             command=self._browse_repository_folder,
+        )
+        file_menu.add_command(
+            label="Change Natron Executable...",
+            command=self._browse_natron_executable,
         )
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.root.destroy)
@@ -345,6 +352,80 @@ class AutoCompNatronApp:
             text="NATRON",
             style="NatronBadge.TLabel",
         ).grid(row=0, column=4, rowspan=2, sticky="e")
+
+    def _initialize_startup_settings(self) -> None:
+        self._initialize_natron_executable()
+        self._initialize_repository()
+
+    def _initialize_natron_executable(self) -> None:
+        saved_executable = load_saved_natron_executable(self.settings_path)
+        if saved_executable:
+            saved_path = Path(saved_executable).expanduser()
+            if saved_path.is_file():
+                self.natron_executable_path = saved_path
+                return
+        self.natron_executable_path = None
+        self._browse_natron_executable(first_startup=True)
+
+    def _browse_natron_executable(self, first_startup: bool = False) -> bool:
+        title = (
+            "First Time Setup - Choose Natron Executable"
+            if first_startup
+            else "Choose Natron Executable"
+        )
+        current = self.natron_executable_path
+        initial_directory = (
+            str(current.parent)
+            if current and current.parent.is_dir()
+            else None
+        )
+        selected = filedialog.askopenfilename(
+            title=title,
+            initialdir=initial_directory,
+            filetypes=(
+                ("Natron", "Natron.exe"),
+                ("Executables", "*.exe"),
+                ("All files", "*.*"),
+            ),
+            parent=self.root,
+        )
+        if not selected:
+            return False
+
+        selected_path = Path(selected).expanduser()
+        if not selected_path.is_file():
+            messagebox.showerror(
+                "Auto Comp - Natron",
+                f"The selected Natron executable does not exist:\n{selected_path}",
+                parent=self.root,
+            )
+            return False
+
+        try:
+            save_natron_executable(selected_path, self.settings_path)
+        except Exception as error:
+            messagebox.showerror(
+                "Auto Comp - Natron",
+                f"Could not save the local configuration:\n{error}",
+                parent=self.root,
+            )
+            return False
+
+        self.natron_executable_path = selected_path
+        self._set_status(f"Natron executable set: {selected_path.name}.", "success")
+        return True
+
+    def _ensure_natron_executable(self) -> bool:
+        if self.natron_executable_path and self.natron_executable_path.is_file():
+            return True
+        self.natron_executable_path = None
+        if self._browse_natron_executable():
+            return True
+        self._set_status(
+            "Choose the Natron executable before opening a comp.",
+            "warning",
+        )
+        return False
 
     def _initialize_repository(self) -> None:
         saved_folder = load_saved_repository_folder(self.settings_path)
@@ -614,12 +695,15 @@ class AutoCompNatronApp:
                 "warning",
             )
             return
+        if not self._ensure_natron_executable():
+            return
 
         try:
             result = create_and_open_comp(
                 show_path,
                 sequence_name,
                 shot_name,
+                natron_executable=self.natron_executable_path,
             )
         except Exception as error:
             self._set_status(
@@ -644,9 +728,16 @@ class AutoCompNatronApp:
         if show_path is None or not sequence_name or not shot_name:
             self._set_status("Right-click a shot to open its comp.", "warning")
             return
+        if not self._ensure_natron_executable():
+            return
 
         try:
-            result = open_comp(show_path, sequence_name, shot_name)
+            result = open_comp(
+                show_path,
+                sequence_name,
+                shot_name,
+                natron_executable=self.natron_executable_path,
+            )
         except CompNotFoundError as error:
             self._set_status(
                 f"Failed to open comp for {shot_name}: {error.comp_path} does not exist.",

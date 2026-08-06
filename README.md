@@ -21,6 +21,9 @@ options. On first launch it asks for the shared repository folder and saves the
 choice to `LocalSaveFiles\auto_comp_natron_local_save.json`. The toolbar reports
 whether that saved repository is connected, and its Repository button or
 **File > Change Repository Folder...** can change the connection later. The
+same machine-local file stores the selected Natron executable. Auto Comp prompts
+for `Natron.exe` when that setting is missing or invalid; use **File > Change
+Natron Executable...** to update it later. The
 three browser panels list shows, sequences, and shots from that repository and
 remember the last selection between launches. Natron comp creation is not
 automatic, but a shot can be right-clicked and **Create Comp** chosen. The tool
@@ -37,8 +40,9 @@ number of successful and failed comp creations.
 The Shot context menu also provides **Create and Open Comp** and **Open Comp**.
 Create and Open uses the normal template fallback when needed, or opens the
 existing comp unchanged. Open Comp requires an existing file. Both launch the
-`.ntp` file through the operating system's configured Natron file association
-and report their result in the status bar.
+`.ntp` file directly in Natron with the source-controlled `natron_plugins`
+directory added to `NATRON_PLUGIN_PATH`, ensuring Smart Read is available, and
+report their result in the status bar.
 
 ## Natron Smart Read PyPlug
 
@@ -47,9 +51,14 @@ Natron with `tools\natron_with_portable_plugins.bat` so Natron discovers the
 source-controlled PyPlug through `NATRON_PLUGIN_PATH`. In Natron's node menu,
 the node is listed as `PortablePipeTools > SmartRead`.
 
-This initial scaffold wraps Natron's native Read node and exposes File, First
-Frame, and Last Frame controls. Pipeline-aware selection and version-resolution
-behavior will be added after the production GUI is defined.
+Smart Read resolves the shot from the comp's required `SHOT/comp/natron`
+location and scans `SHOT/lite/unreal/_output`. Each node has an independent
+Element value (such as `beauty` or `environment`) and reads matching
+`SHOT_ELEMENT_v###` folders. It selects the highest populated EXR version when
+**Latest** is enabled. The always-visible **File** combo lists every discovered
+version, while **Refresh** rescans the current element on demand. Choosing an
+older File version turns Latest off. The selected sequence and frame range are sent
+to the internal native Read node without exposing separate path or frame boxes.
 
 ## Farm Render Manager
 

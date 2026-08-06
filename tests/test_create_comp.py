@@ -61,6 +61,27 @@ class CreateCompTests(unittest.TestCase):
 
             self.assertEqual(b"artist work", target_path.read_bytes())
 
+    def test_copied_natron_project_path_points_to_target_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            show_root = Path(temporary_directory) / "show"
+            _, fallback_template = get_template_candidates(show_root, "BSH")
+            fallback_template.parent.mkdir(parents=True)
+            fallback_template.write_text(
+                "<Project><Name>projectPaths</Name><Value>"
+                "&lt;Name&gt;OCIO&lt;/Name&gt;&lt;Value&gt;C:/ocio&lt;/Value&gt;"
+                "&lt;Name&gt;Project&lt;/Name&gt;&lt;Value&gt;C:/old/shot/comp/natron&lt;/Value&gt;"
+                "</Value></Project>",
+                encoding="utf-8",
+            )
+
+            result = create_comp(show_root, "BSH", "BSH_000_0010")
+
+            expected = result.target_path.parent.as_posix()
+            self.assertIn(
+                f"&lt;Name&gt;Project&lt;/Name&gt;&lt;Value&gt;{expected}&lt;/Value&gt;",
+                result.target_path.read_text(encoding="utf-8"),
+            )
+
     def test_missing_templates_report_both_checked_locations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             show_root = Path(temporary_directory) / "show"

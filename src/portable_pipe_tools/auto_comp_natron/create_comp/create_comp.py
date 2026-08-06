@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import html
 from pathlib import Path
+import re
 import shutil
 
 
 TEMPLATE_SEQUENCE = "ZZZ"
 TEMPLATE_SHOT_NUMBER = "0000"
 INITIAL_COMP_VERSION = 1
+_PROJECT_PATHS_VALUE = re.compile(
+    r"(<Name>projectPaths</Name>.*?<Value>)(.*?)(</Value>)",
+    re.DOTALL,
+)
+_PROJECT_PATH_ENTRY = re.compile(
+    r"(&lt;Name&gt;Project&lt;/Name&gt;&lt;Value&gt;).*?(&lt;/Value&gt;)",
+    re.DOTALL,
+)
 
 
 class CompAlreadyExistsError(FileExistsError):
@@ -101,6 +111,35 @@ def _copy_without_overwrite(source_path: Path, target_path: Path) -> None:
         raise
 
 
+def _set_natron_project_directory(comp_path: Path) -> None:
+    """Point Natron's named Project path at the copied comp's real directory."""
+
+    try:
+        project_text = comp_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return
+
+    escaped_directory = html.escape(comp_path.parent.as_posix(), quote=True)
+
+    def replace_project_paths(match: re.Match[str]) -> str:
+        table_value, replacements = _PROJECT_PATH_ENTRY.subn(
+            lambda entry: entry.group(1) + escaped_directory + entry.group(2),
+            match.group(2),
+            count=1,
+        )
+        if replacements == 0:
+            return match.group(0)
+        return match.group(1) + table_value + match.group(3)
+
+    updated_text = _PROJECT_PATHS_VALUE.sub(
+        replace_project_paths,
+        project_text,
+        count=1,
+    )
+    if updated_text != project_text:
+        comp_path.write_text(updated_text, encoding="utf-8")
+
+
 def create_comp(
     show_root: str | Path,
     sequence_name: str,
@@ -124,8 +163,12 @@ def create_comp(
 
     try:
         _copy_without_overwrite(template_path, target_path)
+        _set_natron_project_directory(target_path)
     except FileExistsError as error:
         raise CompAlreadyExistsError(target_path) from error
+    except Exception:
+        target_path.unlink(missing_ok=True)
+        raise
 
     return CreateCompResult(
         target_path=target_path,

@@ -17,6 +17,7 @@ from portable_pipe_tools.auto_comp_natron.open_comp import (
 )
 from portable_pipe_tools.auto_comp_natron.settings import (
     load_saved_browser_selection,
+    load_saved_natron_executable,
     load_saved_repository_folder,
     save_repository_folder,
 )
@@ -34,6 +35,35 @@ def _create_test_repository(repository: Path) -> None:
 
 
 class AutoCompNatronAppTests(unittest.TestCase):
+    def test_missing_natron_executable_is_prompted_for_and_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            settings_path = temporary_path / "settings.json"
+            executable = temporary_path / "Natron.exe"
+            executable.touch()
+            app = AutoCompNatronApp(
+                settings_path=settings_path,
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app."
+                    "filedialog.askopenfilename",
+                    return_value=str(executable),
+                ) as picker:
+                    app._initialize_natron_executable()
+
+                picker.assert_called_once()
+                self.assertEqual(executable, app.natron_executable_path)
+                self.assertEqual(
+                    str(executable),
+                    load_saved_natron_executable(settings_path),
+                )
+            finally:
+                app.root.destroy()
+
     def test_window_starts_disconnected_with_empty_browser(self) -> None:
         app = AutoCompNatronApp(prompt_on_startup=False)
         app.root.withdraw()
@@ -498,9 +528,12 @@ class AutoCompNatronAppTests(unittest.TestCase):
             )
             app.root.withdraw()
             comp_path = Path("AAA_000_0020_comp_v001.ntp")
+            executable = temporary_path / "Natron.exe"
+            executable.touch()
 
             try:
                 app._set_repository_connected(repository)
+                app.natron_executable_path = executable
                 app.shot_list.selection_clear(0, "end")
                 app.shot_list.selection_set(0, 1)
                 app._select_shot_for_context_menu(1)
@@ -518,6 +551,7 @@ class AutoCompNatronAppTests(unittest.TestCase):
                     repository / "alpha",
                     "AAA",
                     "AAA_000_0020",
+                    natron_executable=executable,
                 )
                 self.assertEqual(
                     "Successfully created and opened comp: "
@@ -541,9 +575,12 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 prompt_on_startup=False,
             )
             app.root.withdraw()
+            executable = temporary_path / "Natron.exe"
+            executable.touch()
 
             try:
                 app._set_repository_connected(repository)
+                app.natron_executable_path = executable
                 with patch(
                     "portable_pipe_tools.apps.auto_comp_natron_app."
                     "create_and_open_comp",
@@ -572,9 +609,12 @@ class AutoCompNatronAppTests(unittest.TestCase):
             )
             app.root.withdraw()
             missing_path = Path("AAA_000_0010_comp_v001.ntp")
+            executable = temporary_path / "Natron.exe"
+            executable.touch()
 
             try:
                 app._set_repository_connected(repository)
+                app.natron_executable_path = executable
                 with patch(
                     "portable_pipe_tools.apps.auto_comp_natron_app.open_comp",
                     side_effect=CompNotFoundError(missing_path),
@@ -585,6 +625,7 @@ class AutoCompNatronAppTests(unittest.TestCase):
                     repository / "alpha",
                     "AAA",
                     "AAA_000_0010",
+                    natron_executable=executable,
                 )
                 self.assertIn("does not exist", app.status_var.get())
                 self.assertEqual(

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from portable_pipe_tools.auto_comp_natron.create_comp import (
     get_comp_path,
@@ -11,12 +12,74 @@ from portable_pipe_tools.auto_comp_natron.create_comp import (
 )
 from portable_pipe_tools.auto_comp_natron.open_comp import (
     CompNotFoundError,
+    NATRON_EXECUTABLE_ENV,
+    NATRON_PLUGIN_PATH_ENV,
+    build_natron_environment,
     create_and_open_comp,
+    get_natron_executable,
+    get_portable_natron_plugins_path,
     open_comp,
 )
+from portable_pipe_tools.auto_comp_natron.open_comp.open_comp import _default_opener
 
 
 class OpenCompTests(unittest.TestCase):
+    def test_natron_environment_prepends_portable_plugins(self) -> None:
+        plugin_path = Path("F:/StandAloneTools/natron_plugins")
+        existing_path = str(Path("F:/OtherNatronPlugins"))
+
+        result = build_natron_environment(
+            {NATRON_PLUGIN_PATH_ENV: existing_path},
+            plugin_path,
+        )
+
+        self.assertEqual(
+            [str(plugin_path), existing_path],
+            result[NATRON_PLUGIN_PATH_ENV].split(os.pathsep),
+        )
+
+    def test_natron_environment_does_not_duplicate_portable_plugins(self) -> None:
+        plugin_path = Path("F:/StandAloneTools/natron_plugins")
+
+        result = build_natron_environment(
+            {NATRON_PLUGIN_PATH_ENV: str(plugin_path)},
+            plugin_path,
+        )
+
+        self.assertEqual(str(plugin_path), result[NATRON_PLUGIN_PATH_ENV])
+
+    def test_natron_executable_can_be_overridden(self) -> None:
+        configured = "D:/Apps/Natron/bin/Natron.exe"
+
+        self.assertEqual(
+            Path(configured),
+            get_natron_executable({NATRON_EXECUTABLE_ENV: configured}),
+        )
+
+    @patch(
+        "portable_pipe_tools.auto_comp_natron.open_comp.open_comp.subprocess.Popen"
+    )
+    def test_default_opener_launches_natron_with_portable_plugins(
+        self,
+        popen: Mock,
+    ) -> None:
+        comp_path = Path("F:/repo/show/sequences/BSH/shot/comp/natron/comp.ntp")
+
+        _default_opener(comp_path)
+
+        command = popen.call_args.args[0]
+        options = popen.call_args.kwargs
+        self.assertEqual(str(get_natron_executable(options["env"])), command[0])
+        self.assertEqual(str(comp_path), command[1])
+        self.assertIn(
+            str(get_portable_natron_plugins_path()),
+            options["env"][NATRON_PLUGIN_PATH_ENV].split(os.pathsep),
+        )
+        self.assertEqual(
+            getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0),
+            options["creationflags"],
+        )
+
     def test_open_comp_opens_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             show_root = Path(temporary_directory) / "show"

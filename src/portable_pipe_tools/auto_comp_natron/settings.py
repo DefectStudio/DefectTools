@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 
-SETTINGS_SCHEMA_VERSION = 2
+SETTINGS_SCHEMA_VERSION = 3
 SETTINGS_FILENAME = "auto_comp_natron_local_save.json"
 
 
@@ -25,6 +25,11 @@ def load_settings(settings_path: Path | None = None) -> dict:
 def load_saved_repository_folder(settings_path: Path | None = None) -> str:
     settings = load_settings(settings_path)
     return str(settings.get("repository_folder") or "").strip()
+
+
+def load_saved_natron_executable(settings_path: Path | None = None) -> str:
+    settings = load_settings(settings_path)
+    return str(settings.get("natron_executable") or "").strip()
 
 
 def load_saved_browser_selection(
@@ -57,6 +62,16 @@ def save_repository_folder(
     path = settings_path or get_default_settings_path()
     settings = load_settings(path)
     settings["repository_folder"] = str(repository_folder)
+    return _write_settings(path, settings)
+
+
+def save_natron_executable(
+    natron_executable: str | Path,
+    settings_path: Path | None = None,
+) -> Path:
+    path = settings_path or get_default_settings_path()
+    settings = load_settings(path)
+    settings["natron_executable"] = str(natron_executable)
     return _write_settings(path, settings)
 
 
