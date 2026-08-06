@@ -57,6 +57,9 @@ class FakeParam:
         else:
             self.value = value
 
+    def setValue(self, value) -> None:
+        self.set(value)
+
     def get(self):
         return self.value
 
@@ -111,6 +114,7 @@ class FakeGroup:
         self.nodes = []
         self.pages_order = []
         self.refreshed = False
+        self.refresh_count = 0
         self.editable = True
 
     def createPageParam(self, name: str, label: str):
@@ -149,6 +153,7 @@ class FakeGroup:
 
     def refreshUserParamsGUI(self) -> None:
         self.refreshed = True
+        self.refresh_count += 1
 
     def setSubGraphEditable(self, editable: bool) -> None:
         self.editable = editable
@@ -212,8 +217,9 @@ def test_smart_read_metadata_is_stable():
 
     assert plugin["getPluginID"]() == "com.portablepipetools.SmartRead"
     assert plugin["getLabel"]() == "SmartRead"
-    assert plugin["getVersion"]() == 6
+    assert plugin["getVersion"]() == 10
     assert plugin["getGrouping"]() == "PortablePipeTools"
+    assert callable(plugin["onParamChanged"])
 
 
 def test_smart_read_builds_read_output_graph_and_public_controls():
@@ -236,9 +242,10 @@ def test_smart_read_builds_read_output_graph_and_public_controls():
     assert group.params["element"].get() == "beauty"
     assert group.params["latest"].get() is True
     assert group.params["version"].visible is True
-    assert group.params["onParamChanged"].get() == "SmartReadExt.onParamChanged"
+    assert group.params["onParamChanged"].get() == "SmartRead.onParamChanged"
     assert group.pages_order == ["smartRead", "Node", "Settings"]
     assert group.refreshed is True
+    assert group.refresh_count == 2
     assert group.editable is False
     assert group.label == "SmartRead - beauty"
 
@@ -279,6 +286,29 @@ def test_smart_read_selects_latest_and_keeps_version_menu_visible(tmp_path):
         "BSH_000_0020_beauty_v001.####.exr"
     )
     assert group.params["latest"].get() is False
+
+    group.params["latest"].set(True)
+    refresh_count = group.refresh_count
+    extension.onParamChanged(
+        group.params["latest"], group, app, app, True
+    )
+    assert group.refresh_count == refresh_count + 1
+    assert group.params["version"].getOption(group.params["version"].get()) == "v028"
+    assert reader.params["filename"].get().endswith(
+        "BSH_000_0020_beauty_v028.####.exr"
+    )
+    extension.onParamChanged(
+        group.params["version"], group, app, app, False
+    )
+    assert group.params["latest"].get() is True
+
+    group.params["latest"].set(False)
+    refresh_count = group.refresh_count
+    extension.onParamChanged(
+        group.params["latest"], group, app, app, True
+    )
+    assert group.refresh_count == refresh_count + 1
+    assert group.params["version"].getOption(group.params["version"].get()) == "v028"
 
 
 def test_element_and_refresh_each_rescan_only_that_stream(tmp_path):

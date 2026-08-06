@@ -70,10 +70,11 @@ def refreshVersions(app, group, select_latest=None):
 
     if not versions:
         _replace_choice_options(version_param, [EMPTY_VERSION_LABEL])
-        version_param.set(0)
+        version_param.setValue(0)
         reader = group.getNode("Read1")
         if reader is not None:
             reader.getParam("filename").set("")
+        group.refreshUserParamsGUI()
         return
 
     labels = [item.label for item in versions]
@@ -93,14 +94,21 @@ def refreshVersions(app, group, select_latest=None):
     if selected is None:
         selected = latest_exr_version(versions)
 
-    version_param.set(selected.label)
+    # Natron's ChoiceParam binding expects the numeric option index here.
+    # Passing the label may leave the GUI displaying its previous selection
+    # even though the internal Read node has moved to the latest version.
+    version_param.setValue(labels.index(selected.label))
     _apply_version(group, selected)
+    # Changing the contents or value of a user-created ChoiceParam does not
+    # reliably repaint an already-open properties panel until its holder is
+    # explicitly refreshed.
+    group.refreshUserParamsGUI()
 
 
 def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
     """React to Latest and Version changes from the Smart Read GUI."""
 
-    del thisGroup, userEdited
+    del thisGroup
     param_name = thisParam.getScriptName()
     if param_name == "element":
         _update_node_label(thisNode)
@@ -111,7 +119,10 @@ def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
         refreshVersions(app, thisNode, select_latest=thisParam.get())
     elif param_name == "version":
         latest_param = thisNode.getParam("latest")
-        if latest_param.get():
+        # Refreshing the menu changes the ChoiceParam programmatically, which
+        # also invokes this callback with userEdited=False. Only an actual
+        # dropdown selection should switch Latest off.
+        if userEdited and latest_param.get():
             latest_param.set(False)
         project_directory = _project_directory(app)
         if project_directory is None:
@@ -132,6 +143,8 @@ def createInstanceExt(app, group):
 
     callback = group.getParam("onParamChanged")
     if callback is not None:
-        callback.set("SmartReadExt.onParamChanged")
+        # Natron imports this extension into the main PyPlug module. Callback
+        # names must therefore be resolved through SmartRead, not SmartReadExt.
+        callback.set("SmartRead.onParamChanged")
     _update_node_label(group)
     refreshVersions(app, group)

@@ -24,7 +24,7 @@ def getLabel():
 
 
 def getVersion():
-    return 6
+    return 10
 
 
 def getGrouping():
