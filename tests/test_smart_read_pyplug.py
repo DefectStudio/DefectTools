@@ -103,6 +103,7 @@ class FakeEffect:
                 "lastFrame": FakeParam("lastFrame"),
                 "refreshButton": FakeParam("refreshButton"),
             }
+            self.params["filename"].set("")
 
     def getParam(self, name: str):
         return self.params.get(name)
@@ -125,6 +126,9 @@ class FakeEffect:
 
     def disconnectInput(self, index: int) -> None:
         self.inputs.pop(index, None)
+
+    def getInput(self, index: int):
+        return self.inputs.get(index)
 
     def destroy(self, _auto_reconnect=True) -> None:
         self.destroyed = True
@@ -365,7 +369,9 @@ def test_smart_read_selects_latest_and_keeps_version_menu_visible(tmp_path):
     assert group.params["version"].getOption(group.params["version"].get()) == "v028"
     assert group.params["version"].get() == group.params["version"].getDefaultValue()
     assert group.params["version"].visible is True
-    reader = app.nodes[0]
+    reader = group.getNode("Read1")
+    assert app.created_reader_filenames == [reader.params["filename"].get()]
+    assert group.getNode("Output1").inputs[0] is reader
     assert reader.params["filename"].get().endswith(
         "BSH_000_0020_beauty_v028.####.exr"
     )
@@ -433,7 +439,7 @@ def test_after_project_load_replaces_values_restored_from_template(tmp_path):
     group = FakeGroup()
     app.top_level_nodes.append(group)
     plugin["createInstance"](app, group)
-    reader = app.nodes[0]
+    reader = group.getNode("Read1")
 
     # Natron restores serialized PyPlug values after createInstanceExt. A comp
     # copied from a template can therefore temporarily point at another shot.
@@ -467,7 +473,7 @@ def test_gui_refresh_waits_for_persistent_timer_callback(tmp_path, monkeypatch):
     group = FakeGroup()
     app.top_level_nodes.append(group)
     plugin["createInstance"](app, group)
-    reader = app.nodes[0]
+    reader = group.getNode("Read1")
     group.params["version"].setOptions(["v001"])
     reader.params["filename"].set("F:/old/template/shot.####.exr")
 
@@ -515,7 +521,7 @@ def test_element_and_refresh_each_rescan_only_that_stream(tmp_path):
     app = FakeApp(project_directory)
     group = FakeGroup()
     plugin["createInstance"](app, group)
-    reader = app.nodes[0]
+    reader = group.getNode("Read1")
 
     group.params["element"].set("environment")
     extension.onParamChanged(group.params["element"], group, app, app, True)
@@ -574,6 +580,15 @@ def test_element_recovers_preview_after_switching_through_missing_stream(
     group = FakeGroup()
     plugin["createInstance"](app, group)
     original_reader = group.getNode("Read1")
+
+    assert len(scheduled) == 1
+    delay, callback = scheduled.pop()
+    assert delay == 0
+    callback()
+
+    configured_reader = group.getNode("Output1").inputs[0]
+    assert configured_reader is not original_reader
+    original_reader = configured_reader
     initial_refresh_count = original_reader.params["refreshButton"].trigger_count
 
     assert len(scheduled) == 1
@@ -611,9 +626,10 @@ def test_element_recovers_preview_after_switching_through_missing_stream(
     assert recovered_reader.params["filename"].get().endswith(
         "BSH_000_0020_beauty_v004.####.exr"
     )
-    assert app.created_reader_filenames == [
+    assert app.created_reader_filenames[-1] == (
         recovered_reader.params["filename"].get()
-    ]
+    )
+    assert len(app.created_reader_filenames) == 2
     assert recovered_reader.params["refreshButton"].trigger_count == 1
     assert len(scheduled) == 1
     scheduled.pop()[1]()

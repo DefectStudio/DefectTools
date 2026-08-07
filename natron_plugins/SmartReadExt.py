@@ -15,7 +15,9 @@ EMPTY_VERSION_LABEL = "No EXR versions found"
 PLUGIN_ID = "com.portablepipetools.SmartRead"
 VIEWER_PLUGIN_ID = "fr.inria.built-in.Viewer"
 VIEWER_RENDER_DELAY_MS = 250
+INITIAL_REFRESH_DELAY_MS = 0
 _PENDING_GUI_REFRESHES = []
+_PENDING_INITIAL_REFRESHES = []
 _PENDING_VIEWER_RENDERS = []
 _REFRESHING_GROUPS = []
 
@@ -85,6 +87,17 @@ def _reload_reader(reader):
     refresh_button = reader.getParam("refreshButton")
     if refresh_button is not None:
         refresh_button.trigger()
+
+
+def _reader(group):
+    """Return the reader actually connected to the SmartRead output."""
+
+    output = group.getNode("Output1")
+    if output is not None:
+        connected_reader = output.getInput(0)
+        if connected_reader is not None:
+            return connected_reader
+    return group.getNode("Read1")
 
 
 def _finish_viewer_render():
@@ -177,11 +190,13 @@ def _replace_reader(app, group, reader, exr_version):
 
 
 def _apply_version(app, group, exr_version):
-    reader = group.getNode("Read1")
+    reader = _reader(group)
     if reader is None:
         return
     source_missing = _ensure_source_missing_param(group)
-    if source_missing.get():
+    filename = reader.getParam("filename")
+    reader_has_no_source = filename is None or not str(filename.get()).strip()
+    if source_missing.get() or reader_has_no_source:
         recovered_reader = _replace_reader(app, group, reader, exr_version)
         if recovered_reader is not reader:
             reader = recovered_reader
@@ -223,7 +238,7 @@ def refreshVersions(app, group, select_latest=None):
                 selected_index=0,
                 default_index=0,
             )
-            reader = group.getNode("Read1")
+            reader = _reader(group)
             if reader is not None:
                 reader.getParam("filename").set("")
                 source_missing.set(True)
@@ -343,6 +358,41 @@ def scheduleGuiRefresh(app):
     QtCore.QTimer.singleShot(100, _finish_gui_refresh)
 
 
+def _finish_initial_refresh():
+    if _PENDING_INITIAL_REFRESHES:
+        app, group = _PENDING_INITIAL_REFRESHES.pop(0)
+        refreshVersions(app, group)
+
+
+def _schedule_initial_refresh(app, group):
+    """Refresh after Natron finishes registering a newly created PyPlug."""
+
+    try:
+        import NatronEngine
+
+        if NatronEngine.natron.isBackground():
+            refreshVersions(app, group)
+            return
+        from PySide import QtCore
+    except (AttributeError, ImportError):
+        refreshVersions(app, group)
+        return
+
+    _PENDING_INITIAL_REFRESHES.append((app, group))
+    QtCore.QTimer.singleShot(
+        INITIAL_REFRESH_DELAY_MS, _finish_initial_refresh
+    )
+
+
+def _ensure_natron_callback_inspection():
+    """Restore the legacy inspect API used by Natron's callback loader."""
+
+    import inspect
+
+    if not hasattr(inspect, "getargspec"):
+        inspect.getargspec = inspect.getfullargspec
+
+
 def createInstanceExt(app, group):
     """Install Smart Read callbacks after the internal graph is constructed."""
 
@@ -350,6 +400,7 @@ def createInstanceExt(app, group):
     if callback is not None:
         # Natron imports this extension into the main PyPlug module. Callback
         # names must therefore be resolved through SmartRead, not SmartReadExt.
+        _ensure_natron_callback_inspection()
         callback.set("SmartRead.onParamChanged")
     _update_node_label(group)
-    refreshVersions(app, group)
+    _schedule_initial_refresh(app, group)
