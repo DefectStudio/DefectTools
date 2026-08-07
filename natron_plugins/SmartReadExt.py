@@ -14,17 +14,29 @@ from smart_read_core import (
 EMPTY_VERSION_LABEL = "No EXR versions found"
 PLUGIN_ID = "com.portablepipetools.SmartRead"
 _PENDING_GUI_REFRESHES = []
+_REFRESHING_GROUPS = []
 
 
-def _replace_choice_options(choice_param, labels):
-    """Replace a Natron choice menu without its broken list-of-strings binding."""
+def _replace_version_param(group, labels, selected_index, default_index):
+    """Recreate the File menu so Natron also replaces its restored widget."""
 
-    # Natron 2.5 on Windows accepts an empty list here, but its Shiboken
-    # binding rejects strings nested inside setOptions(list). Add each string
-    # through the binding-safe scalar API after clearing the menu.
-    choice_param.setOptions([])
+    previous_param = group.getParam("version")
+    if previous_param is not None:
+        group.removeParam(previous_param)
+
+    choice_param = group.createChoiceParam("version", "File")
     for label in labels:
         choice_param.addOption(label, "")
+    choice_param.setAnimationEnabled(False)
+    choice_param.setHelp(
+        "Available EXR versions for this element. Latest automatically selects "
+        "the newest entry when versions are refreshed."
+    )
+    choice_param.setDefaultValue(default_index)
+    choice_param.setValue(selected_index)
+    group.getParam("smartRead").addParam(choice_param)
+    group.refreshUserParamsGUI()
+    return choice_param
 
 
 def _project_directory(app):
@@ -70,46 +82,56 @@ def refreshVersions(app, group, select_latest=None):
     except (OSError, ValueError):
         versions = ()
 
-    if not versions:
-        _replace_choice_options(version_param, [EMPTY_VERSION_LABEL])
-        version_param.setValue(0)
-        reader = group.getNode("Read1")
-        if reader is not None:
-            reader.getParam("filename").set("")
-        group.refreshUserParamsGUI()
-        return
+    _REFRESHING_GROUPS.append(group)
+    try:
+        if not versions:
+            _replace_version_param(
+                group,
+                [EMPTY_VERSION_LABEL],
+                selected_index=0,
+                default_index=0,
+            )
+            reader = group.getNode("Read1")
+            if reader is not None:
+                reader.getParam("filename").set("")
+            return
 
-    # Keep the newest version at index 0. Choice parameters use index 0 as
-    # their default, so Latest can select the current file without Natron
-    # showing its red "reset to default" X beside the menu.
-    displayed_versions = tuple(reversed(versions))
-    labels = [item.label for item in displayed_versions]
-    previously_selected = None
-    selected_index = version_param.get()
-    if 0 <= selected_index < version_param.getNumOptions():
-        previously_selected = version_param.getOption(selected_index)
+        # Keep stable oldest-to-newest indices. Natron restores a serialized
+        # ChoiceParam GUI before this rescan, and changing the order underneath
+        # that widget can make a displayed label refer to the wrong index.
+        labels = [item.label for item in versions]
+        previously_selected = None
+        selected_index = version_param.get()
+        if 0 <= selected_index < version_param.getNumOptions():
+            previously_selected = version_param.getOption(selected_index)
 
-    _replace_choice_options(version_param, labels)
-    use_latest = bool(group.getParam("latest").get())
-    if select_latest is not None:
-        use_latest = bool(select_latest)
+        use_latest = bool(group.getParam("latest").get())
+        if select_latest is not None:
+            use_latest = bool(select_latest)
 
-    selected = latest_exr_version(displayed_versions) if use_latest else None
-    if selected is None and previously_selected in labels:
-        selected = displayed_versions[labels.index(previously_selected)]
-    if selected is None:
-        selected = latest_exr_version(displayed_versions)
+        latest = latest_exr_version(versions)
+        selected = latest if use_latest else None
+        if selected is None and previously_selected in labels:
+            selected = versions[labels.index(previously_selected)]
+        if selected is None:
+            selected = latest
 
-    # Natron's ChoiceParam binding expects the numeric option index here.
-    # Passing the label may leave the GUI displaying its previous selection
-    # even though the internal Read node has moved to the latest version.
-    version_param.setDefaultValue(0)
-    version_param.setValue(labels.index(selected.label))
-    _apply_version(group, selected)
-    # Changing the contents or value of a user-created ChoiceParam does not
-    # reliably repaint an already-open properties panel until its holder is
-    # explicitly refreshed.
-    group.refreshUserParamsGUI()
+        # Natron's red X resets a parameter to its default. Make the current
+        # latest version the File menu's default while preserving stable menu
+        # indices; an intentionally pinned older version can still be reset.
+        latest_index = labels.index(latest.label)
+        _replace_version_param(
+            group,
+            labels,
+            selected_index=labels.index(selected.label),
+            default_index=latest_index,
+        )
+        _apply_version(group, selected)
+    finally:
+        for index, refreshing_group in enumerate(_REFRESHING_GROUPS):
+            if refreshing_group is group:
+                del _REFRESHING_GROUPS[index]
+                break
 
 
 def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
@@ -123,8 +145,19 @@ def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
     elif param_name == "refresh":
         refreshVersions(app, thisNode)
     elif param_name == "latest":
+        # Selecting a File turns Latest off programmatically. Natron may queue
+        # that BooleanParam callback until after the File callback returns, so
+        # use its own edit flag instead of a short-lived recursion guard.
+        if not userEdited:
+            return
         refreshVersions(app, thisNode, select_latest=thisParam.get())
     elif param_name == "version":
+        if any(group is thisNode for group in _REFRESHING_GROUPS):
+            return
+        selected_index = thisParam.get()
+        if not 0 <= selected_index < thisParam.getNumOptions():
+            return
+        selected_label = thisParam.getOption(selected_index)
         latest_param = thisNode.getParam("latest")
         # Refreshing the menu changes the ChoiceParam programmatically, which
         # also invokes this callback with userEdited=False. Only an actual
@@ -138,7 +171,6 @@ def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
             versions = find_exr_versions(project_directory, _element(thisNode))
         except (OSError, ValueError):
             return
-        selected_label = thisParam.getOption(thisParam.get())
         for exr_version in versions:
             if exr_version.label == selected_label:
                 _apply_version(thisNode, exr_version)

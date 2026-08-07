@@ -151,6 +151,13 @@ class FakeGroup:
     def createButtonParam(self, name: str, label: str):
         return self._create_param(name, label)
 
+    def removeParam(self, param) -> bool:
+        self.params.pop(param.name, None)
+        for candidate in self.params.values():
+            if isinstance(candidate, FakePage) and param in candidate.children:
+                candidate.children.remove(param)
+        return True
+
     def _create_param(self, name: str, label: str):
         param = FakeParam(name, label)
         self.params[name] = param
@@ -287,7 +294,7 @@ def test_smart_read_selects_latest_and_keeps_version_menu_visible(tmp_path):
     group = FakeGroup()
     plugin["createInstance"](app, group)
 
-    assert group.params["version"].options == ["v028", "v001"]
+    assert group.params["version"].options == ["v001", "v028"]
     assert group.params["version"].getOption(group.params["version"].get()) == "v028"
     assert group.params["version"].get() == group.params["version"].getDefaultValue()
     assert group.params["version"].visible is True
@@ -307,6 +314,17 @@ def test_smart_read_selects_latest_and_keeps_version_menu_visible(tmp_path):
     )
     assert group.params["latest"].get() is False
     assert group.params["version"].get() != group.params["version"].getDefaultValue()
+
+    # Natron queues the programmatic Latest=False callback after the File
+    # callback. It must not rebuild and invalidate the menu being handled.
+    refresh_count = group.refresh_count
+    extension.onParamChanged(
+        group.params["latest"], group, app, app, False
+    )
+    assert group.refresh_count == refresh_count
+    assert reader.params["filename"].get().endswith(
+        "BSH_000_0020_beauty_v001.####.exr"
+    )
 
     group.params["latest"].set(True)
     refresh_count = group.refresh_count
@@ -442,7 +460,7 @@ def test_element_and_refresh_each_rescan_only_that_stream(tmp_path):
 
     make_version("environment", 7)
     extension.onParamChanged(group.params["refresh"], group, app, app, True)
-    assert group.params["version"].options == ["v007", "v002"]
+    assert group.params["version"].options == ["v002", "v007"]
     assert reader.params["filename"].get().endswith(
         "BSH_000_0020_environment_v007.####.exr"
     )

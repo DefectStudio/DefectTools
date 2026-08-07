@@ -17,5 +17,5 @@ location.
 Each Smart Read has an Element value and selects matching `SHOT_ELEMENT_v###`
 directories under `SHOT/lite/unreal/_output`. With **Latest** enabled it uses
 the highest populated version. The **File** combo always lists the discovered
-versions newest-first; choosing one turns Latest off. Refresh rescans the
+versions in ascending order; choosing one turns Latest off. Refresh rescans the
 current element without reopening the project.

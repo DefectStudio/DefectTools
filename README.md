@@ -58,7 +58,7 @@ location and scans `SHOT/lite/unreal/_output`. Each node has an independent
 Element value (such as `beauty` or `environment`) and reads matching
 `SHOT_ELEMENT_v###` folders. It selects the highest populated EXR version when
 **Latest** is enabled. The always-visible **File** combo lists every discovered
-version newest-first, while **Refresh** rescans the current element on demand.
+version in ascending order, while **Refresh** rescans the current element on demand.
 Choosing an older File version turns Latest off. The selected sequence and frame
 range are sent to the internal native Read node without exposing separate path or
 frame boxes.
