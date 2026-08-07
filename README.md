@@ -41,8 +41,10 @@ The Shot context menu also provides **Create and Open Comp** and **Open Comp**.
 Create and Open uses the normal template fallback when needed, or opens the
 existing comp unchanged. Open Comp requires an existing file. Both launch the
 `.ntp` file directly in Natron with the source-controlled `natron_plugins`
-directory added to `NATRON_PLUGIN_PATH`, ensuring Smart Read is available, and
-report their result in the status bar.
+directory added to `NATRON_PLUGIN_PATH`, ensuring Smart Read is available. An
+after-load script rescans Smart Read nodes once Natron has restored the whole
+project, replacing any internal Read paths inherited from the comp template.
+The tool reports the launch result in the status bar.
 
 ## Natron Smart Read PyPlug
 
@@ -56,9 +58,10 @@ location and scans `SHOT/lite/unreal/_output`. Each node has an independent
 Element value (such as `beauty` or `environment`) and reads matching
 `SHOT_ELEMENT_v###` folders. It selects the highest populated EXR version when
 **Latest** is enabled. The always-visible **File** combo lists every discovered
-version, while **Refresh** rescans the current element on demand. Choosing an
-older File version turns Latest off. The selected sequence and frame range are sent
-to the internal native Read node without exposing separate path or frame boxes.
+version newest-first, while **Refresh** rescans the current element on demand.
+Choosing an older File version turns Latest off. The selected sequence and frame
+range are sent to the internal native Read node without exposing separate path or
+frame boxes.
 
 ## Farm Render Manager
 

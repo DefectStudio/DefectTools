@@ -9,6 +9,7 @@ from portable_pipe_tools.auto_comp_natron.open_comp.open_comp import (
     create_and_open_comp,
     get_natron_executable,
     get_portable_natron_plugins_path,
+    get_smart_read_onload_script_path,
     open_comp,
     open_comp_in_natron,
 )
@@ -24,6 +25,7 @@ __all__ = (
     "create_and_open_comp",
     "get_natron_executable",
     "get_portable_natron_plugins_path",
+    "get_smart_read_onload_script_path",
     "open_comp",
     "open_comp_in_natron",
 )

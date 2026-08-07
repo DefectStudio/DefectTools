@@ -12,6 +12,8 @@ from smart_read_core import (
 
 
 EMPTY_VERSION_LABEL = "No EXR versions found"
+PLUGIN_ID = "com.portablepipetools.SmartRead"
+_PENDING_GUI_REFRESHES = []
 
 
 def _replace_choice_options(choice_param, labels):
@@ -77,7 +79,11 @@ def refreshVersions(app, group, select_latest=None):
         group.refreshUserParamsGUI()
         return
 
-    labels = [item.label for item in versions]
+    # Keep the newest version at index 0. Choice parameters use index 0 as
+    # their default, so Latest can select the current file without Natron
+    # showing its red "reset to default" X beside the menu.
+    displayed_versions = tuple(reversed(versions))
+    labels = [item.label for item in displayed_versions]
     previously_selected = None
     selected_index = version_param.get()
     if 0 <= selected_index < version_param.getNumOptions():
@@ -88,15 +94,16 @@ def refreshVersions(app, group, select_latest=None):
     if select_latest is not None:
         use_latest = bool(select_latest)
 
-    selected = latest_exr_version(versions) if use_latest else None
+    selected = latest_exr_version(displayed_versions) if use_latest else None
     if selected is None and previously_selected in labels:
-        selected = versions[labels.index(previously_selected)]
+        selected = displayed_versions[labels.index(previously_selected)]
     if selected is None:
-        selected = latest_exr_version(versions)
+        selected = latest_exr_version(displayed_versions)
 
     # Natron's ChoiceParam binding expects the numeric option index here.
     # Passing the label may leave the GUI displaying its previous selection
     # even though the internal Read node has moved to the latest version.
+    version_param.setDefaultValue(0)
     version_param.setValue(labels.index(selected.label))
     _apply_version(group, selected)
     # Changing the contents or value of a user-created ChoiceParam does not
@@ -136,6 +143,37 @@ def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
             if exr_version.label == selected_label:
                 _apply_version(thisNode, exr_version)
                 break
+
+
+def _refresh_smart_reads_in(container, app):
+    for node in container.getChildren():
+        if node.getPluginID() == PLUGIN_ID:
+            refreshVersions(app, node)
+        _refresh_smart_reads_in(node, app)
+
+
+def afterProjectLoaded(app):
+    """Refresh Smart Reads after Natron restores all serialized node values."""
+
+    _refresh_smart_reads_in(app, app)
+
+
+def _finish_gui_refresh():
+    if _PENDING_GUI_REFRESHES:
+        app = _PENDING_GUI_REFRESHES.pop(0)
+        afterProjectLoaded(app)
+
+
+def scheduleGuiRefresh(app):
+    """Refresh after Natron finishes constructing its properties widgets."""
+
+    from PySide import QtCore
+
+    _PENDING_GUI_REFRESHES.append(app)
+    # Keep the callback in this imported module rather than the transient
+    # --onload script namespace. A short delay also lets project layout and
+    # properties-panel restoration finish before the dynamic menu is rebuilt.
+    QtCore.QTimer.singleShot(100, _finish_gui_refresh)
 
 
 def createInstanceExt(app, group):

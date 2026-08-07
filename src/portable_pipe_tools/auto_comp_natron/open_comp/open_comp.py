@@ -42,6 +42,10 @@ def get_portable_natron_plugins_path() -> Path:
     return Path(__file__).resolve().parents[4] / "natron_plugins"
 
 
+def get_smart_read_onload_script_path() -> Path:
+    return get_portable_natron_plugins_path() / "SmartReadOnLoad.py"
+
+
 def get_natron_executable(environment: dict[str, str] | None = None) -> Path:
     values = environment if environment is not None else os.environ
     configured_path = str(values.get(NATRON_EXECUTABLE_ENV) or "").strip()
@@ -85,7 +89,12 @@ def open_comp_in_natron(
     )
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return subprocess.Popen(
-        [str(executable), str(comp_path)],
+        [
+            str(executable),
+            "--onload",
+            str(get_smart_read_onload_script_path()),
+            str(comp_path),
+        ],
         env=environment,
         creationflags=creation_flags,
     )

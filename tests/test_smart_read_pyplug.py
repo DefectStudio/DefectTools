@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import runpy
 import sys
+import types
 from pathlib import Path
 
 
@@ -63,6 +64,9 @@ class FakeParam:
     def get(self):
         return self.value
 
+    def getDefaultValue(self):
+        return self.default_value
+
     def getScriptName(self) -> str:
         return self.name
 
@@ -107,9 +111,16 @@ class FakeEffect:
     def connectInput(self, index: int, node) -> None:
         self.inputs[index] = node
 
+    def getPluginID(self) -> str:
+        return self.plugin_id
+
+    def getChildren(self):
+        return []
+
 
 class FakeGroup:
     def __init__(self) -> None:
+        self.plugin_id = "com.portablepipetools.SmartRead"
         self.params = {"onParamChanged": FakeParam("onParamChanged")}
         self.nodes = []
         self.pages_order = []
@@ -167,6 +178,12 @@ class FakeGroup:
             None,
         )
 
+    def getPluginID(self) -> str:
+        return self.plugin_id
+
+    def getChildren(self):
+        return self.nodes
+
     def beginChanges(self) -> None:
         pass
 
@@ -187,6 +204,7 @@ class FakeProjectPaths:
 class FakeApp:
     def __init__(self, project_directory=None) -> None:
         self.nodes = []
+        self.top_level_nodes = []
         self.project_directory = project_directory
 
     def createNode(self, plugin_id: str, _version: int, _group):
@@ -196,11 +214,12 @@ class FakeApp:
         return node
 
     def getProjectParam(self, name: str):
-        return (
-            FakeProjectPaths(self.project_directory)
-            if name == "projectPaths"
-            else None
-        )
+        if name == "projectPaths":
+            return FakeProjectPaths(self.project_directory)
+        return None
+
+    def getChildren(self):
+        return self.top_level_nodes
 
 
 def load_plugin():
@@ -268,8 +287,9 @@ def test_smart_read_selects_latest_and_keeps_version_menu_visible(tmp_path):
     group = FakeGroup()
     plugin["createInstance"](app, group)
 
-    assert group.params["version"].options == ["v001", "v028"]
+    assert group.params["version"].options == ["v028", "v001"]
     assert group.params["version"].getOption(group.params["version"].get()) == "v028"
+    assert group.params["version"].get() == group.params["version"].getDefaultValue()
     assert group.params["version"].visible is True
     reader = app.nodes[0]
     assert reader.params["filename"].get().endswith(
@@ -286,6 +306,7 @@ def test_smart_read_selects_latest_and_keeps_version_menu_visible(tmp_path):
         "BSH_000_0020_beauty_v001.####.exr"
     )
     assert group.params["latest"].get() is False
+    assert group.params["version"].get() != group.params["version"].getDefaultValue()
 
     group.params["latest"].set(True)
     refresh_count = group.refresh_count
@@ -294,6 +315,7 @@ def test_smart_read_selects_latest_and_keeps_version_menu_visible(tmp_path):
     )
     assert group.refresh_count == refresh_count + 1
     assert group.params["version"].getOption(group.params["version"].get()) == "v028"
+    assert group.params["version"].get() == group.params["version"].getDefaultValue()
     assert reader.params["filename"].get().endswith(
         "BSH_000_0020_beauty_v028.####.exr"
     )
@@ -309,6 +331,83 @@ def test_smart_read_selects_latest_and_keeps_version_menu_visible(tmp_path):
     )
     assert group.refresh_count == refresh_count + 1
     assert group.params["version"].getOption(group.params["version"].get()) == "v028"
+
+
+def test_after_project_load_replaces_values_restored_from_template(tmp_path):
+    shot_root = tmp_path / "BSH_000_0020"
+    project_directory = shot_root / "comp" / "natron"
+    project_directory.mkdir(parents=True)
+    version_name = "BSH_000_0020_beauty_v028"
+    version_directory = shot_root / "lite" / "unreal" / "_output" / version_name
+    version_directory.mkdir(parents=True)
+    (version_directory / f"{version_name}.1001.exr").touch()
+
+    plugin = load_plugin()
+    extension = sys.modules["SmartReadExt"]
+    app = FakeApp(project_directory)
+    group = FakeGroup()
+    app.top_level_nodes.append(group)
+    plugin["createInstance"](app, group)
+    reader = app.nodes[0]
+
+    # Natron restores serialized PyPlug values after createInstanceExt. A comp
+    # copied from a template can therefore temporarily point at another shot.
+    group.params["version"].setOptions(["v001"])
+    reader.params["filename"].set("F:/old/template/shot.####.exr")
+    reader.params["firstFrame"].set(1050)
+    reader.params["lastFrame"].set(1099)
+
+    extension.afterProjectLoaded(app)
+
+    assert group.params["version"].options == ["v028"]
+    assert reader.params["filename"].get().endswith(
+        "BSH_000_0020_beauty_v028.####.exr"
+    )
+    assert reader.params["firstFrame"].get() == 1001
+    assert reader.params["lastFrame"].get() == 1001
+
+
+def test_gui_refresh_waits_for_persistent_timer_callback(tmp_path, monkeypatch):
+    shot_root = tmp_path / "BSH_000_0020"
+    project_directory = shot_root / "comp" / "natron"
+    project_directory.mkdir(parents=True)
+    version_name = "BSH_000_0020_beauty_v028"
+    version_directory = shot_root / "lite" / "unreal" / "_output" / version_name
+    version_directory.mkdir(parents=True)
+    (version_directory / f"{version_name}.1001.exr").touch()
+
+    plugin = load_plugin()
+    extension = sys.modules["SmartReadExt"]
+    app = FakeApp(project_directory)
+    group = FakeGroup()
+    app.top_level_nodes.append(group)
+    plugin["createInstance"](app, group)
+    reader = app.nodes[0]
+    group.params["version"].setOptions(["v001"])
+    reader.params["filename"].set("F:/old/template/shot.####.exr")
+
+    scheduled = []
+    fake_pyside = types.ModuleType("PySide")
+    fake_pyside.QtCore = types.SimpleNamespace(
+        QTimer=types.SimpleNamespace(
+            singleShot=lambda delay, callback: scheduled.append((delay, callback))
+        )
+    )
+    monkeypatch.setitem(sys.modules, "PySide", fake_pyside)
+
+    extension.scheduleGuiRefresh(app)
+
+    assert reader.params["filename"].get() == "F:/old/template/shot.####.exr"
+    assert len(scheduled) == 1
+    delay, callback = scheduled[0]
+    assert delay == 100
+
+    callback()
+
+    assert group.params["version"].options == ["v028"]
+    assert reader.params["filename"].get().endswith(
+        "BSH_000_0020_beauty_v028.####.exr"
+    )
 
 
 def test_element_and_refresh_each_rescan_only_that_stream(tmp_path):
@@ -343,7 +442,7 @@ def test_element_and_refresh_each_rescan_only_that_stream(tmp_path):
 
     make_version("environment", 7)
     extension.onParamChanged(group.params["refresh"], group, app, app, True)
-    assert group.params["version"].options == ["v002", "v007"]
+    assert group.params["version"].options == ["v007", "v002"]
     assert reader.params["filename"].get().endswith(
         "BSH_000_0020_environment_v007.####.exr"
     )

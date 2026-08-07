@@ -18,6 +18,7 @@ from portable_pipe_tools.auto_comp_natron.open_comp import (
     create_and_open_comp,
     get_natron_executable,
     get_portable_natron_plugins_path,
+    get_smart_read_onload_script_path,
     open_comp,
 )
 from portable_pipe_tools.auto_comp_natron.open_comp.open_comp import _default_opener
@@ -70,7 +71,9 @@ class OpenCompTests(unittest.TestCase):
         command = popen.call_args.args[0]
         options = popen.call_args.kwargs
         self.assertEqual(str(get_natron_executable(options["env"])), command[0])
-        self.assertEqual(str(comp_path), command[1])
+        self.assertEqual("--onload", command[1])
+        self.assertEqual(str(get_smart_read_onload_script_path()), command[2])
+        self.assertEqual(str(comp_path), command[3])
         self.assertIn(
             str(get_portable_natron_plugins_path()),
             options["env"][NATRON_PLUGIN_PATH_ENV].split(os.pathsep),
