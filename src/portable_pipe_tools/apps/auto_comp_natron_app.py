@@ -28,6 +28,7 @@ from portable_pipe_tools.show_manager.shot_manager_core import (
     find_sequence_folders,
     find_shot_folders,
     find_show_folders,
+    open_folder_in_file_browser,
 )
 
 
@@ -228,6 +229,22 @@ class AutoCompNatronApp:
             right_padding=5,
         )
         self.show_list.bind("<<ListboxSelect>>", self._on_show_selected)
+        self.show_list.bind("<Button-3>", self._show_show_context_menu)
+
+        self.show_context_menu = tk.Menu(
+            self.root,
+            tearoff=False,
+            background="#303236",
+            foreground=TEXT_COLOR,
+            activebackground=SELECTION_COLOR,
+            activeforeground="#ffffff",
+            borderwidth=0,
+        )
+        self.show_context_menu.add_command(
+            label="Open in Explorer",
+            command=self._open_selected_show_in_explorer,
+        )
+
         self.sequence_list = self._create_browser_panel(
             workspace,
             column=1,
@@ -250,6 +267,11 @@ class AutoCompNatronApp:
         self.sequence_context_menu.add_command(
             label="Create All Comps",
             command=self._create_all_sequence_comps,
+        )
+        self.sequence_context_menu.add_separator()
+        self.sequence_context_menu.add_command(
+            label="Open in Explorer",
+            command=self._open_selected_sequence_in_explorer,
         )
 
         self.shot_list = self._create_browser_panel(
@@ -282,6 +304,11 @@ class AutoCompNatronApp:
         self.shot_context_menu.add_command(
             label="Open Comp",
             command=self._open_selected_comp,
+        )
+        self.shot_context_menu.add_separator()
+        self.shot_context_menu.add_command(
+            label="Open in Explorer",
+            command=self._open_selected_shot_in_explorer,
         )
 
         self._build_options_panel(workspace)
@@ -580,6 +607,14 @@ class AutoCompNatronApp:
             )
             return
 
+        shot_rows.sort(
+            key=lambda shot_row: (
+                shot_row.sequence.casefold(),
+                shot_row.section_number,
+                shot_row.shot_number,
+                shot_row.shot_name.casefold(),
+            )
+        )
         self.shot_rows_by_name = {
             shot_row.shot_name: shot_row for shot_row in shot_rows
         }
@@ -610,6 +645,30 @@ class AutoCompNatronApp:
         if not self._selected_value(self.shot_list, self.shot_names):
             return
         self._save_current_selection()
+
+    def _show_show_context_menu(self, event: tk.Event) -> str:
+        if not self.show_names:
+            return "break"
+        index = self.show_list.nearest(event.y)
+        row_bounds = self.show_list.bbox(index)
+        if row_bounds is None:
+            return "break"
+        _x, row_y, _width, row_height = row_bounds
+        if not row_y <= event.y < row_y + row_height:
+            return "break"
+
+        self._select_show_for_context_menu(index)
+        try:
+            self.show_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.show_context_menu.grab_release()
+        return "break"
+
+    def _select_show_for_context_menu(self, index: int) -> None:
+        self.show_list.selection_clear(0, tk.END)
+        self.show_list.selection_set(index)
+        self.show_list.activate(index)
+        self._on_show_selected(None)
 
     def _show_sequence_context_menu(self, event: tk.Event) -> str:
         if not self.sequence_names:
@@ -660,6 +719,60 @@ class AutoCompNatronApp:
             self.shot_list.selection_set(index)
         self.shot_list.activate(index)
         self._on_shot_selected(None)
+
+    def _open_selected_show_in_explorer(self) -> None:
+        self._open_folder_in_explorer(self._selected_show_path(), "show")
+
+    def _open_selected_sequence_in_explorer(self) -> None:
+        sequence_name = self._selected_value(
+            self.sequence_list,
+            self.sequence_names,
+        )
+        self._open_folder_in_explorer(
+            self.sequence_paths_by_name.get(sequence_name),
+            "sequence",
+        )
+
+    def _open_selected_shot_in_explorer(self) -> None:
+        shot_name = self._active_selected_shot_name()
+        shot_row = self.shot_rows_by_name.get(shot_name)
+        self._open_folder_in_explorer(
+            shot_row.shot_path if shot_row is not None else None,
+            "shot",
+        )
+
+    def _open_folder_in_explorer(
+        self,
+        folder_path: Path | None,
+        item_kind: str,
+    ) -> None:
+        if folder_path is None:
+            self._set_status(
+                f"Right-click a {item_kind} to open its folder.",
+                "warning",
+            )
+            return
+        if not folder_path.is_dir():
+            self._set_status(
+                f"Could not open {item_kind} folder because it does not exist: "
+                f"{folder_path}",
+                "error",
+            )
+            return
+
+        try:
+            open_folder_in_file_browser(folder_path)
+        except Exception as error:
+            self._set_status(
+                f"Could not open {item_kind} folder: {error}",
+                "error",
+            )
+            return
+
+        self._set_status(
+            f"Opened {item_kind} folder: {folder_path.name}.",
+            "success",
+        )
 
     def _create_selected_comp(self) -> None:
         show_path = self._selected_show_path()

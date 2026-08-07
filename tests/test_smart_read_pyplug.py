@@ -334,7 +334,7 @@ def test_smart_read_builds_read_output_graph_and_public_controls():
     assert "sourceFile" not in group.params
     assert "firstFrame" not in group.params
     assert "lastFrame" not in group.params
-    assert group.params["sourceMissing"].visible is False
+    assert "sourceMissing" not in group.params
     assert group.params["version"].label == "File"
     assert group.params["element"].get() == "beauty"
     assert group.params["latest"].get() is True
@@ -598,15 +598,10 @@ def test_element_recovers_preview_after_switching_through_missing_stream(
     assert viewer.render_requests == []
     assert viewer.seek_requests == [1001]
 
-    # Existing v10 comps serialized before sourceMissing was added do not run
-    # the new createInstance structure. The extension must migrate them live.
-    source_missing = group.params.pop("sourceMissing")
-    group.params["smartRead"].children.remove(source_missing)
-
     group.params["element"].set("hero")
     extension.onParamChanged(group.params["element"], group, app, app, True)
     assert original_reader.params["filename"].get() == ""
-    assert group.params["sourceMissing"].get() is True
+    assert "sourceMissing" not in group.params
     assert original_reader.params["refreshButton"].trigger_count == (
         initial_refresh_count + 1
     )
@@ -622,7 +617,7 @@ def test_element_recovers_preview_after_switching_through_missing_stream(
     assert recovered_reader is not original_reader
     assert original_reader.destroyed is True
     assert group.getNode("Output1").inputs[0] is recovered_reader
-    assert group.params["sourceMissing"].get() is False
+    assert "sourceMissing" not in group.params
     assert recovered_reader.params["filename"].get().endswith(
         "BSH_000_0020_beauty_v004.####.exr"
     )
@@ -636,3 +631,21 @@ def test_element_recovers_preview_after_switching_through_missing_stream(
     assert viewer.render_requests == [False, False]
     assert viewer.current_frame == 1001
     assert viewer.seek_requests == [1001]
+
+
+def test_refresh_removes_legacy_source_missing_control(tmp_path):
+    project_directory = tmp_path / "comp" / "natron"
+    project_directory.mkdir(parents=True)
+    plugin = load_plugin()
+    extension = sys.modules["SmartReadExt"]
+    app = FakeApp(project_directory)
+    group = FakeGroup()
+    plugin["createInstance"](app, group)
+
+    legacy_param = group.createBooleanParam("sourceMissing", "Source Missing")
+    group.params["smartRead"].addParam(legacy_param)
+
+    extension.refreshVersions(app, group)
+
+    assert "sourceMissing" not in group.params
+    assert legacy_param not in group.params["smartRead"].children

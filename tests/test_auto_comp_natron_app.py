@@ -145,6 +145,41 @@ class AutoCompNatronAppTests(unittest.TestCase):
             finally:
                 app.root.destroy()
 
+    def test_shots_are_sorted_numerically_instead_of_by_manifest_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            sequence_folder = repository / "alpha" / "sequences" / "AAA"
+            (sequence_folder / "AAA_000_0100").mkdir()
+            (sequence_folder / "aaa_sequence_shots_manifest.json").write_text(
+                """{
+    "sequence_name": "AAA",
+    "shots": [
+        {"shot_name": "AAA_000_0100", "order": 1},
+        {"shot_name": "AAA_000_0020", "order": 2},
+        {"shot_name": "AAA_000_0010", "order": 3}
+    ]
+}
+""",
+                encoding="utf-8",
+            )
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+
+                self.assertEqual(
+                    ["AAA_000_0010", "AAA_000_0020", "AAA_000_0100"],
+                    app.shot_names,
+                )
+            finally:
+                app.root.destroy()
+
     def test_last_browser_selection_is_restored_on_restart(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -234,10 +269,14 @@ class AutoCompNatronAppTests(unittest.TestCase):
             finally:
                 app.root.destroy()
 
-    def test_shot_context_menu_contains_create_comp(self) -> None:
+    def test_context_menus_contain_open_in_explorer(self) -> None:
         app = AutoCompNatronApp(prompt_on_startup=False)
         app.root.withdraw()
         try:
+            self.assertEqual(
+                "Open in Explorer",
+                app.show_context_menu.entrycget(0, "label"),
+            )
             self.assertEqual(
                 "Create Comp",
                 app.shot_context_menu.entrycget(0, "label"),
@@ -250,19 +289,97 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 "Open Comp",
                 app.shot_context_menu.entrycget(2, "label"),
             )
-        finally:
-            app.root.destroy()
-
-    def test_sequence_context_menu_contains_create_all_comps(self) -> None:
-        app = AutoCompNatronApp(prompt_on_startup=False)
-        app.root.withdraw()
-        try:
+            self.assertEqual(
+                "Open in Explorer",
+                app.shot_context_menu.entrycget(4, "label"),
+            )
             self.assertEqual(
                 "Create All Comps",
                 app.sequence_context_menu.entrycget(0, "label"),
             )
+            self.assertEqual(
+                "Open in Explorer",
+                app.sequence_context_menu.entrycget(2, "label"),
+            )
         finally:
             app.root.destroy()
+
+    def test_open_in_explorer_uses_selected_show_sequence_and_shot_folders(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+                app._select_show_for_context_menu(1)
+                show_folder = repository / "beta"
+
+                app._select_sequence_for_context_menu(1)
+                sequence_folder = show_folder / "sequences" / "CCC"
+
+                app._select_shot_for_context_menu(1)
+                shot_folder = sequence_folder / "CCC_000_0040"
+
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app."
+                    "open_folder_in_file_browser"
+                ) as open_folder_mock:
+                    app._open_selected_show_in_explorer()
+                    app._open_selected_sequence_in_explorer()
+                    app._open_selected_shot_in_explorer()
+
+                self.assertEqual(
+                    [call(show_folder), call(sequence_folder), call(shot_folder)],
+                    open_folder_mock.call_args_list,
+                )
+                self.assertEqual(
+                    "Opened shot folder: CCC_000_0040.",
+                    app.status_var.get(),
+                )
+                self.assertEqual(
+                    "StatusSuccess.TLabel",
+                    app.status_label.cget("style"),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_open_in_explorer_reports_a_missing_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            missing_folder = temporary_path / "missing-shot"
+
+            try:
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app."
+                    "open_folder_in_file_browser"
+                ) as open_folder_mock:
+                    app._open_folder_in_explorer(missing_folder, "shot")
+
+                open_folder_mock.assert_not_called()
+                self.assertEqual(
+                    "Could not open shot folder because it does not exist: "
+                    f"{missing_folder}",
+                    app.status_var.get(),
+                )
+                self.assertEqual(
+                    "StatusError.TLabel",
+                    app.status_label.cget("style"),
+                )
+            finally:
+                app.root.destroy()
 
     def test_create_comp_action_uses_current_show_sequence_and_shot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

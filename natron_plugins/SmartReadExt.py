@@ -60,25 +60,14 @@ def _update_node_label(group):
     group.setLabel("SmartRead - {0}".format(element) if element else "SmartRead")
 
 
-def _ensure_source_missing_param(group):
-    """Add recovery state to SmartReads saved before this parameter existed."""
+def _remove_legacy_source_missing_param(group):
+    """Remove the obsolete recovery checkbox from previously saved nodes."""
 
     source_missing = group.getParam("sourceMissing")
-    if source_missing is not None:
-        return source_missing
-
-    source_missing = group.createBooleanParam(
-        "sourceMissing", "Source Missing"
-    )
-    source_missing.setDefaultValue(False)
-    source_missing.restoreDefaultValue()
-    source_missing.setAnimationEnabled(False)
-    source_missing.setVisible(False)
-    page = group.getParam("smartRead")
-    if page is not None:
-        page.addParam(source_missing)
+    if source_missing is None:
+        return
+    group.removeParam(source_missing)
     group.refreshUserParamsGUI()
-    return source_missing
 
 
 def _reload_reader(reader):
@@ -193,14 +182,12 @@ def _apply_version(app, group, exr_version):
     reader = _reader(group)
     if reader is None:
         return
-    source_missing = _ensure_source_missing_param(group)
     filename = reader.getParam("filename")
     reader_has_no_source = filename is None or not str(filename.get()).strip()
-    if source_missing.get() or reader_has_no_source:
+    if reader_has_no_source:
         recovered_reader = _replace_reader(app, group, reader, exr_version)
         if recovered_reader is not reader:
             reader = recovered_reader
-            source_missing.set(False)
     group.beginChanges()
     try:
         reader.getParam("filename").set(exr_version.sequence_path.as_posix())
@@ -217,7 +204,7 @@ def _apply_version(app, group, exr_version):
 def refreshVersions(app, group, select_latest=None):
     """Rescan this shot and update the menu and internal Read source."""
 
-    source_missing = _ensure_source_missing_param(group)
+    _remove_legacy_source_missing_param(group)
     version_param = group.getParam("version")
     project_directory = _project_directory(app)
     try:
@@ -241,7 +228,6 @@ def refreshVersions(app, group, select_latest=None):
             reader = _reader(group)
             if reader is not None:
                 reader.getParam("filename").set("")
-                source_missing.set(True)
                 _reload_reader(reader)
                 _schedule_viewer_render(app)
             return
