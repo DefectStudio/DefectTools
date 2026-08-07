@@ -67,6 +67,13 @@ def createInstance(app, group):
     )
     controls.addParam(version)
 
+    source_missing = group.createBooleanParam("sourceMissing", "Source Missing")
+    source_missing.setDefaultValue(False)
+    source_missing.restoreDefaultValue()
+    source_missing.setAnimationEnabled(False)
+    source_missing.setVisible(False)
+    controls.addParam(source_missing)
+
     group.setPagesOrder(["smartRead", "Node", "Settings"])
     group.refreshUserParamsGUI()
 

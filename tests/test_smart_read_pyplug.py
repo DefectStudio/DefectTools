@@ -20,6 +20,7 @@ class FakeParam:
         self.default_value = 0
         self.options = []
         self.visible = True
+        self.trigger_count = 0
 
     def setSequenceEnabled(self, enabled: bool) -> None:
         self.sequence_enabled = enabled
@@ -74,6 +75,9 @@ class FakeParam:
         self.alias = other
         return True
 
+    def trigger(self) -> None:
+        self.trigger_count += 1
+
 
 class FakePage(FakeParam):
     def __init__(self, name: str, label: str = "") -> None:
@@ -85,8 +89,11 @@ class FakePage(FakeParam):
 
 
 class FakeEffect:
-    def __init__(self, plugin_id: str) -> None:
+    def __init__(self, plugin_id: str, app=None, group=None) -> None:
         self.plugin_id = plugin_id
+        self.app = app
+        self.group = group
+        self.destroyed = False
         self.inputs = {}
         self.params = {}
         if plugin_id == "fr.inria.built-in.Read":
@@ -94,6 +101,7 @@ class FakeEffect:
                 "filename": FakeParam("filename"),
                 "firstFrame": FakeParam("firstFrame"),
                 "lastFrame": FakeParam("lastFrame"),
+                "refreshButton": FakeParam("refreshButton"),
             }
 
     def getParam(self, name: str):
@@ -102,14 +110,28 @@ class FakeEffect:
     def setScriptName(self, name: str) -> None:
         self.script_name = name
 
+    def getScriptName(self) -> str:
+        return self.script_name
+
     def setLabel(self, label: str) -> None:
         self.label = label
 
     def setPosition(self, x: int, y: int) -> None:
         self.position = (x, y)
 
-    def connectInput(self, index: int, node) -> None:
+    def connectInput(self, index: int, node):
         self.inputs[index] = node
+        return True
+
+    def disconnectInput(self, index: int) -> None:
+        self.inputs.pop(index, None)
+
+    def destroy(self, _auto_reconnect=True) -> None:
+        self.destroyed = True
+        if self.app is not None and self in self.app.nodes:
+            self.app.nodes.remove(self)
+        if self.group is not None and self in self.group.nodes:
+            self.group.nodes.remove(self)
 
     def getPluginID(self) -> str:
         return self.plugin_id
@@ -213,12 +235,19 @@ class FakeApp:
         self.nodes = []
         self.top_level_nodes = []
         self.project_directory = project_directory
+        self.created_reader_filenames = []
 
     def createNode(self, plugin_id: str, _version: int, _group):
-        node = FakeEffect(plugin_id)
+        node = FakeEffect(plugin_id, self, _group)
         self.nodes.append(node)
         _group.nodes.append(node)
         return node
+
+    def createReader(self, filename: str, group):
+        self.created_reader_filenames.append(filename)
+        reader = self.createNode("fr.inria.built-in.Read", 1, group)
+        reader.getParam("filename").set(filename)
+        return reader
 
     def getProjectParam(self, name: str):
         if name == "projectPaths":
@@ -227,6 +256,43 @@ class FakeApp:
 
     def getChildren(self):
         return self.top_level_nodes
+
+    def getAppID(self) -> int:
+        return 0
+
+
+class FakeViewer:
+    def __init__(self) -> None:
+        self.render_requests = []
+        self.current_frame = 0
+        self.seek_requests = []
+
+    def renderCurrentFrame(self, use_cache=True) -> None:
+        self.render_requests.append(use_cache)
+
+    def getCurrentFrame(self) -> int:
+        return self.current_frame
+
+    def seek(self, frame: int) -> None:
+        self.current_frame = frame
+        self.seek_requests.append(frame)
+
+
+class FakeGuiApp(FakeApp):
+    def __init__(self, project_directory=None) -> None:
+        super().__init__(project_directory)
+        self.viewers = {}
+
+    def addViewer(self, script_name: str):
+        node = FakeEffect("fr.inria.built-in.Viewer")
+        node.setScriptName(script_name)
+        viewer = FakeViewer()
+        self.top_level_nodes.append(node)
+        self.viewers[script_name] = viewer
+        return viewer
+
+    def getViewer(self, script_name: str):
+        return self.viewers.get(script_name)
 
 
 def load_plugin():
@@ -264,6 +330,7 @@ def test_smart_read_builds_read_output_graph_and_public_controls():
     assert "sourceFile" not in group.params
     assert "firstFrame" not in group.params
     assert "lastFrame" not in group.params
+    assert group.params["sourceMissing"].visible is False
     assert group.params["version"].label == "File"
     assert group.params["element"].get() == "beauty"
     assert group.params["latest"].get() is True
@@ -464,3 +531,92 @@ def test_element_and_refresh_each_rescan_only_that_stream(tmp_path):
     assert reader.params["filename"].get().endswith(
         "BSH_000_0020_environment_v007.####.exr"
     )
+
+
+def test_element_recovers_preview_after_switching_through_missing_stream(
+    tmp_path, monkeypatch
+):
+    shot_root = tmp_path / "BSH_000_0020"
+    project_directory = shot_root / "comp" / "natron"
+    project_directory.mkdir(parents=True)
+    output_directory = shot_root / "lite" / "unreal" / "_output"
+    name = "BSH_000_0020_beauty_v004"
+    version_directory = output_directory / name
+    version_directory.mkdir(parents=True)
+    (version_directory / f"{name}.1001.exr").touch()
+    (version_directory / f"{name}.1040.exr").touch()
+
+    scheduled = []
+    fake_pyside = types.ModuleType("PySide")
+    fake_pyside.QtCore = types.SimpleNamespace(
+        QTimer=types.SimpleNamespace(
+            singleShot=lambda delay, callback: scheduled.append((delay, callback))
+        )
+    )
+    monkeypatch.setitem(sys.modules, "PySide", fake_pyside)
+
+    app = FakeApp(project_directory)
+    gui_app = FakeGuiApp(project_directory)
+    viewer = gui_app.addViewer("Viewer1")
+    viewer.current_frame = 1099
+    app.top_level_nodes = gui_app.top_level_nodes
+    fake_natron_engine = types.ModuleType("NatronEngine")
+    fake_natron_engine.natron = types.SimpleNamespace(isBackground=lambda: False)
+    fake_natron_gui = types.ModuleType("NatronGui")
+    fake_natron_gui.natron = types.SimpleNamespace(
+        getGuiInstance=lambda app_id: gui_app if app_id == 0 else None
+    )
+    monkeypatch.setitem(sys.modules, "NatronEngine", fake_natron_engine)
+    monkeypatch.setitem(sys.modules, "NatronGui", fake_natron_gui)
+
+    plugin = load_plugin()
+    extension = sys.modules["SmartReadExt"]
+    group = FakeGroup()
+    plugin["createInstance"](app, group)
+    original_reader = group.getNode("Read1")
+    initial_refresh_count = original_reader.params["refreshButton"].trigger_count
+
+    assert len(scheduled) == 1
+    delay, callback = scheduled.pop()
+    assert delay == 250
+    callback()
+    assert viewer.render_requests == []
+    assert viewer.seek_requests == [1001]
+
+    # Existing v10 comps serialized before sourceMissing was added do not run
+    # the new createInstance structure. The extension must migrate them live.
+    source_missing = group.params.pop("sourceMissing")
+    group.params["smartRead"].children.remove(source_missing)
+
+    group.params["element"].set("hero")
+    extension.onParamChanged(group.params["element"], group, app, app, True)
+    assert original_reader.params["filename"].get() == ""
+    assert group.params["sourceMissing"].get() is True
+    assert original_reader.params["refreshButton"].trigger_count == (
+        initial_refresh_count + 1
+    )
+    assert len(scheduled) == 1
+    scheduled.pop()[1]()
+    assert viewer.render_requests == [False]
+
+    # A native Read can retain its failed state after its filename becomes
+    # valid again. Recovery replaces it so Natron sees a new node identity.
+    group.params["element"].set("beauty")
+    extension.onParamChanged(group.params["element"], group, app, app, True)
+    recovered_reader = group.getNode("Read1")
+    assert recovered_reader is not original_reader
+    assert original_reader.destroyed is True
+    assert group.getNode("Output1").inputs[0] is recovered_reader
+    assert group.params["sourceMissing"].get() is False
+    assert recovered_reader.params["filename"].get().endswith(
+        "BSH_000_0020_beauty_v004.####.exr"
+    )
+    assert app.created_reader_filenames == [
+        recovered_reader.params["filename"].get()
+    ]
+    assert recovered_reader.params["refreshButton"].trigger_count == 1
+    assert len(scheduled) == 1
+    scheduled.pop()[1]()
+    assert viewer.render_requests == [False, False]
+    assert viewer.current_frame == 1001
+    assert viewer.seek_requests == [1001]

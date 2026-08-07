@@ -13,7 +13,10 @@ from smart_read_core import (
 
 EMPTY_VERSION_LABEL = "No EXR versions found"
 PLUGIN_ID = "com.portablepipetools.SmartRead"
+VIEWER_PLUGIN_ID = "fr.inria.built-in.Viewer"
+VIEWER_RENDER_DELAY_MS = 250
 _PENDING_GUI_REFRESHES = []
+_PENDING_VIEWER_RENDERS = []
 _REFRESHING_GROUPS = []
 
 
@@ -55,10 +58,134 @@ def _update_node_label(group):
     group.setLabel("SmartRead - {0}".format(element) if element else "SmartRead")
 
 
-def _apply_version(group, exr_version):
+def _ensure_source_missing_param(group):
+    """Add recovery state to SmartReads saved before this parameter existed."""
+
+    source_missing = group.getParam("sourceMissing")
+    if source_missing is not None:
+        return source_missing
+
+    source_missing = group.createBooleanParam(
+        "sourceMissing", "Source Missing"
+    )
+    source_missing.setDefaultValue(False)
+    source_missing.restoreDefaultValue()
+    source_missing.setAnimationEnabled(False)
+    source_missing.setVisible(False)
+    page = group.getParam("smartRead")
+    if page is not None:
+        page.addParam(source_missing)
+    group.refreshUserParamsGUI()
+    return source_missing
+
+
+def _reload_reader(reader):
+    """Invalidate Natron's reader cache after changing its source sequence."""
+
+    refresh_button = reader.getParam("refreshButton")
+    if refresh_button is not None:
+        refresh_button.trigger()
+
+
+def _finish_viewer_render():
+    if not _PENDING_VIEWER_RENDERS:
+        return
+
+    app, frame_range = _PENDING_VIEWER_RENDERS.pop(0)
+    for node in app.getChildren():
+        if node.getPluginID() != VIEWER_PLUGIN_ID:
+            continue
+        viewer = app.getViewer(node.getScriptName())
+        if viewer is not None:
+            if frame_range is not None:
+                first_frame, last_frame = frame_range
+                current_frame = viewer.getCurrentFrame()
+                target_frame = (
+                    current_frame
+                    if first_frame <= current_frame <= last_frame
+                    else first_frame
+                )
+                if target_frame != current_frame:
+                    viewer.seek(target_frame)
+                    continue
+            # The reader source changed, so deliberately bypass the Viewer
+            # cache rather than merely repainting its existing texture.
+            viewer.renderCurrentFrame(False)
+
+
+def _schedule_viewer_render(app, first_frame=None, last_frame=None):
+    """Render GUI viewers after the current parameter edit has completed."""
+
+    gui_app = app if hasattr(app, "getViewer") else None
+    if gui_app is None:
+        try:
+            import NatronEngine
+
+            if NatronEngine.natron.isBackground():
+                return
+            import NatronGui
+
+            gui_app = NatronGui.natron.getGuiInstance(app.getAppID())
+        except (AttributeError, ImportError):
+            return
+    if gui_app is None:
+        return
+
+    frame_range = (
+        (first_frame, last_frame)
+        if first_frame is not None and last_frame is not None
+        else None
+    )
+    for index, (pending_app, pending_range) in enumerate(
+        _PENDING_VIEWER_RENDERS
+    ):
+        if pending_app is gui_app:
+            if frame_range is not None:
+                _PENDING_VIEWER_RENDERS[index] = (gui_app, frame_range)
+            return
+
+    from PySide import QtCore
+
+    _PENDING_VIEWER_RENDERS.append((gui_app, frame_range))
+    QtCore.QTimer.singleShot(VIEWER_RENDER_DELAY_MS, _finish_viewer_render)
+
+
+def _replace_reader(app, group, reader, exr_version):
+    """Give a recovered source a fresh node and cache identity."""
+
+    output = group.getNode("Output1")
+    if output is None:
+        return reader
+
+    replacement = app.createReader(
+        exr_version.sequence_path.as_posix(), group
+    )
+    if replacement is None:
+        return reader
+    replacement.setLabel("Read1")
+    replacement.setPosition(0, 0)
+
+    output.disconnectInput(0)
+    if output.connectInput(0, replacement) is False:
+        output.connectInput(0, reader)
+        replacement.destroy(False)
+        return reader
+
+    reader.destroy(False)
+    replacement.setScriptName("Read1")
+    return replacement
+
+
+def _apply_version(app, group, exr_version):
     reader = group.getNode("Read1")
     if reader is None:
         return
+    source_missing = _ensure_source_missing_param(group)
+    if source_missing.get():
+        recovered_reader = _replace_reader(app, group, reader, exr_version)
+        if recovered_reader is not reader:
+            reader = recovered_reader
+            source_missing.set(False)
     group.beginChanges()
     try:
         reader.getParam("filename").set(exr_version.sequence_path.as_posix())
@@ -66,11 +193,16 @@ def _apply_version(group, exr_version):
         reader.getParam("lastFrame").set(exr_version.last_frame)
     finally:
         group.endChanges()
+    _reload_reader(reader)
+    _schedule_viewer_render(
+        app, exr_version.first_frame, exr_version.last_frame
+    )
 
 
 def refreshVersions(app, group, select_latest=None):
     """Rescan this shot and update the menu and internal Read source."""
 
+    source_missing = _ensure_source_missing_param(group)
     version_param = group.getParam("version")
     project_directory = _project_directory(app)
     try:
@@ -94,6 +226,9 @@ def refreshVersions(app, group, select_latest=None):
             reader = group.getNode("Read1")
             if reader is not None:
                 reader.getParam("filename").set("")
+                source_missing.set(True)
+                _reload_reader(reader)
+                _schedule_viewer_render(app)
             return
 
         # Keep stable oldest-to-newest indices. Natron restores a serialized
@@ -126,7 +261,7 @@ def refreshVersions(app, group, select_latest=None):
             selected_index=labels.index(selected.label),
             default_index=latest_index,
         )
-        _apply_version(group, selected)
+        _apply_version(app, group, selected)
     finally:
         for index, refreshing_group in enumerate(_REFRESHING_GROUPS):
             if refreshing_group is group:
@@ -173,7 +308,7 @@ def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
             return
         for exr_version in versions:
             if exr_version.label == selected_label:
-                _apply_version(thisNode, exr_version)
+                _apply_version(app, thisNode, exr_version)
                 break
 
 
