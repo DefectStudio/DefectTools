@@ -1,0 +1,2 @@
+copy /Y install_defect_tools.bat "%TEMP%\DefectToolsInstaller.bat"
+call "%TEMP%\DefectToolsInstaller.bat" --install-child "F:\DefectTools" "install_defect_tools.bat"
