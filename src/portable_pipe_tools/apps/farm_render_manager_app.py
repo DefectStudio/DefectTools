@@ -75,6 +75,7 @@ class ListColumn:
 # replace or extend them without requiring layout changes.
 JOB_COLUMNS = (
     ListColumn("job_name", "Job Name", 250, stretch=True),
+    ListColumn("worker", "Worker", 125),
     ListColumn("user", "User", 90),
     ListColumn("status", "Status", 95),
     ListColumn("errors", "Errors", 55, anchor="center"),
@@ -1196,9 +1197,11 @@ class FarmRenderManagerApp:
         items_by_job_key: dict[JobSelectionKey, str] = {}
 
         for job in job_list:
+            worker = job.worker if job.status.casefold() == "rendering" else ""
             user = job.submitted_user or job.submitted_by
             values = (
                 job.job_name,
+                worker,
                 user,
                 job.status.title(),
                 job.error_count,

@@ -42,6 +42,13 @@ class FarmRenderManagerAppTests(unittest.TestCase):
         self.assertEqual("job_name", JOB_COLUMNS[0].key)
         self.assertEqual("Job Name", JOB_COLUMNS[0].heading)
 
+    def test_worker_column_is_immediately_left_of_user(self) -> None:
+        keys = [column.key for column in JOB_COLUMNS]
+        worker_index = keys.index("worker")
+
+        self.assertEqual("Worker", JOB_COLUMNS[worker_index].heading)
+        self.assertEqual("user", keys[worker_index + 1])
+
     def test_worker_name_is_the_leftmost_worker_column(self) -> None:
         self.assertEqual("worker_name", WORKER_COLUMNS[0].key)
         self.assertEqual("Worker", WORKER_COLUMNS[0].heading)
@@ -176,6 +183,10 @@ class FarmRenderManagerAppTests(unittest.TestCase):
                 restored_job = app._jobs_by_item[restored_selection[0]]
                 self.assertEqual("stable-job-id", restored_job.job_id)
                 self.assertEqual("rendering", restored_job.status)
+                self.assertEqual(
+                    "WORKER-01",
+                    app.job_tree.set(restored_selection[0], "worker"),
+                )
                 self.assertEqual(
                     "Selected job render log",
                     app.log_text.get("1.0", "end-1c"),

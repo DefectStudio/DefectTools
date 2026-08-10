@@ -15,6 +15,7 @@ def _job(
     *,
     user: str = "artist",
     status: str = "queued",
+    worker: str = "",
     errors: int = 0,
     progress: float = 0,
     submitted: str = "2026-08-04T12:00:00Z",
@@ -36,7 +37,7 @@ def _job(
         submitted_by="WORKSTATION",
         submitted_utc=submitted,
         priority=50,
-        worker="",
+        worker=worker,
         frame_start=1,
         frame_end=2,
         frame_count=1,
@@ -76,6 +77,20 @@ class SortRenderJobsTests(unittest.TestCase):
 
         self.assertEqual(
             ["alpha", "Bravo", "Zulu"],
+            [job.job_name for job in sorted_jobs],
+        )
+
+    def test_worker_sort_uses_only_currently_rendering_jobs(self) -> None:
+        jobs = [
+            _job("render-b", status="rendering", worker="ZEBRA"),
+            _job("queued-old-worker", status="queued", worker="ALPHA"),
+            _job("render-a", status="rendering", worker="bravo"),
+        ]
+
+        sorted_jobs = sort_render_jobs(jobs, "worker")
+
+        self.assertEqual(
+            ["render-a", "render-b", "queued-old-worker"],
             [job.job_name for job in sorted_jobs],
         )
 
