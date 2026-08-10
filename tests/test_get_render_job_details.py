@@ -45,6 +45,7 @@ class GetRenderJobDetailsTests(unittest.TestCase):
                     "submitted_utc": "2026-08-04T17:00:00Z",
                     "priority": 75,
                     "attempt": 2,
+                    "blacklisted_workers": ["RENDER-03", "RENDER-04"],
                     "worker": "RENDER-02",
                     "claimed_utc": "2026-08-04T17:01:00Z",
                     "render_started_utc": "2026-08-04T17:02:00Z",
@@ -105,6 +106,17 @@ class GetRenderJobDetailsTests(unittest.TestCase):
             )
             self.assertEqual("bishop-shot-010", section_map["General"]["Job ID"])
             self.assertEqual("Complete", section_map["General"]["Status"])
+            self.assertEqual(
+                "RENDER-03, RENDER-04",
+                section_map["General"]["Black List"],
+            )
+            general_properties = [
+                detail.property_name for detail in sections[0].details
+            ]
+            self.assertEqual(
+                general_properties.index("Attempt") + 1,
+                general_properties.index("Black List"),
+            )
             self.assertEqual("v011", section_map["Render"]["Render Version"])
             self.assertEqual("1001-1099", section_map["Render"]["Frame Range"])
             self.assertEqual(
@@ -148,6 +160,7 @@ class GetRenderJobDetailsTests(unittest.TestCase):
             }
 
             self.assertEqual(MISSING_VALUE, section_map["Result"]["Reason"])
+            self.assertEqual(MISSING_VALUE, section_map["General"]["Black List"])
             self.assertEqual(
                 MISSING_VALUE,
                 section_map["Worker & Timing"]["Render Duration"],

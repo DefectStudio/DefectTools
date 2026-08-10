@@ -51,6 +51,10 @@ def get_render_job_details(job: RenderJob) -> tuple[JobDetailSection, ...]:
             JobDetail("Queue", _display(job.queue_name)),
             JobDetail("Priority", _display(job.priority)),
             JobDetail("Attempt", _display(data.get("attempt"))),
+            JobDetail(
+                "Black List",
+                _format_worker_list(data.get("blacklisted_workers")),
+            ),
         ),
     )
     submission = JobDetailSection(
@@ -176,6 +180,13 @@ def _display(value: Any) -> str:
     if value is None or value == "":
         return MISSING_VALUE
     return str(value)
+
+
+def _format_worker_list(value: Any) -> str:
+    if not isinstance(value, (list, tuple)):
+        return _display(value)
+    workers = [str(worker).strip() for worker in value if str(worker).strip()]
+    return ", ".join(workers) if workers else MISSING_VALUE
 
 
 def _format_bool(value: Any) -> str:
