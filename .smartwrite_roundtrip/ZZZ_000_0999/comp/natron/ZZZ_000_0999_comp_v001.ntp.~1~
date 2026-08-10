@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<!DOCTYPE boost_serialization>
+<boost_serialization signature="serialization::archive" version="19">
+<Background_project>1</Background_project>
+<Project class_id="0" tracking_level="0" version="6">
+	<VersionMajor>2</VersionMajor>
+	<VersionMinor>5</VersionMinor>
+	<VersionRev>0</VersionRev>
+	<GitBranch>tags/v2.5.0</GitBranch>
+	<GitCommit>53ee17e34438005425230468916ff223cfd8a403</GitCommit>
+	<OS>Windows</OS>
+	<Bits>64</Bits>
+	<NodesCollection class_id="1" tracking_level="0" version="1">
+		<NodesCount>0</NodesCount>
+	</NodesCollection>
+	<ProjectKnobsCount>3</ProjectKnobsCount>
+	<item class_id="2" tracking_level="0" version="14">
+		<Name>projectPaths</Name>
+		<Type>Path</Type>
+		<Dimension>1</Dimension>
+		<Secret>0</Secret>
+		<MasterIsAlias>0</MasterIsAlias>
+		<item class_id="3" tracking_level="0" version="7">
+			<Enabled>1</Enabled>
+			<HasAnimation>0</HasAnimation>
+			<Value>&lt;Name&gt;OCIO&lt;/Name&gt;&lt;Value&gt;F:/Natron/Resources/OpenColorIO-Configs/blender&lt;/Value&gt;&lt;Name&gt;Project&lt;/Name&gt;&lt;Value&gt;F:/Defect Tools/.smartwrite_roundtrip/ZZZ_000_0999/comp/natron&lt;/Value&gt;</Value>
+			<Default></Default>
+			<HasMaster>0</HasMaster>
+			<Expression></Expression>
+			<ExprHasRet>0</ExprHasRet>
+		</item>
+		<UserKnob>0</UserKnob>
+	</item>
+	<item>
+		<Name>gpuRendering</Name>
+		<Type>Choice</Type>
+		<Dimension>1</Dimension>
+		<Secret>0</Secret>
+		<MasterIsAlias>0</MasterIsAlias>
+		<item>
+			<Enabled>0</Enabled>
+			<HasAnimation>0</HasAnimation>
+			<Value>0</Value>
+			<Default>0</Default>
+			<HasMaster>0</HasMaster>
+			<Expression></Expression>
+			<ExprHasRet>0</ExprHasRet>
+		</item>
+		<ChoiceLabel>Enabled</ChoiceLabel>
+		<UserKnob>0</UserKnob>
+	</item>
+	<item>
+		<Name>lastSaveDate</Name>
+		<Type>String</Type>
+		<Dimension>1</Dimension>
+		<Secret>0</Secret>
+		<MasterIsAlias>0</MasterIsAlias>
+		<item>
+			<Enabled>0</Enabled>
+			<HasAnimation>0</HasAnimation>
+			<Value>Mon Aug 10 14:18:34 2026</Value>
+			<Default></Default>
+			<HasMaster>0</HasMaster>
+			<Expression></Expression>
+			<ExprHasRet>0</ExprHasRet>
+		</item>
+		<StringsAnimation class_id="4" tracking_level="0" version="0">
+			<count>0</count>
+			<item_version>0</item_version>
+		</StringsAnimation>
+		<UserKnob>0</UserKnob>
+	</item>
+	<AdditionalFormats class_id="5" tracking_level="0" version="0">
+		<count>0</count>
+		<item_version>3</item_version>
+	</AdditionalFormats>
+	<Timeline_current_time>1</Timeline_current_time>
+	<CreationDate>1786396714358</CreationDate>
+</Project>
+</boost_serialization>
+

@@ -75,6 +75,12 @@ sequence continues to target `comp/_output/_hero` for overwrite. Smart Write
 creates any missing parent directories for its enabled outputs when it resolves
 the current shot.
 
+Its Smart Write page also provides collapsible EXR, MP4, MOV, and Hero settings
+sections. These expose artist-facing controls synchronized to the corresponding
+internal writer parameters, such as EXR compression and bit depth or video
+codec, FPS, quality, and bitrate. New MP4 writers default to `libx264`.
+Pipeline-owned filenames and writer enable controls remain protected.
+
 ## Farm Render Manager
 
 Launch the render-farm monitoring interface:

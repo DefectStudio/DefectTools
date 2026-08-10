@@ -113,26 +113,6 @@ def _configure_writer(writer, filename, enabled):
         disable_param.set(not enabled or not bool(filename))
 
 
-def _set_choice_option(param, option_name):
-    if param is None:
-        return False
-    try:
-        options = list(param.getOptions())
-    except (AttributeError, TypeError):
-        return False
-    wanted = option_name.casefold()
-    for index, option in enumerate(options):
-        if str(option).casefold() == wanted:
-            param.set(index)
-            return True
-    return False
-
-
-def _configure_new_writer(writer_name, writer):
-    if writer_name == "MP4Write":
-        _set_choice_option(writer.getParam("codec"), "libx264")
-
-
 def _ensure_concrete_writer(app, group, writer_name, filename):
     writer = group.getNode(writer_name)
     if writer is None or not filename:
@@ -153,7 +133,6 @@ def _ensure_concrete_writer(app, group, writer_name, filename):
 
     replacement.setLabel(label)
     replacement.setPosition(x_position, 100)
-    _configure_new_writer(writer_name, replacement)
     writer.setScriptName("{0}Placeholder".format(writer_name))
     replacement.setScriptName(writer_name)
     _configure_writer(writer, "", False)
@@ -197,25 +176,10 @@ def _create_output_directories(paths, enabled_outputs):
         paths.hero_sequence.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _copy_choice_options(native_param, exposed_param):
-    """Copy a writer's choice labels without linking the two parameters."""
-
-    try:
-        options = native_param.getOptions()
-    except (AttributeError, TypeError):
-        return
-    if options is None:
-        return
-    try:
-        exposed_param.setOptions(list(options))
-    except (AttributeError, TypeError):
-        pass
-
-
-def _create_setting_proxy(
+def _create_setting_alias(
     group,
     settings_group,
-    proxy_prefix,
+    alias_prefix,
     writer,
     native_name,
     creator_name,
@@ -224,21 +188,21 @@ def _create_setting_proxy(
     if native_param is None:
         return False
 
-    proxy_name = "{0}_{1}".format(proxy_prefix, native_name)
-    if group.getParam(proxy_name) is not None:
+    alias_name = "{0}_{1}".format(alias_prefix, native_name)
+    if group.getParam(alias_name) is not None:
         return False
 
     creator = getattr(group, creator_name)
-    proxy = creator(proxy_name, native_param.getLabel())
-    if creator_name == "createChoiceParam":
-        _copy_choice_options(native_param, proxy)
-    proxy.setAnimationEnabled(False)
-    proxy.set(native_param.get())
-    settings_group.addParam(proxy)
+    alias = creator(alias_name, native_param.getLabel())
+    if alias.setAsAlias(native_param) is False:
+        group.removeParam(alias)
+        return False
+    settings_group.addParam(alias)
     return True
 
 
 def _ensure_settings_sections(group):
+    return
     controls = group.getParam("smartWrite")
     if controls is None:
         return
@@ -249,7 +213,7 @@ def _ensure_settings_sections(group):
         section_name,
         section_label,
         writer_name,
-        proxy_prefix,
+        alias_prefix,
         setting_specs,
     ) in SETTINGS_SECTIONS:
         settings_group = group.getParam(section_name)
@@ -266,10 +230,10 @@ def _ensure_settings_sections(group):
         if writer.getParam(format_param_name) is None:
             continue
         for native_name, creator_name in setting_specs:
-            if _create_setting_proxy(
+            if _create_setting_alias(
                 group,
                 settings_group,
-                proxy_prefix,
+                alias_prefix,
                 writer,
                 native_name,
                 creator_name,
@@ -278,33 +242,6 @@ def _ensure_settings_sections(group):
 
     if ui_changed:
         group.refreshUserParamsGUI()
-
-
-def _sync_setting_to_writer(group, exposed_param):
-    exposed_name = exposed_param.getScriptName()
-    for section in SETTINGS_SECTIONS:
-        writer_name = section[3]
-        proxy_prefix = section[4]
-        for native_name, _creator_name in section[5]:
-            if exposed_name != "{0}_{1}".format(proxy_prefix, native_name):
-                continue
-            writer = group.getNode(writer_name)
-            native_param = writer.getParam(native_name) if writer else None
-            if native_param is not None:
-                native_param.set(exposed_param.get())
-            return True
-    return False
-
-
-def _sync_settings_to_writers(group):
-    for section in SETTINGS_SECTIONS:
-        proxy_prefix = section[4]
-        for native_name, _creator_name in section[5]:
-            exposed = group.getParam(
-                "{0}_{1}".format(proxy_prefix, native_name)
-            )
-            if exposed is not None:
-                _sync_setting_to_writer(group, exposed)
 
 
 def _set_settings_section_open(group, checkbox_name, opened):
@@ -358,23 +295,19 @@ def refreshOutputs(app, group, select_next_version=False):
     finally:
         group.endChanges()
     _ensure_settings_sections(group)
-    _sync_settings_to_writers(group)
 
 
 def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
     """Apply checkbox edits to the corresponding internal writers."""
 
     del thisGroup, userEdited
-    param_name = thisParam.getScriptName()
-    if any(param_name == spec[0] for spec in WRITER_SPECS):
+    if any(thisParam.getScriptName() == spec[0] for spec in WRITER_SPECS):
         refreshOutputs(app, thisNode)
         _set_settings_section_open(
             thisNode,
-            param_name,
+            thisParam.getScriptName(),
             thisParam.get(),
         )
-        return
-    _sync_setting_to_writer(thisNode, thisParam)
 
 
 def _refresh_smart_writes_in(container, app):

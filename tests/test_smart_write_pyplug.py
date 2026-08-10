@@ -14,6 +14,9 @@ class FakeParam:
         self.label = label
         self.default_value = None
         self.value = None
+        self.alias = None
+        self.opened = None
+        self.options = []
 
     def setDefaultValue(self, value) -> None:
         self.default_value = value
@@ -36,6 +39,22 @@ class FakeParam:
     def getScriptName(self) -> str:
         return self.name
 
+    def getLabel(self) -> str:
+        return self.label or self.name
+
+    def setAsAlias(self, other) -> bool:
+        self.alias = other
+        return True
+
+    def setOptions(self, options) -> None:
+        self.options = list(options)
+
+    def getOptions(self):
+        return list(self.options)
+
+    def setOpened(self, opened: bool) -> None:
+        self.opened = opened
+
 
 class FakePage(FakeParam):
     def __init__(self, name: str, label: str) -> None:
@@ -47,14 +66,62 @@ class FakePage(FakeParam):
 
 
 class FakeNode:
-    def __init__(self, plugin_id: str) -> None:
+    def __init__(
+        self,
+        plugin_id: str,
+        app=None,
+        group=None,
+        include_format_params: bool = False,
+    ) -> None:
         self.plugin_id = plugin_id
+        self.app = app
+        self.group = group
+        self.destroyed = False
         self.inputs = {}
         self.params = {}
         if plugin_id == "fr.inria.built-in.Write":
+            common_param_names = (
+                "filename",
+                "disableNode",
+                "outputComponents",
+                "inputPremult",
+                "ocioInputSpaceIndex",
+                "ocioOutputSpaceIndex",
+                "frameRange",
+                "firstFrame",
+                "lastFrame",
+                "frameIncr",
+                "readBack",
+            )
+            format_param_names = (
+                "bitDepth",
+                "compression",
+                "quality",
+                "dwaCompressionLevel",
+                "outputChannels",
+                "processAllPlanes",
+                "partSplitting",
+                "viewsSelector",
+                "tileSize",
+                "codec",
+                "fps",
+                "prefPixelCoding",
+                "prefBitDepth",
+                "crf",
+                "x26xSpeed",
+                "bitrateMbps",
+                "gopSize",
+                "bFrames",
+                "fastStart",
+                "enableAlpha",
+                "DNxHDCodecProfile",
+                "HapFormat",
+            )
+            param_names = common_param_names + (
+                format_param_names if include_format_params else ()
+            )
             self.params = {
-                "filename": FakeParam("filename"),
-                "disableNode": FakeParam("disableNode"),
+                name: FakeParam(name, name) for name in param_names
             }
 
     def setScriptName(self, name: str) -> None:
@@ -70,6 +137,9 @@ class FakeNode:
         self.inputs[index] = node
         return True
 
+    def getInput(self, index: int):
+        return self.inputs.get(index)
+
     def getParam(self, name: str):
         return self.params.get(name)
 
@@ -78,6 +148,13 @@ class FakeNode:
 
     def getChildren(self):
         return []
+
+    def destroy(self, _auto_reconnect=True) -> None:
+        self.destroyed = True
+        if self.app is not None and self in self.app.nodes:
+            self.app.nodes.remove(self)
+        if self.group is not None and self in self.group.nodes:
+            self.group.nodes.remove(self)
 
 
 class FakeGroup:
@@ -98,6 +175,24 @@ class FakeGroup:
         param = FakeParam(name, label)
         self.params[name] = param
         return param
+
+    def createIntParam(self, name: str, label: str):
+        return self.createBooleanParam(name, label)
+
+    def createDoubleParam(self, name: str, label: str):
+        return self.createBooleanParam(name, label)
+
+    def createChoiceParam(self, name: str, label: str):
+        return self.createBooleanParam(name, label)
+
+    def createGroupParam(self, name: str, label: str):
+        page = FakePage(name, label)
+        self.params[name] = page
+        return page
+
+    def removeParam(self, param) -> bool:
+        self.params.pop(param.name, None)
+        return True
 
     def setPagesOrder(self, pages) -> None:
         self.pages_order = list(pages)
@@ -145,7 +240,25 @@ class FakeApp:
         self.project_directory = project_directory
 
     def createNode(self, plugin_id: str, _major_version: int, group):
-        node = FakeNode(plugin_id)
+        node = FakeNode(plugin_id, self, group)
+        self.nodes.append(node)
+        group.nodes.append(node)
+        return node
+
+    def createWriter(self, filename: str, group):
+        node = FakeNode(
+            "fr.inria.built-in.Write",
+            self,
+            group,
+            include_format_params=True,
+        )
+        node.getParam("filename").set(filename)
+        node.getParam("compression").setOptions(["Zip", "Piz", "DWAA"])
+        node.getParam("compression").set(0)
+        node.getParam("codec").setOptions(["prores_ksap4h", "libx264"])
+        node.getParam("codec").set(0)
+        node.getParam("bitDepth").setOptions(["16f", "32f"])
+        node.getParam("bitDepth").set(0)
         self.nodes.append(node)
         group.nodes.append(node)
         return node
@@ -179,19 +292,20 @@ def test_smart_write_metadata_and_initial_scaffold() -> None:
     plugin["createInstance"](app, group)
 
     page = group.params["smartWrite"]
-    assert [param.name for param in page.children] == [
+    output_controls = page.children[:4]
+    assert [param.name for param in output_controls] == [
         "exrOutput",
         "mp4Output",
         "movOutput",
         "heroOutput",
     ]
-    assert [param.label for param in page.children] == [
+    assert [param.label for param in output_controls] == [
         "EXR Output",
         "MP4 Output",
         "MOV Output",
         "Hero Output",
     ]
-    assert [param.value for param in page.children] == [True, True, False, True]
+    assert [param.value for param in output_controls] == [True, True, False, True]
     assert group.pages_order == ["smartWrite", "Node", "Settings"]
     assert group.refreshed is True
     assert group.editable is False
@@ -257,6 +371,38 @@ def test_smart_write_configures_exact_shot_output_paths(
         for name in ("EXRWrite", "MP4Write", "MOVWrite", "HeroWrite")
     ] == [False, False, True, False]
     assert group.getParam("onParamChanged").get() == "SmartWrite.onParamChanged"
+    assert not any(
+        node.script_name.endswith("Placeholder") for node in group.nodes
+    )
+    page = group.getParam("smartWrite")
+    assert [param.name for param in page.children[-4:]] == [
+        "exrSettings",
+        "mp4Settings",
+        "movSettings",
+        "heroSettings",
+    ]
+    assert [group.getParam(name).opened for name in (
+        "exrSettings",
+        "mp4Settings",
+        "movSettings",
+        "heroSettings",
+    )] == [True, True, False, True]
+    assert group.getParam("exr_compression").alias is None
+    assert group.getParam("mp4_codec").alias is None
+    assert group.getParam("hero_bitDepth").alias is None
+    assert group.getParam("mp4_codec").get() == 1
+    assert group.getNode("MP4Write").getParam("codec").get() == 1
+    assert group.getNode("MOVWrite").getParam("codec").get() == 0
+    assert group.getParam("exr_compression").getOptions() == [
+        "Zip",
+        "Piz",
+        "DWAA",
+    ]
+    group.getParam("exr_compression").set(2)
+    plugin["onParamChanged"](
+        group.getParam("exr_compression"), group, group, app, True
+    )
+    assert group.getNode("EXRWrite").getParam("compression").get() == 2
 
     group.getParam("movOutput").set(True)
     plugin["onParamChanged"](
@@ -266,6 +412,14 @@ def test_smart_write_configures_exact_shot_output_paths(
     assert group.getNode("MOVWrite").getParam("filename").get().endswith(
         "/BSH_000_0020_beauty_v001.mov"
     )
+    assert group.getParam("movSettings").opened is True
+
+    group.getParam("exrOutput").set(False)
+    plugin["onParamChanged"](
+        group.getParam("exrOutput"), group, group, app, True
+    )
+    assert group.getNode("EXRWrite").getParam("disableNode").get() is True
+    assert group.getParam("exrSettings").opened is False
 
 
 def test_smart_write_refreshes_paths_after_template_copy(
