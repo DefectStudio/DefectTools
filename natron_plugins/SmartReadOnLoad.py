@@ -1,10 +1,13 @@
-"""Refresh Smart Read nodes after Natron has fully restored a project."""
+"""Refresh Smart Read and Smart Write nodes after project restoration."""
 
 import NatronEngine
 import SmartReadExt
+import SmartWriteExt
 
 
 if NatronEngine.natron.isBackground():
     SmartReadExt.afterProjectLoaded(app)
+    SmartWriteExt.afterProjectLoaded(app)
 else:
     SmartReadExt.scheduleGuiRefresh(app)
+    SmartWriteExt.scheduleGuiRefresh(app)

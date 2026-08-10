@@ -65,11 +65,15 @@ frame boxes.
 
 ## Natron Smart Write PyPlug
 
-The initial Smart Write custom-node scaffold also lives in `natron_plugins` and
-is listed as `PortablePipeTools > SmartWrite`. It contains EXR, MP4, and MOV
-output checkboxes plus a Hero output checkbox. This first pass
-provides the node and controls only; format-specific output behavior will be
-added later.
+Smart Write lives in `natron_plugins` and is listed as
+`PortablePipeTools > SmartWrite`. EXR, MP4, and Hero outputs are enabled by
+default; MOV is disabled. The node derives its shot from the comp's
+`SHOT/comp/natron` location. It writes versioned beauty outputs under
+`comp/_output`. EXR beauty, MP4, and MOV share the next version above the
+highest existing `SHOT_beauty_v###` output, while the unversioned Hero EXR
+sequence continues to target `comp/_output/_hero` for overwrite. Smart Write
+creates any missing parent directories for its enabled outputs when it resolves
+the current shot.
 
 ## Farm Render Manager
 

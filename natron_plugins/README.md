@@ -20,7 +20,13 @@ the highest populated version. The **File** combo always lists the discovered
 versions in ascending order; choosing one turns Latest off. Refresh rescans the
 current element without reopening the project.
 
-`SmartWrite.py` is the initial Smart Write PyPlug scaffold. It currently wraps
-a native Write node and exposes four disabled-by-default output checkboxes:
-EXR, MP4, MOV, and Hero. The checkboxes are UI
-only until output paths and encoding behavior are implemented.
+`SmartWrite.py` defines the Smart Write PyPlug and its four output checkboxes.
+EXR, MP4, and Hero are enabled by default; MOV is disabled. `SmartWriteExt.py`
+derives writer paths from the comp saved in `SHOT/comp/natron`, while
+`smart_write_core.py` contains the Natron-independent naming rules. EXR beauty,
+MP4, and MOV share the next version above any existing `SHOT_beauty_v###`
+output. Hero remains unversioned and overwrites its EXR sequence in
+`comp/_output/_hero`. When a Smart Write is created, it also creates the enabled
+outputs' missing parent directories. Its selected beauty version remains stable
+when checkboxes are changed; another newly created Smart Write reserves the next
+version.
