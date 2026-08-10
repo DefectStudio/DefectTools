@@ -7,7 +7,15 @@ from portable_pipe_tools.render_farm.render_job import RenderJob
 
 
 SORTABLE_JOB_COLUMNS = frozenset(
-    {"job_name", "user", "status", "errors", "progress", "submitted"}
+    {
+        "job_name",
+        "worker",
+        "user",
+        "status",
+        "errors",
+        "progress",
+        "submitted",
+    }
 )
 DEFAULT_DESCENDING_COLUMNS = frozenset({"errors", "progress", "submitted"})
 
@@ -42,6 +50,10 @@ def sort_render_jobs(
 def _sort_value(job: RenderJob, column: str) -> Any:
     if column == "job_name":
         return job.job_name.casefold()
+    if column == "worker":
+        if job.status.casefold() != "rendering":
+            return ""
+        return job.worker.casefold()
     if column == "user":
         return (job.submitted_user or job.submitted_by).casefold()
     if column == "status":

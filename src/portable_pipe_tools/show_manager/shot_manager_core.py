@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -9,8 +10,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+import xml.etree.ElementTree as ET
 
 ALL_SEQUENCES_LABEL = "All Sequences"
 SHOW_MANIFEST_FILENAME = "_show_manifest.json"
@@ -24,16 +27,22 @@ MOVE_DISPLAY = "▲  ▼"
 SHOT_TREE_ROW_HEIGHT = 30
 RENDER_CONTEXT_SEGMENTS = ("lite", "unreal", "_output")
 HERO_MP4_SUFFIX = "_heroMP4s"
+EDL_EMPTY_DISPLAY = "—"
 
 COLUMN_TITLES = {
     "move": "Move",
-    "order": "Order",
-    "is_active": "Is Active?",
+    "order": "Current Order",
+    "edl_order": "EDL Order",
+    "is_active": "Current Active",
+    "edl_is_active": "EDL Active",
     "sequence": "Sequence",
     "shot": "Shot",
     "path": "Folder Path",
 }
 SHOT_NAME_RE = re.compile(r"^(?P<sequence>[A-Za-z0-9]{3})_(?P<section>\d{3})_(?P<shot>\d{4,})$")
+EDL_SHOT_NAME_RE = re.compile(
+    r"(?i)(?<![A-Z0-9])(?P<sequence>[A-Z]{3})_000_(?P<shot>\d{4})(?!\d)"
+)
 
 
 @dataclass(frozen=True)
@@ -64,6 +73,43 @@ class ShotRow:
     level_path: str = ""
     manifest_path: Path | None = None
     source: str = "folder"
+    edl_order: int | None = None
+    edl_is_active: bool | None = None
+
+
+@dataclass(frozen=True)
+class EdlShotOccurrence:
+    edit_index: int
+    timeline_start: int
+    timeline_end: int
+    sequence: str
+    shot_name: str
+    source_name: str
+
+
+@dataclass(frozen=True)
+class ResolveEdlImport:
+    xml_path: Path
+    timeline_name: str
+    occurrences: tuple[EdlShotOccurrence, ...]
+    unrecognized_clip_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class EdlComparisonSummary:
+    sequence: str
+    first_order: int
+    last_order: int
+    active_count: int
+    inactive_count: int
+    return_cut_count: int
+    missing_shot_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SequenceManifestExportResult:
+    output_path: Path
+    previous_output_backup_path: Path | None
 
 
 @dataclass(frozen=True)
@@ -172,6 +218,276 @@ def _coerce_optional_int(value: object) -> int | None:
         return int(str(value).strip())
     except Exception:
         return None
+
+
+def _xml_local_name(tag: str) -> str:
+    return str(tag).rsplit("}", 1)[-1]
+
+
+def _xml_children(element: ET.Element | None, name: str) -> list[ET.Element]:
+    if element is None:
+        return []
+    return [child for child in element if _xml_local_name(child.tag) == name]
+
+
+def _xml_child(element: ET.Element | None, name: str) -> ET.Element | None:
+    children = _xml_children(element, name)
+    return children[0] if children else None
+
+
+def _xml_text(element: ET.Element | None, name: str, default: str = "") -> str:
+    child = _xml_child(element, name)
+    if child is None or child.text is None:
+        return default
+    return str(child.text).strip()
+
+
+def _extract_edl_shot_name(candidates: list[str]) -> tuple[str, str, str] | None:
+    for candidate in candidates:
+        source_name = str(candidate or "").strip()
+        if not source_name:
+            continue
+        match = EDL_SHOT_NAME_RE.search(source_name)
+        if not match:
+            continue
+        sequence_name = match.group("sequence").upper()
+        shot_name = f"{sequence_name}_000_{match.group('shot')}"
+        return sequence_name, shot_name, source_name
+    return None
+
+
+def _read_edl_track(
+    track: ET.Element,
+) -> tuple[list[tuple[int, int, int, str, str, str]], list[str]]:
+    recognized: list[tuple[int, int, int, str, str, str]] = []
+    unrecognized: list[str] = []
+
+    for clip_index, clip_item in enumerate(_xml_children(track, "clipitem")):
+        enabled_text = _xml_text(clip_item, "enabled", "TRUE").upper()
+        if enabled_text in ("FALSE", "0", "NO"):
+            continue
+
+        try:
+            timeline_start = int(_xml_text(clip_item, "start"))
+            timeline_end = int(_xml_text(clip_item, "end"))
+        except (TypeError, ValueError):
+            continue
+
+        file_node = _xml_child(clip_item, "file")
+        candidates = [
+            _xml_text(clip_item, "name"),
+            _xml_text(file_node, "name"),
+            _xml_text(file_node, "pathurl"),
+        ]
+        parsed_shot = _extract_edl_shot_name(candidates)
+        if parsed_shot is None:
+            display_name = next((value for value in candidates if value), "<unnamed clip>")
+            unrecognized.append(display_name)
+            continue
+
+        sequence_name, shot_name, source_name = parsed_shot
+        recognized.append(
+            (
+                timeline_start,
+                timeline_end,
+                clip_index,
+                sequence_name,
+                shot_name,
+                source_name,
+            )
+        )
+
+    return recognized, unrecognized
+
+
+def parse_resolve_edl_xml(xml_path: str | Path) -> ResolveEdlImport:
+    """Parse the picture track with the most recognizable Unreal shot clips."""
+    resolved_xml_path = _as_path(xml_path)
+    if not resolved_xml_path.is_file():
+        raise FileNotFoundError(f"Resolve XML file does not exist: {resolved_xml_path}")
+
+    try:
+        xml_root = ET.parse(resolved_xml_path).getroot()
+    except ET.ParseError as error:
+        raise ValueError(f"Could not parse Resolve XML: {error}") from error
+
+    sequence_nodes = [
+        element
+        for element in xml_root.iter()
+        if _xml_local_name(element.tag) == "sequence"
+    ]
+    if not sequence_nodes:
+        raise ValueError("The XML does not contain an editable sequence.")
+
+    track_candidates: list[
+        tuple[int, int, str, list[tuple[int, int, int, str, str, str]], list[str]]
+    ] = []
+    for sequence_index, sequence_node in enumerate(sequence_nodes):
+        timeline_name = _xml_text(sequence_node, "name", f"Sequence {sequence_index + 1}")
+        video_node = _xml_child(_xml_child(sequence_node, "media"), "video")
+        for track_index, track in enumerate(_xml_children(video_node, "track")):
+            recognized, unrecognized = _read_edl_track(track)
+            track_candidates.append(
+                (
+                    sequence_index,
+                    track_index,
+                    timeline_name,
+                    recognized,
+                    unrecognized,
+                )
+            )
+
+    usable_tracks = [candidate for candidate in track_candidates if candidate[3]]
+    if not usable_tracks:
+        raise ValueError(
+            "No enabled video clips containing names like TIC_000_0825 "
+            "were found in the XML."
+        )
+
+    selected_track = max(
+        usable_tracks,
+        key=lambda candidate: (
+            len(candidate[3]),
+            -candidate[0],
+            -candidate[1],
+        ),
+    )
+    _sequence_index, _track_index, timeline_name, raw_occurrences, unrecognized = (
+        selected_track
+    )
+
+    ordered_occurrences = sorted(
+        raw_occurrences,
+        key=lambda occurrence: (occurrence[0], occurrence[1], occurrence[2]),
+    )
+    occurrences = tuple(
+        EdlShotOccurrence(
+            edit_index=edit_index,
+            timeline_start=timeline_start,
+            timeline_end=timeline_end,
+            sequence=sequence_name,
+            shot_name=shot_name,
+            source_name=source_name,
+        )
+        for edit_index, (
+            timeline_start,
+            timeline_end,
+            _clip_index,
+            sequence_name,
+            shot_name,
+            source_name,
+        ) in enumerate(ordered_occurrences, start=1)
+    )
+
+    return ResolveEdlImport(
+        xml_path=resolved_xml_path,
+        timeline_name=timeline_name,
+        occurrences=occurrences,
+        unrecognized_clip_names=tuple(unrecognized),
+    )
+
+
+def clear_edl_comparison(shot_rows: list[ShotRow]) -> None:
+    for shot_row in shot_rows:
+        shot_row.edl_order = None
+        shot_row.edl_is_active = None
+
+
+def apply_edl_sequence_comparison(
+    shot_rows: list[ShotRow],
+    edl_import: ResolveEdlImport,
+    sequence_name: str,
+    first_order: int,
+) -> EdlComparisonSummary:
+    """Apply a preview-only per-sequence EDL proposal to loaded shot rows."""
+    clean_sequence_name = str(sequence_name or "").strip().upper()
+    if not clean_sequence_name or clean_sequence_name == ALL_SEQUENCES_LABEL.upper():
+        raise ValueError("Choose one sequence before building an EDL comparison.")
+    if first_order < 0:
+        raise ValueError("First Shot Number in Sequence must be 0 or greater.")
+
+    sequence_rows = [
+        shot_row
+        for shot_row in shot_rows
+        if shot_row.sequence.upper() == clean_sequence_name
+    ]
+    if not sequence_rows:
+        raise ValueError(f"No manifest shots are loaded for sequence {clean_sequence_name}.")
+
+    rows_by_name: dict[str, ShotRow] = {}
+    for shot_row in sequence_rows:
+        if shot_row.shot_name in rows_by_name:
+            raise ValueError(
+                f"The manifest contains more than one row for {shot_row.shot_name}."
+            )
+        rows_by_name[shot_row.shot_name] = shot_row
+
+    sequence_occurrences = [
+        occurrence
+        for occurrence in edl_import.occurrences
+        if occurrence.sequence == clean_sequence_name
+    ]
+    ordered_edl_shot_names: list[str] = []
+    seen_edl_shot_names: set[str] = set()
+    for occurrence in sequence_occurrences:
+        if occurrence.shot_name in seen_edl_shot_names:
+            continue
+        seen_edl_shot_names.add(occurrence.shot_name)
+        ordered_edl_shot_names.append(occurrence.shot_name)
+
+    clear_edl_comparison(sequence_rows)
+    for order_offset, shot_name in enumerate(ordered_edl_shot_names):
+        shot_row = rows_by_name.get(shot_name)
+        if shot_row is None:
+            continue
+        shot_row.edl_is_active = True
+        shot_row.edl_order = first_order + order_offset
+
+    inactive_rows = sorted(
+        (
+            shot_row
+            for shot_row in sequence_rows
+            if shot_row.shot_name not in seen_edl_shot_names
+        ),
+        key=lambda row: (
+            row.order,
+            row.section_number,
+            row.shot_number,
+            row.shot_name.lower(),
+        ),
+    )
+    inactive_first_order = first_order + len(ordered_edl_shot_names)
+    for order_offset, shot_row in enumerate(inactive_rows):
+        shot_row.edl_is_active = False
+        shot_row.edl_order = inactive_first_order + order_offset
+
+    missing_shot_names = tuple(
+        shot_name
+        for shot_name in ordered_edl_shot_names
+        if shot_name not in rows_by_name
+    )
+    proposed_orders = [
+        shot_row.edl_order
+        for shot_row in sequence_rows
+        if shot_row.edl_order is not None
+    ]
+    if len(proposed_orders) != len(set(proposed_orders)):
+        raise ValueError("The EDL proposal produced duplicate shot order numbers.")
+
+    last_order = max(proposed_orders, default=first_order)
+    return EdlComparisonSummary(
+        sequence=clean_sequence_name,
+        first_order=first_order,
+        last_order=last_order,
+        active_count=sum(
+            1 for shot_row in sequence_rows if shot_row.edl_is_active is True
+        ),
+        inactive_count=sum(
+            1 for shot_row in sequence_rows if shot_row.edl_is_active is False
+        ),
+        return_cut_count=len(sequence_occurrences) - len(ordered_edl_shot_names),
+        missing_shot_names=missing_shot_names,
+    )
 
 
 def _read_json_file(json_path: Path) -> dict:
@@ -357,6 +673,150 @@ def _set_shot_active_fields(shot_data: dict, is_active: bool) -> bool:
     return changed
 
 
+def build_updated_sequence_manifest(
+    manifest_data: dict,
+    shot_rows: list[ShotRow],
+    expected_sequence_name: str,
+) -> dict:
+    """Return a manifest copy containing only the reviewed EDL proposal changes."""
+    sequence_name = str(expected_sequence_name or "").strip().upper()
+    manifest_sequence_name = str(
+        manifest_data.get("sequence_name") or sequence_name
+    ).strip().upper()
+    if manifest_sequence_name != sequence_name:
+        raise ValueError(
+            f"Manifest sequence is {manifest_sequence_name!r}, expected {sequence_name!r}."
+        )
+
+    sequence_rows = [
+        shot_row
+        for shot_row in shot_rows
+        if shot_row.sequence.upper() == sequence_name
+    ]
+    if not sequence_rows:
+        raise ValueError(f"No shot rows are loaded for sequence {sequence_name}.")
+    if any(
+        shot_row.edl_order is None or shot_row.edl_is_active is None
+        for shot_row in sequence_rows
+    ):
+        raise ValueError("Import and review a Resolve EDL before exporting JSON.")
+
+    proposed_orders = [int(shot_row.edl_order) for shot_row in sequence_rows]
+    if len(proposed_orders) != len(set(proposed_orders)):
+        raise ValueError("Proposed EDL order numbers must be unique.")
+
+    updated_manifest = deepcopy(manifest_data)
+    shots = updated_manifest.get("shots")
+    if not isinstance(shots, list):
+        raise ValueError("Manifest 'shots' field must be a list.")
+
+    rows_by_name = {shot_row.shot_name: shot_row for shot_row in sequence_rows}
+    matched_shot_names: set[str] = set()
+    for shot_data in shots:
+        if not isinstance(shot_data, dict):
+            continue
+        shot_name = str(shot_data.get("shot_name") or "").strip()
+        shot_row = rows_by_name.get(shot_name)
+        if shot_row is None:
+            continue
+        if shot_name in matched_shot_names:
+            raise ValueError(f"Manifest contains duplicate shot row: {shot_name}")
+        matched_shot_names.add(shot_name)
+        shot_data["order"] = int(shot_row.edl_order)
+        _set_shot_active_fields(shot_data, bool(shot_row.edl_is_active))
+
+    missing_manifest_rows = sorted(set(rows_by_name) - matched_shot_names)
+    if missing_manifest_rows:
+        raise ValueError(
+            f"Could not find loaded shot rows in the manifest: {missing_manifest_rows}"
+        )
+
+    active_count = sum(
+        1
+        for shot_data in shots
+        if isinstance(shot_data, dict)
+        and _coerce_bool(
+            shot_data.get("is_active", shot_data.get("is_active_value")),
+            default=False,
+        )
+    )
+    updated_manifest["shot_count"] = len(shots)
+    updated_manifest["active_shot_count"] = active_count
+    updated_manifest["inactive_shot_count"] = len(shots) - active_count
+    return updated_manifest
+
+
+def _write_json_file_atomically(json_path: Path, data: dict) -> None:
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=json_path.parent,
+            prefix=f".{json_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            json.dump(data, temporary_file, indent=4, ensure_ascii=False)
+            temporary_file.write("\n")
+            temporary_path = Path(temporary_file.name)
+        os.replace(temporary_path, json_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def get_updated_sequence_manifest_path(manifest_path: str | Path) -> Path:
+    resolved_manifest_path = _as_path(manifest_path)
+    return resolved_manifest_path.with_name(
+        f"{resolved_manifest_path.stem}_updated{resolved_manifest_path.suffix}"
+    )
+
+
+def export_edl_updates_to_sequence_manifest(
+    manifest_path: str | Path,
+    shot_rows: list[ShotRow],
+    sequence_name: str,
+) -> SequenceManifestExportResult:
+    """Write a stable *_updated.json without modifying the Unreal export."""
+    resolved_manifest_path = _as_path(manifest_path)
+    if not resolved_manifest_path.is_file():
+        raise FileNotFoundError(
+            f"Sequence manifest does not exist: {resolved_manifest_path}"
+        )
+
+    manifest_data = _read_json_file(resolved_manifest_path)
+    updated_manifest = build_updated_sequence_manifest(
+        manifest_data,
+        shot_rows,
+        sequence_name,
+    )
+    output_path = get_updated_sequence_manifest_path(resolved_manifest_path)
+    previous_output_backup_path: Path | None = None
+    if output_path.exists():
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        previous_output_backup_path = output_path.with_name(
+            f"{output_path.stem}.pre_edl_{timestamp}{output_path.suffix}"
+        )
+        suffix_number = 2
+        while previous_output_backup_path.exists():
+            previous_output_backup_path = output_path.with_name(
+                f"{output_path.stem}.pre_edl_{timestamp}_{suffix_number}"
+                f"{output_path.suffix}"
+            )
+            suffix_number += 1
+        shutil.copy2(output_path, previous_output_backup_path)
+
+    _write_json_file_atomically(output_path, updated_manifest)
+    return SequenceManifestExportResult(
+        output_path=output_path,
+        previous_output_backup_path=previous_output_backup_path,
+    )
+
+
 def save_active_updates_to_manifests(shot_rows: list[ShotRow]) -> int:
     rows_by_manifest = _group_manifest_rows(shot_rows)
     saved_paths: set[Path] = set()
@@ -498,11 +958,13 @@ class ShotManagerApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Shot Manager")
-        self.root.geometry("1180x700")
-        self.root.minsize(920, 520)
+        self.root.geometry("1480x800")
+        self.root.minsize(1100, 620)
         self.dropbox_root_var = tk.StringVar()
         self.show_select_var = tk.StringVar()
         self.sequence_select_var = tk.StringVar(value=ALL_SEQUENCES_LABEL)
+        self.first_shot_number_var = tk.StringVar(value="001")
+        self.edl_source_var = tk.StringVar(value="No Resolve XML loaded.")
         self.status_var = tk.StringVar(value="Choose a Dropbox folder to begin.")
         self.saved_show_name = ""
         self.saved_sequence_name = ""
@@ -514,6 +976,8 @@ class ShotManagerApp:
         self.shot_rows_by_item_id: dict[str, ShotRow] = {}
         self.move_buttons_by_item_id: dict[str, tuple[ttk.Button, ttk.Button]] = {}
         self.move_button_refresh_job: str | None = None
+        self.edl_import: ResolveEdlImport | None = None
+        self.edl_comparison_summary: EdlComparisonSummary | None = None
         self.shot_sort_column = "order"
         self.shot_sort_reverse = False
         self._build_ui()
@@ -552,11 +1016,13 @@ class ShotManagerApp:
         self.shots_tree = ttk.Treeview(listing_frame, columns=columns, show="headings", selectmode="browse", style="ShotManager.Treeview")
         self._refresh_column_headings()
         self.shots_tree.column("move", width=78, minwidth=70, stretch=False, anchor="center")
-        self.shots_tree.column("order", width=70, minwidth=60, stretch=False, anchor="center")
-        self.shots_tree.column("is_active", width=95, minwidth=90, stretch=False, anchor="center")
+        self.shots_tree.column("order", width=105, minwidth=95, stretch=False, anchor="center")
+        self.shots_tree.column("edl_order", width=90, minwidth=80, stretch=False, anchor="center")
+        self.shots_tree.column("is_active", width=110, minwidth=105, stretch=False, anchor="center")
+        self.shots_tree.column("edl_is_active", width=95, minwidth=90, stretch=False, anchor="center")
         self.shots_tree.column("sequence", width=100, minwidth=80, stretch=False, anchor="center")
         self.shots_tree.column("shot", width=160, minwidth=130, stretch=False)
-        self.shots_tree.column("path", width=700, minwidth=300, stretch=True)
+        self.shots_tree.column("path", width=650, minwidth=280, stretch=True)
         self.shots_tree.bind("<Button-1>", self._on_shots_tree_click)
         self.shots_tree.bind("<Configure>", self._on_tree_configure, add="+")
         self.shots_tree.bind("<MouseWheel>", self._on_tree_mousewheel, add="+")
@@ -569,6 +1035,57 @@ class ShotManagerApp:
         x_scroll.grid(row=1, column=0, sticky="ew")
         self.shots_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
 
+        edl_frame = ttk.LabelFrame(
+            outer,
+            text="DaVinci Resolve EDL Comparison",
+            padding=8,
+        )
+        edl_frame.pack(fill="x", pady=(8, 0))
+        edl_frame.columnconfigure(5, weight=1)
+        ttk.Label(edl_frame, text="First Shot Number in Sequence").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+        )
+        self.first_shot_number_entry = ttk.Entry(
+            edl_frame,
+            textvariable=self.first_shot_number_var,
+            width=8,
+        )
+        self.first_shot_number_entry.grid(row=0, column=1, sticky="w", padx=(0, 12))
+        self.first_shot_number_entry.bind(
+            "<Return>",
+            self._on_first_shot_number_committed,
+        )
+        self.first_shot_number_entry.bind(
+            "<FocusOut>",
+            self._on_first_shot_number_committed,
+        )
+        self.import_edl_button = ttk.Button(
+            edl_frame,
+            text="Import DaVinci Resolve EDL",
+            command=self._import_resolve_edl,
+        )
+        self.import_edl_button.grid(row=0, column=2, padx=(0, 8))
+        self.clear_edl_button = ttk.Button(
+            edl_frame,
+            text="Clear EDL Preview",
+            command=self._clear_edl_preview,
+        )
+        self.clear_edl_button.grid(row=0, column=3, padx=(0, 8))
+        self.export_sequence_json_button = ttk.Button(
+            edl_frame,
+            text="Export Sequence JSON",
+            command=self._export_sequence_json,
+        )
+        self.export_sequence_json_button.grid(row=0, column=4, padx=(0, 12))
+        ttk.Label(
+            edl_frame,
+            textvariable=self.edl_source_var,
+            anchor="w",
+        ).grid(row=0, column=5, sticky="ew")
+
         actions_frame = ttk.Frame(outer)
         actions_frame.pack(fill="x", pady=(8, 0))
         ttk.Button(actions_frame, text="Fix 0 Orders", command=self._fix_zero_orders).pack(side="left")
@@ -579,6 +1096,282 @@ class ShotManagerApp:
         ).pack(side="left", padx=(8, 0))
         ttk.Button(actions_frame, text="Gather Show MP4s", command=self._gather_show_mp4s).pack(side="right")
         ttk.Label(outer, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(8, 0))
+        self._update_edl_control_states()
+
+    def _get_single_selected_sequence(self) -> str:
+        selected_sequence = self.sequence_select_var.get().strip().upper()
+        if not selected_sequence or selected_sequence == ALL_SEQUENCES_LABEL.upper():
+            return ""
+        return selected_sequence
+
+    def _suggest_first_shot_number(self) -> str:
+        sequence_block_orders = [
+            shot_row.order
+            for shot_row in self.current_shot_rows
+            if 0 < shot_row.order < 999
+        ]
+        all_orders = [
+            shot_row.order
+            for shot_row in self.current_shot_rows
+            if shot_row.order >= 0
+        ]
+        suggested_order = min(sequence_block_orders or all_orders or [1])
+        return f"{suggested_order:03d}"
+
+    def _parse_first_shot_number(self) -> int:
+        raw_value = self.first_shot_number_var.get().strip()
+        if not re.fullmatch(r"\d+", raw_value):
+            raise ValueError(
+                "First Shot Number in Sequence must contain only whole numbers."
+            )
+        first_order = int(raw_value)
+        if first_order < 0:
+            raise ValueError("First Shot Number in Sequence must be 0 or greater.")
+        return first_order
+
+    def _update_edl_control_states(self) -> None:
+        single_sequence_selected = bool(self._get_single_selected_sequence())
+        has_manifest_rows = bool(self.current_shot_rows) and all(
+            shot_row.manifest_path is not None
+            for shot_row in self.current_shot_rows
+        )
+        can_import = single_sequence_selected and has_manifest_rows
+        can_export = (
+            can_import
+            and self.edl_comparison_summary is not None
+            and not self.edl_comparison_summary.missing_shot_names
+        )
+        self.first_shot_number_entry.configure(
+            state="normal" if can_import else "disabled"
+        )
+        self.import_edl_button.configure(
+            state="normal" if can_import else "disabled"
+        )
+        self.clear_edl_button.configure(
+            state="normal" if self.edl_import is not None else "disabled"
+        )
+        self.export_sequence_json_button.configure(
+            state="normal" if can_export else "disabled"
+        )
+
+    def _clear_edl_preview(self, set_status: bool = True) -> None:
+        clear_edl_comparison(self.current_shot_rows)
+        self.edl_import = None
+        self.edl_comparison_summary = None
+        self.edl_source_var.set("No Resolve XML loaded.")
+        self._render_shot_rows()
+        self._update_edl_control_states()
+        if set_status:
+            self._set_status("Cleared the Resolve EDL comparison preview.")
+
+    def _rebuild_edl_comparison(self) -> EdlComparisonSummary:
+        if self.edl_import is None:
+            raise ValueError("Import a DaVinci Resolve XML before building a preview.")
+        sequence_name = self._get_single_selected_sequence()
+        if not sequence_name:
+            raise ValueError("Choose one sequence before importing a Resolve EDL.")
+        first_order = self._parse_first_shot_number()
+        self.first_shot_number_var.set(f"{first_order:03d}")
+        summary = apply_edl_sequence_comparison(
+            self.current_shot_rows,
+            self.edl_import,
+            sequence_name,
+            first_order,
+        )
+        self.edl_comparison_summary = summary
+        self.shot_sort_column = "edl_order"
+        self.shot_sort_reverse = False
+        self._refresh_column_headings()
+        self._render_shot_rows()
+        self._update_edl_control_states()
+        return summary
+
+    def _on_first_shot_number_committed(self, _event: tk.Event) -> None:
+        if self.edl_import is None:
+            return
+        try:
+            summary = self._rebuild_edl_comparison()
+        except Exception as error:
+            self._set_status(f"Could not update the EDL proposal: {error}")
+            messagebox.showerror("Shot Manager Error", str(error))
+            return
+        self._set_status(
+            f"Updated {summary.sequence} EDL proposal to orders "
+            f"{summary.first_order:03d}–{summary.last_order:03d}."
+        )
+
+    def _import_resolve_edl(self) -> None:
+        sequence_name = self._get_single_selected_sequence()
+        if not sequence_name:
+            messagebox.showwarning(
+                "Shot Manager",
+                "Choose one sequence before importing a DaVinci Resolve EDL.",
+            )
+            return
+        if not self.current_shot_rows or any(
+            shot_row.manifest_path is None
+            for shot_row in self.current_shot_rows
+        ):
+            messagebox.showwarning(
+                "Shot Manager",
+                "Export the sequence manifest from Unreal and refresh Shot Manager first.",
+            )
+            return
+
+        selected_xml = filedialog.askopenfilename(
+            title="Import DaVinci Resolve EDL XML",
+            filetypes=(
+                ("DaVinci Resolve XML", "*.xml"),
+                ("All Files", "*.*"),
+            ),
+        )
+        if not selected_xml:
+            return
+
+        try:
+            self.edl_import = parse_resolve_edl_xml(selected_xml)
+            self.edl_source_var.set(
+                f"{self.edl_import.xml_path.name} — {self.edl_import.timeline_name}"
+            )
+            summary = self._rebuild_edl_comparison()
+        except Exception as error:
+            clear_edl_comparison(self.current_shot_rows)
+            self.edl_import = None
+            self.edl_comparison_summary = None
+            self.edl_source_var.set("No Resolve XML loaded.")
+            self._render_shot_rows()
+            self._update_edl_control_states()
+            self._set_status(f"Error importing Resolve EDL: {error}")
+            messagebox.showerror("Shot Manager Error", str(error))
+            return
+
+        warning_lines: list[str] = []
+        if summary.missing_shot_names:
+            warning_lines.append(
+                "EDL shots missing from the sequence manifest:\n"
+                + "\n".join(summary.missing_shot_names)
+            )
+        if self.edl_import.unrecognized_clip_names:
+            warning_lines.append(
+                f"Unrecognized enabled picture clips: "
+                f"{len(self.edl_import.unrecognized_clip_names)}"
+            )
+        if summary.active_count == 0:
+            warning_lines.append(
+                f"No {sequence_name} shots were found in the selected XML."
+            )
+
+        self._set_status(
+            f"Resolve EDL preview for {sequence_name}: "
+            f"{summary.active_count} active, {summary.inactive_count} inactive, "
+            f"{summary.return_cut_count} return cut(s), proposed orders "
+            f"{summary.first_order:03d}–{summary.last_order:03d}."
+        )
+        if warning_lines:
+            messagebox.showwarning(
+                "Resolve EDL Import Warnings",
+                "\n\n".join(warning_lines),
+            )
+
+    def _export_sequence_json(self) -> None:
+        if self.edl_import is None or self.edl_comparison_summary is None:
+            messagebox.showwarning(
+                "Shot Manager",
+                "Import and review a DaVinci Resolve EDL first.",
+            )
+            return
+
+        try:
+            summary = self._rebuild_edl_comparison()
+        except Exception as error:
+            self._set_status(f"Could not validate the EDL proposal: {error}")
+            messagebox.showerror("Shot Manager Error", str(error))
+            return
+
+        if summary.missing_shot_names:
+            messagebox.showerror(
+                "Cannot Export Sequence JSON",
+                "These EDL shots are missing from the sequence manifest:\n\n"
+                + "\n".join(summary.missing_shot_names),
+            )
+            return
+
+        manifest_paths = {
+            shot_row.manifest_path
+            for shot_row in self.current_shot_rows
+            if shot_row.manifest_path is not None
+        }
+        if len(manifest_paths) != 1:
+            messagebox.showerror(
+                "Cannot Export Sequence JSON",
+                "The selected sequence must be loaded from exactly one sequence manifest.",
+            )
+            return
+        manifest_path = next(iter(manifest_paths))
+        assert manifest_path is not None
+        output_path = get_updated_sequence_manifest_path(manifest_path)
+
+        warning_text = ""
+        if self.edl_import.unrecognized_clip_names:
+            warning_text = (
+                f"\n\nWarning: the picture track contains "
+                f"{len(self.edl_import.unrecognized_clip_names)} unrecognized "
+                "enabled clip(s)."
+            )
+        confirmed = messagebox.askyesno(
+            "Export Sequence JSON",
+            f"Write the reviewed EDL values here?\n\n{output_path}\n\n"
+            f"Source manifest (will not be changed):\n{manifest_path}\n\n"
+            f"Sequence: {summary.sequence}\n"
+            f"Active shots: {summary.active_count}\n"
+            f"Inactive shots: {summary.inactive_count}\n"
+            f"Order range: {summary.first_order:03d}–{summary.last_order:03d}"
+            f"{warning_text}\n\n"
+            "If the updated JSON already exists, its previous version will be backed up.",
+        )
+        if not confirmed:
+            self._set_status("Sequence JSON export cancelled; no files were changed.")
+            return
+
+        try:
+            export_result = export_edl_updates_to_sequence_manifest(
+                manifest_path,
+                self.current_shot_rows,
+                summary.sequence,
+            )
+        except Exception as error:
+            self._set_status(f"Error exporting sequence JSON: {error}")
+            messagebox.showerror("Shot Manager Error", str(error))
+            return
+
+        for shot_row in self.current_shot_rows:
+            if shot_row.edl_order is not None:
+                shot_row.order = shot_row.edl_order
+            if shot_row.edl_is_active is not None:
+                shot_row.is_active = shot_row.edl_is_active
+        self._render_shot_rows()
+        backup_status = ""
+        if export_result.previous_output_backup_path is not None:
+            backup_status = (
+                f" Previous updated JSON backed up as "
+                f"{export_result.previous_output_backup_path.name}."
+            )
+        self._set_status(
+            f"Exported {summary.sequence} sequence JSON to "
+            f"{export_result.output_path.name}; source manifest unchanged."
+            f"{backup_status}"
+        )
+        backup_message = ""
+        if export_result.previous_output_backup_path is not None:
+            backup_message = (
+                f"\n\nPrevious updated-file backup:\n"
+                f"{export_result.previous_output_backup_path}"
+            )
+        messagebox.showinfo(
+            "Sequence JSON Exported",
+            f"Updated export:\n{export_result.output_path}\n\n"
+            f"Source unchanged:\n{manifest_path}{backup_message}",
+        )
 
     def _load_saved_local_state(self) -> None:
         local_save_data = load_local_save_data()
@@ -644,7 +1437,11 @@ class ShotManagerApp:
             self.sequence_combo.configure(values=[ALL_SEQUENCES_LABEL])
             self.show_manifest = None
             self.current_shot_rows = []
+            self.edl_import = None
+            self.edl_comparison_summary = None
+            self.edl_source_var.set("No Resolve XML loaded.")
             self._render_shot_rows()
+            self._update_edl_control_states()
             if save_local_file:
                 self._save_current_selection()
             self._set_status("No show folders found. A show folder must contain a 'sequences' subfolder.")
@@ -667,7 +1464,11 @@ class ShotManagerApp:
             self.sequence_combo.configure(values=[ALL_SEQUENCES_LABEL])
             self.sequence_select_var.set(ALL_SEQUENCES_LABEL)
             self.current_shot_rows = []
+            self.edl_import = None
+            self.edl_comparison_summary = None
+            self.edl_source_var.set("No Resolve XML loaded.")
             self._render_shot_rows()
+            self._update_edl_control_states()
             return
 
         sequence_folders = find_sequence_folders(show_path)
@@ -688,10 +1489,15 @@ class ShotManagerApp:
         self._refresh_shots()
 
     def _refresh_shots(self) -> None:
+        clear_edl_comparison(self.current_shot_rows)
+        self.edl_import = None
+        self.edl_comparison_summary = None
+        self.edl_source_var.set("No Resolve XML loaded.")
         show_path = self._get_selected_show_path()
         if show_path is None:
             self.current_shot_rows = []
             self._render_shot_rows()
+            self._update_edl_control_states()
             return
         selected_sequence = self.sequence_select_var.get().strip() or ALL_SEQUENCES_LABEL
         try:
@@ -699,8 +1505,11 @@ class ShotManagerApp:
         except Exception as error:
             self._set_status(f"Error: {error}")
             messagebox.showerror("Shot Manager Error", str(error))
+            self._update_edl_control_states()
             return
+        self.first_shot_number_var.set(self._suggest_first_shot_number())
         self._render_shot_rows()
+        self._update_edl_control_states()
         manifest_status = "show manifest found" if self.show_manifest else "show manifest missing"
         sequence_manifest_count = len({row.manifest_path for row in self.current_shot_rows if row.manifest_path is not None})
         active_count = sum(1 for row in self.current_shot_rows if row.is_active)
@@ -1009,7 +1818,17 @@ class ShotManagerApp:
                 values=(
                     MOVE_DISPLAY,
                     shot_row.order,
+                    (
+                        f"{shot_row.edl_order:03d}"
+                        if shot_row.edl_order is not None
+                        else EDL_EMPTY_DISPLAY
+                    ),
                     _active_display(shot_row.is_active),
+                    (
+                        _active_display(shot_row.edl_is_active)
+                        if shot_row.edl_is_active is not None
+                        else EDL_EMPTY_DISPLAY
+                    ),
                     shot_row.sequence,
                     shot_row.shot_name,
                     str(shot_row.shot_path),
@@ -1071,8 +1890,22 @@ class ShotManagerApp:
         def sort_key(shot_row: ShotRow) -> tuple:
             if self.shot_sort_column == "order":
                 return (shot_row.order, shot_row.sequence.lower(), shot_row.section_number, shot_row.shot_number, shot_row.shot_name.lower())
+            if self.shot_sort_column == "edl_order":
+                return (
+                    shot_row.edl_order is None,
+                    shot_row.edl_order if shot_row.edl_order is not None else 0,
+                    shot_row.order,
+                    shot_row.shot_name.lower(),
+                )
             if self.shot_sort_column == "is_active":
                 return (shot_row.is_active, shot_row.order, shot_row.sequence.lower(), shot_row.shot_name.lower())
+            if self.shot_sort_column == "edl_is_active":
+                return (
+                    shot_row.edl_is_active is None,
+                    bool(shot_row.edl_is_active),
+                    shot_row.edl_order if shot_row.edl_order is not None else 0,
+                    shot_row.shot_name.lower(),
+                )
             if self.shot_sort_column == "sequence":
                 return (shot_row.sequence.lower(), shot_row.order, shot_row.section_number, shot_row.shot_number, shot_row.shot_name.lower())
             if self.shot_sort_column == "shot":
