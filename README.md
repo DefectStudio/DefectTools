@@ -63,6 +63,14 @@ Choosing an older File version turns Latest off. The selected sequence and frame
 range are sent to the internal native Read node without exposing separate path or
 frame boxes.
 
+## Natron Smart Write PyPlug
+
+The initial Smart Write custom-node scaffold also lives in `natron_plugins` and
+is listed as `PortablePipeTools > SmartWrite`. It contains EXR, MP4, and MOV
+output checkboxes plus a Hero output checkbox. This first pass
+provides the node and controls only; format-specific output behavior will be
+added later.
+
 ## Farm Render Manager
 
 Launch the render-farm monitoring interface:

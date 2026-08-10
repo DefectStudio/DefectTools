@@ -19,3 +19,8 @@ directories under `SHOT/lite/unreal/_output`. With **Latest** enabled it uses
 the highest populated version. The **File** combo always lists the discovered
 versions in ascending order; choosing one turns Latest off. Refresh rescans the
 current element without reopening the project.
+
+`SmartWrite.py` is the initial Smart Write PyPlug scaffold. It currently wraps
+a native Write node and exposes four disabled-by-default output checkboxes:
+EXR, MP4, MOV, and Hero. The checkboxes are UI
+only until output paths and encoding behavior are implemented.
