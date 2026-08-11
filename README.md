@@ -154,6 +154,9 @@ render one real job with Unreal while displaying activity in its output log.
 **Start Worker** keeps listening for real jobs at a configurable interval
 (15 seconds by default); **Stop Worker** interrupts an already-claimed Unreal
 render, requeues it as a failed attempt, and stops before claiming another.
+**Give Up On Render Timer** limits each Unreal process to 2 hours by default.
+When the timer expires, the worker stops Unreal, requeues the timed-out attempt,
+and remains available to process another eligible job.
 
 While automatic listening is active, the worker publishes
 `Workers\WORKERNAME_STATUS.json` every 10 seconds. It includes the worker state,

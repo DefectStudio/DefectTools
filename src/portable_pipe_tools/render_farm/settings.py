@@ -28,7 +28,7 @@ def load_local_settings(settings_path: Path | None = None) -> dict:
 
 def update_local_settings(
     settings_path: Path | None = None,
-    **updates: str | Path | int,
+    **updates: str | Path | int | float,
 ) -> Path:
     path = settings_path or get_default_settings_path()
     data = load_local_settings(path)
@@ -59,6 +59,11 @@ def load_saved_local_uproject(settings_path: Path | None = None) -> str:
 def load_saved_poll_interval_seconds(settings_path: Path | None = None) -> str:
     data = load_local_settings(settings_path)
     return str(data.get("poll_interval_seconds") or "").strip()
+
+
+def load_saved_render_timeout_hours(settings_path: Path | None = None) -> str:
+    data = load_local_settings(settings_path)
+    return str(data.get("render_timeout_hours") or "").strip()
 
 
 def save_render_farm_root(
@@ -98,4 +103,14 @@ def save_poll_interval_seconds(
     return update_local_settings(
         settings_path,
         poll_interval_seconds=poll_interval_seconds,
+    )
+
+
+def save_render_timeout_hours(
+    render_timeout_hours: float,
+    settings_path: Path | None = None,
+) -> Path:
+    return update_local_settings(
+        settings_path,
+        render_timeout_hours=f"{render_timeout_hours:g}",
     )

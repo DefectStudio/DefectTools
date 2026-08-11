@@ -7,10 +7,12 @@ import unittest
 from portable_pipe_tools.render_farm.settings import (
     load_saved_local_uproject,
     load_saved_poll_interval_seconds,
+    load_saved_render_timeout_hours,
     load_saved_render_farm_root,
     load_saved_unreal_editor_cmd,
     save_local_uproject,
     save_poll_interval_seconds,
+    save_render_timeout_hours,
     save_render_farm_root,
     save_unreal_editor_cmd,
 )
@@ -66,6 +68,14 @@ class RenderWorkerSettingsTests(unittest.TestCase):
             save_poll_interval_seconds(15, settings_path)
 
             self.assertEqual("15", load_saved_poll_interval_seconds(settings_path))
+
+    def test_render_timeout_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "render_worker.json"
+
+            save_render_timeout_hours(2.5, settings_path)
+
+            self.assertEqual("2.5", load_saved_render_timeout_hours(settings_path))
 
 
 if __name__ == "__main__":

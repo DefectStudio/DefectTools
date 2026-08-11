@@ -33,7 +33,7 @@ UNREAL_LOG_FILENAME = "unreal.log"
 UNREAL_STDOUT_FILENAME = "unreal_stdout.log"
 RENDER_COMMAND_FILENAME = "render_command.txt"
 
-DEFAULT_RENDER_TIMEOUT_SECONDS = 24.0 * 60.0 * 60.0
+DEFAULT_RENDER_TIMEOUT_SECONDS = 2.0 * 60.0 * 60.0
 UNREAL_PROCESS_POLL_INTERVAL_SECONDS = 0.5
 PYTHON_EXECUTOR_CLASS = "/Engine/PythonTypes.DefectRenderFarmExecutor"
 HOST_EXECUTOR_CLASS = (
@@ -360,6 +360,19 @@ def _read_unreal_result(path: Path) -> dict[str, Any] | None:
     return read_json_object(path)
 
 
+def _format_timeout_duration(timeout_seconds: float) -> str:
+    if timeout_seconds >= 3_600:
+        hours = timeout_seconds / 3_600
+        unit = "hour" if hours == 1 else "hours"
+        return f"{hours:g} {unit}"
+    if timeout_seconds >= 60:
+        minutes = timeout_seconds / 60
+        unit = "minute" if minutes == 1 else "minutes"
+        return f"{minutes:g} {unit}"
+    unit = "second" if timeout_seconds == 1 else "seconds"
+    return f"{timeout_seconds:g} {unit}"
+
+
 def _interpret_unreal_result(
     job: dict[str, Any],
     exit_code: int,
@@ -533,14 +546,15 @@ def execute_unreal_job(
         )
 
     if stop_reason == "timed_out":
+        timeout_label = _format_timeout_duration(timeout_seconds)
         LOGGER.error(
-            "Unreal render exceeded timeout of %.1f seconds; stopping process.",
-            timeout_seconds,
+            "Unreal render exceeded its %s timeout; stopping process.",
+            timeout_label,
         )
         output_thread.join(timeout=30)
         return UnrealExecutionResult(
             False,
-            f"Unreal render exceeded timeout of {timeout_seconds:.1f} seconds.",
+            f"Unreal render exceeded its {timeout_label} timeout.",
             exit_code,
             _read_unreal_result(unreal_result_path),
         )

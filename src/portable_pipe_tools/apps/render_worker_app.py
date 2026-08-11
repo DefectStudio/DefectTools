@@ -40,12 +40,17 @@ from portable_pipe_tools.render_farm.test_job import create_test_job
 from portable_pipe_tools.render_farm.settings import (
     load_saved_local_uproject,
     load_saved_poll_interval_seconds,
+    load_saved_render_timeout_hours,
     load_saved_render_farm_root,
     load_saved_unreal_editor_cmd,
     save_local_uproject,
     save_poll_interval_seconds,
+    save_render_timeout_hours,
     save_render_farm_root,
     save_unreal_editor_cmd,
+)
+from portable_pipe_tools.render_farm.unreal_runner import (
+    DEFAULT_RENDER_TIMEOUT_SECONDS,
 )
 from portable_pipe_tools.render_farm.self_update import (
     RENDER_WORKER_RESTART_EXIT_CODE,
@@ -69,6 +74,10 @@ from portable_pipe_tools.render_farm.workers import (
 
 WORKER_LOGGER = logging.getLogger("render_worker")
 NO_ACTIVE_JOB_TEXT = "No Active Job"
+SECONDS_PER_HOUR = 60.0 * 60.0
+DEFAULT_RENDER_TIMEOUT_HOURS = DEFAULT_RENDER_TIMEOUT_SECONDS / SECONDS_PER_HOUR
+MINIMUM_RENDER_TIMEOUT_HOURS = 0.25
+MAXIMUM_RENDER_TIMEOUT_HOURS = 24.0
 
 HEARTBEAT_STATUS_BY_STAGE = {
     WorkerStage.STOPPED: "stopped",
@@ -77,6 +86,29 @@ HEARTBEAT_STATUS_BY_STAGE = {
     WorkerStage.RENDERING: "rendering",
     WorkerStage.FINISHING: "finishing",
 }
+
+
+def parse_render_timeout_hours(value: str | float) -> float:
+    raw_value = str(value).strip()
+    try:
+        hours = float(raw_value)
+    except ValueError as error:
+        raise ValueError(
+            "Give Up On Render Timer must be a number of hours."
+        ) from error
+
+    if not MINIMUM_RENDER_TIMEOUT_HOURS <= hours <= MAXIMUM_RENDER_TIMEOUT_HOURS:
+        raise ValueError(
+            "Give Up On Render Timer must be between "
+            f"{MINIMUM_RENDER_TIMEOUT_HOURS:g} and "
+            f"{MAXIMUM_RENDER_TIMEOUT_HOURS:g} hours."
+        )
+    return hours
+
+
+def format_render_timeout_hours(hours: float) -> str:
+    unit = "hour" if hours == 1 else "hours"
+    return f"{hours:g} {unit}"
 
 
 def format_job_activity(job: dict[str, Any]) -> str:
@@ -133,6 +165,7 @@ class ListenerConfiguration:
     local_uproject: Path
     local_show_file_server_path: Path
     poll_interval_seconds: int
+    render_timeout_seconds: float
 
 
 class RenderWorkerApp:
@@ -148,6 +181,13 @@ class RenderWorkerApp:
         saved_poll_interval = load_saved_poll_interval_seconds()
         self.poll_interval_var = tk.StringVar(
             value=saved_poll_interval or str(DEFAULT_POLL_INTERVAL_SECONDS)
+        )
+        saved_render_timeout_hours = load_saved_render_timeout_hours()
+        self.render_timeout_hours_var = tk.StringVar(
+            value=(
+                saved_render_timeout_hours
+                or f"{DEFAULT_RENDER_TIMEOUT_HOURS:g}"
+            )
         )
         saved_unreal_editor_cmd = load_saved_unreal_editor_cmd()
         default_unreal_editor_cmd = (
@@ -325,7 +365,7 @@ class RenderWorkerApp:
         self.worker_name_entry.grid(row=0, column=1, sticky="ew", pady=4)
 
         ttk.Label(setup_frame, text="Simulation Result").grid(
-            row=5,
+            row=6,
             column=0,
             sticky="w",
             padx=(0, 8),
@@ -338,11 +378,11 @@ class RenderWorkerApp:
             state="readonly",
             width=16,
         )
-        self.simulate_result_combo.grid(row=5, column=1, sticky="w", pady=4)
+        self.simulate_result_combo.grid(row=6, column=1, sticky="w", pady=4)
         ttk.Label(
             setup_frame,
             text="Used only by the Simulate One Job button.",
-        ).grid(row=5, column=2, sticky="w", padx=(8, 0), pady=4)
+        ).grid(row=6, column=2, sticky="w", padx=(8, 0), pady=4)
 
         ttk.Label(setup_frame, text="UnrealEditor-Cmd.exe").grid(
             row=3,
@@ -413,6 +453,27 @@ class RenderWorkerApp:
             setup_frame,
             text="Used by Start Worker; default is 15 seconds.",
         ).grid(row=4, column=2, sticky="w", padx=(8, 0), pady=4)
+
+        ttk.Label(setup_frame, text="Give Up On Render Timer (hours)").grid(
+            row=5,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+            pady=4,
+        )
+        self.render_timeout_spinbox = ttk.Spinbox(
+            setup_frame,
+            from_=MINIMUM_RENDER_TIMEOUT_HOURS,
+            to=MAXIMUM_RENDER_TIMEOUT_HOURS,
+            increment=0.25,
+            textvariable=self.render_timeout_hours_var,
+            width=10,
+        )
+        self.render_timeout_spinbox.grid(row=5, column=1, sticky="w", pady=4)
+        ttk.Label(
+            setup_frame,
+            text="Stops and requeues an overlong Unreal render; default is 2 hours.",
+        ).grid(row=5, column=2, sticky="w", padx=(8, 0), pady=4)
 
         button_row = ttk.Frame(outer)
         button_row.pack(fill="x", pady=(12, 8))
@@ -729,6 +790,11 @@ class RenderWorkerApp:
         self.poll_interval_var.set(str(interval))
         return interval
 
+    def _get_render_timeout_seconds(self) -> float:
+        hours = parse_render_timeout_hours(self.render_timeout_hours_var.get())
+        self.render_timeout_hours_var.set(f"{hours:g}")
+        return hours * SECONDS_PER_HOUR
+
     def _start_worker(self) -> None:
         if not self._startup_update_complete or self._restart_pending:
             self._log(
@@ -756,6 +822,7 @@ class RenderWorkerApp:
                 local_uproject=local_uproject,
                 local_show_file_server_path=local_show_file_server_path,
                 poll_interval_seconds=self._get_poll_interval_seconds(),
+                render_timeout_seconds=self._get_render_timeout_seconds(),
             )
         except Exception as error:
             self._show_input_error(error)
@@ -768,6 +835,8 @@ class RenderWorkerApp:
             f"until stopped.\n\nWhen the queue is empty it will check every "
             f"{configuration.poll_interval_seconds} seconds. Stop Worker will "
             "interrupt an already-claimed render, requeue it, and then stop.\n\n"
+            "Each Unreal render will automatically stop and requeue after "
+            f"{format_render_timeout_hours(configuration.render_timeout_seconds / SECONDS_PER_HOUR)}.\n\n"
             "Before every job, "
             "the worker requires a clean Git checkout and pulls the latest "
             "upstream branch using git pull --ff-only.\n\n"
@@ -833,6 +902,9 @@ class RenderWorkerApp:
         self._remember_unreal_editor_cmd(configuration.unreal_editor_cmd)
         self._remember_local_uproject(configuration.local_uproject)
         self._remember_poll_interval(configuration.poll_interval_seconds)
+        self._remember_render_timeout(
+            configuration.render_timeout_seconds / SECONDS_PER_HOUR
+        )
         self._cancel_listener_countdown()
         self._refresh_control_states()
         self._set_worker_stage(WorkerStage.WAITING)
@@ -840,6 +912,10 @@ class RenderWorkerApp:
         self._log(
             "Automatic worker started. Polling interval: "
             f"{configuration.poll_interval_seconds} seconds."
+        )
+        self._log(
+            "Give Up On Render Timer: "
+            f"{format_render_timeout_hours(configuration.render_timeout_seconds / SECONDS_PER_HOUR)}."
         )
         self._log(f"Local Unreal project: {local_project_message}")
         self._log(
@@ -912,6 +988,7 @@ class RenderWorkerApp:
                 render_with_unreal=True,
                 unreal_editor_cmd=configuration.unreal_editor_cmd,
                 local_uproject=configuration.local_uproject,
+                render_timeout_seconds=configuration.render_timeout_seconds,
                 should_stop_before_claim=stop_requested,
                 should_cancel_render=stop_requested,
                 job_callback=self._job_queue.put,
@@ -1079,6 +1156,7 @@ class RenderWorkerApp:
             worker_name = self._get_worker_name()
             unreal_editor_cmd = self._get_unreal_editor_cmd()
             local_uproject = self._get_local_uproject()
+            render_timeout_seconds = self._get_render_timeout_seconds()
             local_show_file_server_path = (
                 self._get_derived_show_file_server_path(farm_root)
             )
@@ -1092,6 +1170,8 @@ class RenderWorkerApp:
             "This will claim the next queued job and launch a real Unreal render.\n\n"
             "Before claiming the job, the worker requires a clean Git checkout "
             "and pulls the latest upstream branch using git pull --ff-only.\n\n"
+            "The render will automatically stop and requeue after "
+            f"{format_render_timeout_hours(render_timeout_seconds / SECONDS_PER_HOUR)}.\n\n"
             f"Local Unreal project:\n{local_project_message}\n\n"
             "Show path derived from Render Farm folder:\n"
             f"{local_show_file_server_path}\n\n"
@@ -1105,6 +1185,7 @@ class RenderWorkerApp:
         self._remember_farm_root(farm_root)
         self._remember_unreal_editor_cmd(unreal_editor_cmd)
         self._remember_local_uproject(local_uproject)
+        self._remember_render_timeout(render_timeout_seconds / SECONDS_PER_HOUR)
         self._run_background(
             label="Render one job with Unreal",
             work=lambda: run_once(
@@ -1116,6 +1197,7 @@ class RenderWorkerApp:
                 render_with_unreal=True,
                 unreal_editor_cmd=unreal_editor_cmd,
                 local_uproject=local_uproject,
+                render_timeout_seconds=render_timeout_seconds,
                 job_callback=self._job_queue.put,
             ),
             on_success=self._job_processed,
@@ -1290,6 +1372,7 @@ class RenderWorkerApp:
         self.worker_name_entry.configure(state=entry_state)
         self.simulate_result_combo.configure(state=combo_state)
         self.poll_interval_spinbox.configure(state=entry_state)
+        self.render_timeout_spinbox.configure(state=entry_state)
         self.unreal_editor_cmd_entry.configure(state=entry_state)
         self.unreal_editor_cmd_browse_button.configure(state=button_state)
         self.local_uproject_entry.configure(state=entry_state)
@@ -1348,6 +1431,12 @@ class RenderWorkerApp:
             save_poll_interval_seconds(poll_interval_seconds)
         except Exception as error:
             self._log(f"WARNING: Could not remember polling interval: {error}")
+
+    def _remember_render_timeout(self, render_timeout_hours: float) -> None:
+        try:
+            save_render_timeout_hours(render_timeout_hours)
+        except Exception as error:
+            self._log(f"WARNING: Could not remember render timeout: {error}")
 
     def _load_animation_assets(self) -> None:
         if self._animation_after_id is not None:

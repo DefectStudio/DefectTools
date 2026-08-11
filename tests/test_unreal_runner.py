@@ -9,9 +9,11 @@ from unittest.mock import Mock
 from portable_pipe_tools.render_farm.queue import JOB_FILENAME
 from portable_pipe_tools.render_farm.unreal_runner import (
     COMMAND_LINE_PIPELINE_CLASS,
+    DEFAULT_RENDER_TIMEOUT_SECONDS,
     HOST_EXECUTOR_CLASS,
     PYTHON_EXECUTOR_CLASS,
     _interpret_unreal_result,
+    _format_timeout_duration,
     _wait_for_unreal_process,
     build_unreal_command,
     resolve_unreal_project,
@@ -20,6 +22,10 @@ from portable_pipe_tools.render_farm.unreal_runner import (
 
 
 class UnrealRunnerTests(unittest.TestCase):
+    def test_default_render_timeout_is_two_hours(self) -> None:
+        self.assertEqual(7_200.0, DEFAULT_RENDER_TIMEOUT_SECONDS)
+        self.assertEqual("2 hours", _format_timeout_duration(7_200.0))
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
@@ -171,6 +177,21 @@ class UnrealRunnerTests(unittest.TestCase):
         self.assertEqual(0, exit_code)
         self.assertIsNone(stop_reason)
         process.terminate.assert_not_called()
+
+    def test_timeout_terminates_a_running_unreal_process(self) -> None:
+        process = Mock()
+        process.returncode = -15
+        process.wait.return_value = process.returncode
+
+        exit_code, stop_reason = _wait_for_unreal_process(
+            process,
+            timeout_seconds=0.0,
+        )
+
+        self.assertEqual(-15, exit_code)
+        self.assertEqual("timed_out", stop_reason)
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=30)
 
     def test_stop_check_error_does_not_abandon_the_unreal_process(self) -> None:
         process = Mock()

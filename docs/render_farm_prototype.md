@@ -92,6 +92,12 @@ empty, the bottom status counts down to the next check, for example:
 Waiting for jobs — next check in 12 seconds
 ```
 
+**Give Up On Render Timer** limits each Unreal process from 0.25 to 24 hours and
+defaults to 2 hours. A timed-out Unreal process is terminated, the failed attempt
+is requeued and blacklists that worker from the job, and the automatic worker
+immediately checks for another eligible job. The saved timer also applies to
+**Render One Job with Unreal**.
+
 Only one automatic listener can exist in a GUI instance, and the supervised
 buttons and worker configuration are locked while it is active. After a job
 completes or is requeued following a failed attempt, the listener immediately
@@ -210,7 +216,7 @@ tools\render_worker.bat "F:\Defect Dropbox\defect\s3bishop\renderFarm" --worker-
 The worker claims at most one job. It launches Unreal in `-game`, unattended,
 offscreen mode, creates an MRQ job from the published snapshot, assigns the Movie
 Render Graph, reapplies the exact serialized overrides, and waits for an explicit
-Unreal completion result. The default process timeout is 24 hours. The
+Unreal completion result. The default process timeout is 2 hours. The
 command-line worker also watches its `Workers\WORKERNAME_STOP.json` marker while
 Unreal runs, interrupts the process when requested, and consumes the marker
 before exiting.
