@@ -41,10 +41,13 @@ The Shot context menu also provides **Create and Open Comp** and **Open Comp**.
 Create and Open uses the normal template fallback when needed, or opens the
 existing comp unchanged. Open Comp requires an existing file. Both launch the
 `.ntp` file directly in Natron with the source-controlled `natron_plugins`
-directory added to `NATRON_PLUGIN_PATH`, ensuring Smart Read is available. An
-after-load script rescans Smart Read nodes once Natron has restored the whole
-project, replacing any internal Read paths inherited from the comp template.
-The tool reports the launch result in the status bar.
+directory added to `NATRON_PLUGIN_PATH`, ensuring Smart Read is available. Before
+Natron launches, both actions find the latest beauty EXR version and download any
+Dropbox online-only frames by opening each Windows cloud placeholder. Comp
+creation and launch stop if a source download fails. The status bar reports
+per-frame download progress and the final download count. An after-load script
+then rescans Smart Read nodes once Natron has restored the whole project,
+replacing any internal Read paths inherited from the comp template.
 
 ## Natron Smart Read PyPlug
 
@@ -80,6 +83,9 @@ sections. These expose artist-facing controls synchronized to the corresponding
 internal writer parameters, such as EXR compression and bit depth or video
 codec, FPS, quality, and bitrate. New MP4 writers default to `libx264`.
 Pipeline-owned filenames and writer enable controls remain protected.
+**Render All** submits every checked output together over the project timeline
+range. Each output row also has its own render button; that button is available
+when the corresponding output checkbox is enabled.
 
 ## Farm Render Manager
 

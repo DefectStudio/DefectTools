@@ -11,6 +11,39 @@ WRITER_SPECS = (
     ("movOutput", "MOVWrite", "mov_file"),
     ("heroOutput", "HeroWrite", "hero_sequence"),
 )
+RENDER_BUTTON_SPECS = (
+    ("renderEXR", "Render EXR", "exrOutput"),
+    ("renderMP4", "Render MP4", "mp4Output"),
+    ("renderMOV", "Render MOV", "movOutput"),
+    ("renderHero", "Render Hero", "heroOutput"),
+)
+OUTPUT_CONTROL_SPECS = (
+    (
+        "exrOutput",
+        "EXR Output",
+        True,
+        "Write a versioned beauty EXR sequence under comp/_output.",
+    ),
+    (
+        "mp4Output",
+        "MP4 Output",
+        True,
+        "Write a versioned beauty MP4 under comp/_output.",
+    ),
+    (
+        "movOutput",
+        "MOV Output",
+        False,
+        "Write a versioned beauty MOV under comp/_output.",
+    ),
+    (
+        "heroOutput",
+        "Hero Output",
+        True,
+        "Write the unversioned hero EXR sequence under comp/_output/_hero.",
+    ),
+)
+SMART_WRITE_UI_VERSION = 3
 WRITER_LAYOUT = {
     "EXRWrite": ("EXR Write", -300, "compression"),
     "MP4Write": ("MP4 Write", -100, "codec"),
@@ -93,6 +126,7 @@ SETTINGS_SECTIONS = (
 GUI_REFRESH_DELAY_MS = 100
 _PENDING_GUI_REFRESHES = []
 _GROUP_OUTPUT_SELECTIONS = []
+_MIGRATING_GROUPS = []
 
 
 def _project_directory(app):
@@ -345,6 +379,182 @@ def _set_settings_section_open(group, checkbox_name, opened):
         return
 
 
+def _snapshot_setting_values(group):
+    values = {}
+    for section in SETTINGS_SECTIONS:
+        proxy_prefix = section[4]
+        for native_name, _creator_name in section[5]:
+            name = "{0}_{1}".format(proxy_prefix, native_name)
+            param = group.getParam(name)
+            if param is not None:
+                values[name] = param.get()
+    return values
+
+
+def _remove_legacy_controls(group):
+    for section in SETTINGS_SECTIONS:
+        proxy_prefix = section[4]
+        for native_name, _creator_name in section[5]:
+            param = group.getParam(
+                "{0}_{1}".format(proxy_prefix, native_name)
+            )
+            if param is not None:
+                group.removeParam(param)
+        settings_group = group.getParam(section[1])
+        if settings_group is not None:
+            group.removeParam(settings_group)
+
+    names = ["smartWriteUiVersion", "renderAll"]
+    names.extend(spec[0] for spec in OUTPUT_CONTROL_SPECS)
+    names.extend(spec[0] for spec in RENDER_BUTTON_SPECS)
+    for name in names:
+        param = group.getParam(name)
+        if param is not None:
+            group.removeParam(param)
+
+
+def _create_ordered_render_controls(group, controls, checkbox_values):
+    layout_version = group.createIntParam("smartWriteUiVersion", "UI Version")
+    layout_version.setDefaultValue(SMART_WRITE_UI_VERSION)
+    layout_version.restoreDefaultValue()
+    layout_version.setAnimationEnabled(False)
+    layout_version.setVisible(False)
+    controls.addParam(layout_version)
+
+    render_all = group.createButtonParam("renderAll", "Render All")
+    render_all.setHelp(
+        "Render every enabled Smart Write output over the project frame range."
+    )
+    render_all.setAddNewLine(True)
+    controls.addParam(render_all)
+
+    buttons_by_checkbox = {
+        checkbox_name: (button_name, button_label)
+        for button_name, button_label, checkbox_name in RENDER_BUTTON_SPECS
+    }
+    for checkbox_name, label, default_value, help_text in OUTPUT_CONTROL_SPECS:
+        checkbox = group.createBooleanParam(checkbox_name, label)
+        checkbox.setDefaultValue(default_value)
+        checkbox.restoreDefaultValue()
+        checkbox.setAnimationEnabled(False)
+        checkbox.setAddNewLine(True)
+        checkbox.setHelp(help_text)
+        if checkbox_name in checkbox_values:
+            checkbox.set(checkbox_values[checkbox_name])
+        controls.addParam(checkbox)
+
+        button_name, button_label = buttons_by_checkbox[checkbox_name]
+        button = group.createButtonParam(button_name, button_label)
+        button.setHelp(
+            "Render only the enabled {0} output.".format(
+                button_label.replace("Render ", "")
+            )
+        )
+        button.setEnabled(bool(checkbox.get()))
+        button.setAddNewLine(False)
+        controls.addParam(button)
+
+    render_all.setAddNewLine(True)
+    for button_name, _button_label, checkbox_name in RENDER_BUTTON_SPECS:
+        group.getParam(checkbox_name).setAddNewLine(True)
+        group.getParam(button_name).setAddNewLine(False)
+
+    render_all.setEnabled(any(bool(value) for value in checkbox_values.values()))
+
+
+def _ensure_render_controls(group):
+    """Create or migrate render controls into checkbox/button rows."""
+
+    controls = group.getParam("smartWrite")
+    if controls is None:
+        return None
+
+    layout_version = group.getParam("smartWriteUiVersion")
+    if layout_version is None or layout_version.get() != SMART_WRITE_UI_VERSION:
+        checkbox_values = {
+            name: bool(group.getParam(name).get())
+            for name, _label, default_value, _help in OUTPUT_CONTROL_SPECS
+            if group.getParam(name) is not None
+        }
+        for name, _label, default_value, _help in OUTPUT_CONTROL_SPECS:
+            checkbox_values.setdefault(name, default_value)
+        setting_values = _snapshot_setting_values(group)
+
+        _MIGRATING_GROUPS.append(group)
+        group.beginChanges()
+        try:
+            _remove_legacy_controls(group)
+            group.removeParam(controls)
+            controls = group.createPageParam("smartWrite", "Smart Write")
+            _create_ordered_render_controls(group, controls, checkbox_values)
+            group.setPagesOrder(["smartWrite", "Node", "Settings"])
+        finally:
+            group.endChanges()
+            _MIGRATING_GROUPS.remove(group)
+        group.refreshUserParamsGUI()
+        return setting_values
+
+    render_all = group.getParam("renderAll")
+    if render_all is not None:
+        render_all.setAddNewLine(True)
+    any_output_enabled = False
+    for button_name, button_label, checkbox_name in RENDER_BUTTON_SPECS:
+        button = group.getParam(button_name)
+        checkbox = group.getParam(checkbox_name)
+        output_enabled = bool(checkbox.get()) if checkbox is not None else False
+        if checkbox is not None:
+            checkbox.setAddNewLine(True)
+        if button is not None:
+            button.setEnabled(output_enabled)
+            button.setAddNewLine(False)
+        any_output_enabled = any_output_enabled or output_enabled
+
+    if render_all is not None:
+        render_all.setEnabled(any_output_enabled)
+    return None
+
+
+def _restore_setting_values(group, setting_values):
+    if not setting_values:
+        return
+    group.beginChanges()
+    try:
+        for name, value in setting_values.items():
+            param = group.getParam(name)
+            if param is not None:
+                param.set(value)
+    finally:
+        group.endChanges()
+
+
+def _render_enabled_outputs(app, group, checkbox_names):
+    """Submit selected, enabled internal writers as one Natron render batch."""
+
+    refreshOutputs(app, group)
+    selected_names = set(checkbox_names)
+    tasks = []
+    first_frame = app.timelineGetLeftBound()
+    last_frame = app.timelineGetRightBound()
+    for checkbox_name, writer_name, _path_attribute in WRITER_SPECS:
+        if checkbox_name not in selected_names:
+            continue
+        checkbox = group.getParam(checkbox_name)
+        if checkbox is None or not bool(checkbox.get()):
+            continue
+        writer = group.getNode(writer_name)
+        if writer is None:
+            continue
+        filename = writer.getParam("filename")
+        if filename is None or not filename.get():
+            continue
+        tasks.append((writer, first_frame, last_frame, 1))
+
+    if not tasks:
+        return False
+    app.render(tasks)
+    return True
+
+
 def refreshOutputs(app, group, select_next_version=False):
     """Rebuild all writer targets from the current saved project location."""
 
@@ -388,14 +598,18 @@ def refreshOutputs(app, group, select_next_version=False):
             _configure_writer(writer, path, enabled_outputs[checkbox_name])
     finally:
         group.endChanges()
+    migrated_setting_values = _ensure_render_controls(group)
     _ensure_settings_sections(group, active_writers)
+    _restore_setting_values(group, migrated_setting_values)
     _sync_settings_to_writers(group, active_writers)
 
 
 def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
     """Apply checkbox edits to the corresponding internal writers."""
 
-    del thisGroup, userEdited
+    del thisGroup
+    if not userEdited or thisNode in _MIGRATING_GROUPS:
+        return
     param_name = thisParam.getScriptName()
     if any(param_name == spec[0] for spec in WRITER_SPECS):
         refreshOutputs(app, thisNode)
@@ -405,6 +619,17 @@ def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
             thisParam.get(),
         )
         return
+    if param_name == "renderAll":
+        _render_enabled_outputs(
+            app,
+            thisNode,
+            [spec[0] for spec in WRITER_SPECS],
+        )
+        return
+    for button_name, _button_label, checkbox_name in RENDER_BUTTON_SPECS:
+        if param_name == button_name:
+            _render_enabled_outputs(app, thisNode, [checkbox_name])
+            return
     _sync_setting_to_writer(thisNode, thisParam)
 
 

@@ -22,6 +22,10 @@ from portable_pipe_tools.auto_comp_natron.open_comp import (
     open_comp,
 )
 from portable_pipe_tools.auto_comp_natron.open_comp.open_comp import _default_opener
+from portable_pipe_tools.auto_comp_natron.source_media import (
+    SourceHydrationError,
+    SourceHydrationResult,
+)
 
 
 class OpenCompTests(unittest.TestCase):
@@ -102,6 +106,35 @@ class OpenCompTests(unittest.TestCase):
             self.assertEqual(comp_path, result.comp_path)
             self.assertFalse(result.created)
 
+    @patch(
+        "portable_pipe_tools.auto_comp_natron.open_comp.open_comp."
+        "hydrate_latest_source_sequence"
+    )
+    def test_open_comp_hydrates_source_before_launch(self, hydrate: Mock) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            show_root = Path(temporary_directory) / "show"
+            comp_path = get_comp_path(show_root, "BSH", "BSH_000_0010")
+            comp_path.parent.mkdir(parents=True)
+            comp_path.write_bytes(b"comp")
+            hydrate.return_value = SourceHydrationResult(None, 40, 38)
+            opener = Mock()
+
+            result = open_comp(
+                show_root,
+                "BSH",
+                "BSH_000_0010",
+                opener=opener,
+            )
+
+            hydrate.assert_called_once_with(
+                show_root,
+                "BSH",
+                "BSH_000_0010",
+                progress=None,
+            )
+            opener.assert_called_once_with(comp_path)
+            self.assertEqual(38, result.hydrated_source_files)
+
     def test_open_comp_rejects_missing_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             show_root = Path(temporary_directory) / "show"
@@ -135,6 +168,35 @@ class OpenCompTests(unittest.TestCase):
             self.assertTrue(result.created)
             self.assertEqual(b"template", result.comp_path.read_bytes())
             opener.assert_called_once_with(result.comp_path)
+
+    @patch(
+        "portable_pipe_tools.auto_comp_natron.open_comp.open_comp."
+        "hydrate_latest_source_sequence"
+    )
+    def test_create_and_open_stops_before_create_when_download_fails(
+        self,
+        hydrate: Mock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            show_root = Path(temporary_directory) / "show"
+            comp_path = get_comp_path(show_root, "BSH", "BSH_000_0010")
+            source_path = show_root / "frame.1001.exr"
+            hydrate.side_effect = SourceHydrationError(
+                source_path,
+                "Dropbox is offline",
+            )
+            opener = Mock()
+
+            with self.assertRaises(SourceHydrationError):
+                create_and_open_comp(
+                    show_root,
+                    "BSH",
+                    "BSH_000_0010",
+                    opener=opener,
+                )
+
+            self.assertFalse(comp_path.exists())
+            opener.assert_not_called()
 
     def test_create_and_open_opens_existing_comp_without_changing_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

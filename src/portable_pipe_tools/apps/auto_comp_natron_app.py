@@ -811,12 +811,18 @@ class AutoCompNatronApp:
         if not self._ensure_natron_executable():
             return
 
+        self._set_status(
+            f"Checking Dropbox source files for {shot_name}...",
+            "normal",
+        )
+        self.root.update_idletasks()
         try:
             result = create_and_open_comp(
                 show_path,
                 sequence_name,
                 shot_name,
                 natron_executable=self.natron_executable_path,
+                hydration_progress=self._update_source_hydration_progress,
             )
         except Exception as error:
             self._set_status(
@@ -826,8 +832,13 @@ class AutoCompNatronApp:
             return
 
         action = "Successfully created and opened" if result.created else "Opened existing"
+        hydration = (
+            f"Downloaded {result.hydrated_source_files} source frames. "
+            if result.hydrated_source_files
+            else ""
+        )
         self._set_status(
-            f"{action} comp: {result.comp_path.name}.",
+            f"{hydration}{action} comp: {result.comp_path.name}.",
             "success",
         )
 
@@ -844,12 +855,18 @@ class AutoCompNatronApp:
         if not self._ensure_natron_executable():
             return
 
+        self._set_status(
+            f"Checking Dropbox source files for {shot_name}...",
+            "normal",
+        )
+        self.root.update_idletasks()
         try:
             result = open_comp(
                 show_path,
                 sequence_name,
                 shot_name,
                 natron_executable=self.natron_executable_path,
+                hydration_progress=self._update_source_hydration_progress,
             )
         except CompNotFoundError as error:
             self._set_status(
@@ -864,10 +881,27 @@ class AutoCompNatronApp:
             )
             return
 
+        hydration = (
+            f"Downloaded {result.hydrated_source_files} source frames. "
+            if result.hydrated_source_files
+            else ""
+        )
         self._set_status(
-            f"Opened comp: {result.comp_path.name}.",
+            f"{hydration}Opened comp: {result.comp_path.name}.",
             "success",
         )
+
+    def _update_source_hydration_progress(
+        self,
+        completed: int,
+        total: int,
+        _source_path: Path,
+    ) -> None:
+        self._set_status(
+            f"Downloading Dropbox source frames: {completed}/{total}...",
+            "normal",
+        )
+        self.root.update_idletasks()
 
     def _create_all_sequence_comps(self) -> None:
         show_path = self._selected_show_path()

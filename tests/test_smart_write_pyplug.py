@@ -17,6 +17,10 @@ class FakeParam:
         self.alias = None
         self.opened = None
         self.options = []
+        self.add_new_line = True
+        self.enabled = True
+        self.help = ""
+        self.visible = True
 
     def setDefaultValue(self, value) -> None:
         self.default_value = value
@@ -27,8 +31,17 @@ class FakeParam:
     def setAnimationEnabled(self, _enabled: bool) -> None:
         pass
 
-    def setHelp(self, _help: str) -> None:
-        pass
+    def setHelp(self, help_text: str) -> None:
+        self.help = help_text
+
+    def setAddNewLine(self, add_new_line: bool) -> None:
+        self.add_new_line = add_new_line
+
+    def setEnabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+    def setVisible(self, visible: bool) -> None:
+        self.visible = visible
 
     def set(self, value) -> None:
         self.value = value
@@ -179,6 +192,9 @@ class FakeGroup:
         self.params[name] = param
         return param
 
+    def createButtonParam(self, name: str, label: str):
+        return self.createBooleanParam(name, label)
+
     def createIntParam(self, name: str, label: str):
         return self.createBooleanParam(name, label)
 
@@ -195,6 +211,11 @@ class FakeGroup:
 
     def removeParam(self, param) -> bool:
         self.params.pop(param.name, None)
+        for container in self.params.values():
+            if isinstance(container, FakePage):
+                container.children = [
+                    child for child in container.children if child is not param
+                ]
         return True
 
     def setPagesOrder(self, pages) -> None:
@@ -241,6 +262,8 @@ class FakeApp:
         self.nodes = []
         self.groups = []
         self.project_directory = project_directory
+        self.timeline_bounds = (1001, 1040)
+        self.render_calls = []
 
     def createNode(self, plugin_id: str, _major_version: int, group):
         node = FakeNode(plugin_id, self, group)
@@ -274,6 +297,15 @@ class FakeApp:
     def getChildren(self):
         return self.groups
 
+    def timelineGetLeftBound(self) -> int:
+        return self.timeline_bounds[0]
+
+    def timelineGetRightBound(self) -> int:
+        return self.timeline_bounds[1]
+
+    def render(self, tasks) -> None:
+        self.render_calls.append(list(tasks))
+
 
 def _load_plugin_with_extension(monkeypatch):
     monkeypatch.syspath_prepend(str(PLUGIN_FILE.parent))
@@ -295,12 +327,21 @@ def test_smart_write_metadata_and_initial_scaffold() -> None:
     plugin["createInstance"](app, group)
 
     page = group.params["smartWrite"]
-    output_controls = page.children[:4]
-    assert [param.name for param in output_controls] == [
+    visible_controls = [param for param in page.children if param.visible]
+    assert [param.name for param in visible_controls[:9]] == [
+        "renderAll",
         "exrOutput",
+        "renderEXR",
         "mp4Output",
+        "renderMP4",
         "movOutput",
+        "renderMOV",
         "heroOutput",
+        "renderHero",
+    ]
+    output_controls = [
+        group.getParam(name)
+        for name in ("exrOutput", "mp4Output", "movOutput", "heroOutput")
     ]
     assert [param.label for param in output_controls] == [
         "EXR Output",
@@ -309,6 +350,13 @@ def test_smart_write_metadata_and_initial_scaffold() -> None:
         "Hero Output",
     ]
     assert [param.value for param in output_controls] == [True, True, False, True]
+    assert all(param.add_new_line is True for param in output_controls)
+    assert group.getParam("renderAll").add_new_line is True
+    assert all(
+        group.getParam(name).add_new_line is False
+        for name in ("renderEXR", "renderMP4", "renderMOV", "renderHero")
+    )
+    assert group.getParam("renderMOV").enabled is False
     assert group.pages_order == ["smartWrite", "Node", "Settings"]
     assert group.refreshed is True
     assert group.editable is False
@@ -324,6 +372,124 @@ def test_smart_write_metadata_and_initial_scaffold() -> None:
     input_node, *writers, output = app.nodes
     assert all(writer.inputs[0] is input_node for writer in writers)
     assert output.inputs[0] is input_node
+
+
+def test_render_buttons_submit_enabled_writers_over_project_range(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    project_directory = (
+        tmp_path
+        / "defect"
+        / "s3bishop"
+        / "sequences"
+        / "BSH"
+        / "BSH_000_0020"
+        / "comp"
+        / "natron"
+    )
+    project_directory.mkdir(parents=True)
+    app = FakeApp(project_directory)
+    group = FakeGroup()
+    app.groups.append(group)
+    plugin["createInstance"](app, group)
+
+    plugin["onParamChanged"](
+        group.getParam("renderAll"), group, group, app, True
+    )
+
+    assert len(app.render_calls) == 1
+    assert [task[0].script_name for task in app.render_calls[0]] == [
+        "EXRWrite",
+        "MP4Write",
+        "HeroWrite",
+    ]
+    assert [task[1:] for task in app.render_calls[0]] == [
+        (1001, 1040, 1),
+        (1001, 1040, 1),
+        (1001, 1040, 1),
+    ]
+
+    plugin["onParamChanged"](
+        group.getParam("renderMOV"), group, group, app, True
+    )
+    assert len(app.render_calls) == 1
+
+    group.getParam("movOutput").set(True)
+    plugin["onParamChanged"](
+        group.getParam("movOutput"), group, group, app, True
+    )
+    assert group.getParam("renderMOV").enabled is True
+
+    plugin["onParamChanged"](
+        group.getParam("renderMOV"), group, group, app, True
+    )
+    assert len(app.render_calls) == 2
+    assert [task[0].script_name for task in app.render_calls[1]] == ["MOVWrite"]
+    assert app.render_calls[1][0][1:] == (1001, 1040, 1)
+
+    for checkbox_name in ("exrOutput", "mp4Output", "movOutput", "heroOutput"):
+        checkbox = group.getParam(checkbox_name)
+        checkbox.set(False)
+        plugin["onParamChanged"](checkbox, group, group, app, True)
+    assert group.getParam("renderAll").enabled is False
+
+
+def test_project_load_adds_render_buttons_to_legacy_smart_write(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    project_directory = (
+        tmp_path
+        / "show"
+        / "sequences"
+        / "BSH"
+        / "BSH_000_0020"
+        / "comp"
+        / "natron"
+    )
+    project_directory.mkdir(parents=True)
+    app = FakeApp(project_directory)
+    group = FakeGroup()
+    app.groups.append(group)
+    plugin["createInstance"](app, group)
+    group.getParam("exr_compression").set(2)
+
+    render_names = {
+        "smartWriteUiVersion",
+        "renderAll",
+        "renderEXR",
+        "renderMP4",
+        "renderMOV",
+        "renderHero",
+    }
+    for name in render_names:
+        group.params.pop(name)
+    page = group.getParam("smartWrite")
+    legacy_page = page
+    page.children = [
+        param for param in page.children if param.name not in render_names
+    ]
+
+    sys.modules["SmartWriteExt"].afterProjectLoaded(app)
+
+    assert all(group.getParam(name) is not None for name in render_names)
+    assert group.getParam("renderMOV").enabled is False
+    assert group.getParam("exr_compression").get() == 2
+    page = group.getParam("smartWrite")
+    assert page is not legacy_page
+    visible_controls = [param for param in page.children if param.visible]
+    assert [param.name for param in visible_controls[:9]] == [
+        "renderAll",
+        "exrOutput",
+        "renderEXR",
+        "mp4Output",
+        "renderMP4",
+        "movOutput",
+        "renderMOV",
+        "heroOutput",
+        "renderHero",
+    ]
 
 
 def test_smart_write_configures_exact_shot_output_paths(

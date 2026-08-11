@@ -660,6 +660,7 @@ class AutoCompNatronAppTests(unittest.TestCase):
                     return_value=OpenCompResult(
                         comp_path=comp_path,
                         created=True,
+                        hydrated_source_files=38,
                     ),
                 ) as create_open_mock:
                     app._create_and_open_selected_comp()
@@ -669,9 +670,10 @@ class AutoCompNatronAppTests(unittest.TestCase):
                     "AAA",
                     "AAA_000_0020",
                     natron_executable=executable,
+                    hydration_progress=app._update_source_hydration_progress,
                 )
                 self.assertEqual(
-                    "Successfully created and opened comp: "
+                    "Downloaded 38 source frames. Successfully created and opened comp: "
                     "AAA_000_0020_comp_v001.ntp.",
                     app.status_var.get(),
                 )
@@ -743,6 +745,7 @@ class AutoCompNatronAppTests(unittest.TestCase):
                     "AAA",
                     "AAA_000_0010",
                     natron_executable=executable,
+                    hydration_progress=app._update_source_hydration_progress,
                 )
                 self.assertIn("does not exist", app.status_var.get())
                 self.assertEqual(

@@ -11,6 +11,10 @@ from portable_pipe_tools.auto_comp_natron.create_comp import (
     create_comp,
     get_comp_path,
 )
+from portable_pipe_tools.auto_comp_natron.source_media import (
+    HydrationProgress,
+    hydrate_latest_source_sequence,
+)
 
 
 CompOpener = Callable[[Path], object]
@@ -36,6 +40,7 @@ class CompOpenError(OSError):
 class OpenCompResult:
     comp_path: Path
     created: bool
+    hydrated_source_files: int = 0
 
 
 def get_portable_natron_plugins_path() -> Path:
@@ -123,10 +128,23 @@ def open_comp(
     *,
     opener: CompOpener | None = None,
     natron_executable: str | Path | None = None,
+    hydration_progress: HydrationProgress | None = None,
 ) -> OpenCompResult:
     comp_path = get_comp_path(show_root, sequence_name, shot_name)
+    if not comp_path.is_file():
+        raise CompNotFoundError(comp_path)
+    hydration = hydrate_latest_source_sequence(
+        show_root,
+        sequence_name,
+        shot_name,
+        progress=hydration_progress,
+    )
     _open_comp_path(comp_path, opener, natron_executable)
-    return OpenCompResult(comp_path=comp_path, created=False)
+    return OpenCompResult(
+        comp_path=comp_path,
+        created=False,
+        hydrated_source_files=hydration.hydrated_files,
+    )
 
 
 def create_and_open_comp(
@@ -136,7 +154,14 @@ def create_and_open_comp(
     *,
     opener: CompOpener | None = None,
     natron_executable: str | Path | None = None,
+    hydration_progress: HydrationProgress | None = None,
 ) -> OpenCompResult:
+    hydration = hydrate_latest_source_sequence(
+        show_root,
+        sequence_name,
+        shot_name,
+        progress=hydration_progress,
+    )
     try:
         create_result = create_comp(show_root, sequence_name, shot_name)
     except CompAlreadyExistsError as error:
@@ -147,4 +172,8 @@ def create_and_open_comp(
         created = True
 
     _open_comp_path(comp_path, opener, natron_executable)
-    return OpenCompResult(comp_path=comp_path, created=created)
+    return OpenCompResult(
+        comp_path=comp_path,
+        created=created,
+        hydrated_source_files=hydration.hydrated_files,
+    )

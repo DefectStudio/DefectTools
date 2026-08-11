@@ -31,6 +31,11 @@ outputs' missing parent directories. Its selected beauty version remains stable
 when checkboxes are changed; another newly created Smart Write reserves the next
 version.
 
+The Smart Write page places **Render All** above the output rows. It submits the
+enabled writers as one non-blocking Natron render batch over the project timeline
+range. EXR, MP4, MOV, and Hero also have individual render buttons beside their
+checkboxes; an individual button is enabled only while its output is enabled.
+
 Each output checkbox has a matching collapsible settings section. Enabled
 outputs open their section by default, while disabled outputs start collapsed.
 The controls are independent user parameters synchronized to curated parameters

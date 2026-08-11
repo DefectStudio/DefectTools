@@ -114,15 +114,41 @@ def verify_roundtrip(
             "for node in app.getChildren():\n"
             "    if node.getPluginID() != SmartWriteExt.PLUGIN_ID:\n"
             "        continue\n"
+            "    render_controls = ('renderAll', 'renderEXR', 'renderMP4', "
+            "'renderMOV', 'renderHero')\n"
+            "    missing_controls = [name for name in render_controls "
+            "if node.getParam(name) is None]\n"
+            "    if missing_controls:\n"
+            "        raise RuntimeError('Missing SmartWrite render controls: "
+            "{0}'.format(missing_controls))\n"
+            "    expected_rows = {'renderAll': True, 'exrOutput': False, "
+            "'renderEXR': True, 'mp4Output': False, 'renderMP4': True, "
+            "'movOutput': False, 'renderMOV': True, 'heroOutput': False, "
+            "'renderHero': True}\n"
+            "    bad_rows = [name for name, expected in expected_rows.items() "
+            "if node.getParam(name).getAddNewLine() != expected]\n"
+            "    actual_rows = {name: node.getParam(name).getAddNewLine() "
+            "for name in expected_rows}\n"
+            "    wrong_page = [name for name in expected_rows "
+            "if node.getParam(name).getParent().getScriptName() != "
+            "'smartWrite']\n"
+            "    if bad_rows or wrong_page:\n"
+            "        raise RuntimeError('Bad SmartWrite row layout: rows={0}, "
+            "actual={1}, page={2}'.format(bad_rows, actual_rows, wrong_page))\n"
+            "    print('CODEX_SMARTWRITE_RENDER_CONTROLS_OK')\n"
             "    for section in SmartWriteExt.SETTINGS_SECTIONS:\n"
             "        prefix = section[4]\n"
+            "        writer = node.getNode(section[3])\n"
             "        for native_name, creator_name in section[5]:\n"
             "            if creator_name != 'createChoiceParam':\n"
             "                continue\n"
             "            checked += 1\n"
             "            name = '{0}_{1}'.format(prefix, native_name)\n"
             "            param = node.getParam(name)\n"
-            "            if param is None or not param.getOptions():\n"
+            "            native = writer.getParam(native_name) if writer else None\n"
+            "            native_options = native.getOptions() if native else []\n"
+            "            if param is None or "
+            "(native_options and not param.getOptions()):\n"
             "                empty.append(name)\n"
             "if empty:\n"
             "    raise RuntimeError('Empty SmartWrite choices: {0}'.format(empty))\n"
@@ -149,9 +175,17 @@ def verify_roundtrip(
             temporary / "reload-profile",
             reload_script,
         )
+        if "CODEX_SMARTWRITE_RENDER_CONTROLS_OK" not in second_output:
+            raise RuntimeError(
+                "Natron did not restore the SmartWrite render controls:\n{0}".format(
+                    second_output
+                )
+            )
         if "CODEX_SMARTWRITE_CHOICES_OK" not in second_output:
             raise RuntimeError(
-                "Natron did not restore the exposed SmartWrite choice options"
+                "Natron did not restore the exposed SmartWrite controls:\n{0}".format(
+                    second_output
+                )
             )
 
 
