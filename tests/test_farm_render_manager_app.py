@@ -9,6 +9,7 @@ from portable_pipe_tools.apps.farm_render_manager_app import (
     FarmRenderManagerApp,
     JOB_COLUMNS,
     WORKER_COLUMNS,
+    format_submitted_pacific,
 )
 from portable_pipe_tools.render_farm.manager_settings import (
     load_saved_auto_refresh_interval_minutes,
@@ -38,9 +39,37 @@ def _click_tree_heading(
 
 
 class FarmRenderManagerAppTests(unittest.TestCase):
+    def test_submitted_time_is_formatted_in_pacific_daylight_time(self) -> None:
+        self.assertEqual(
+            "2026-08-10  |  22:36",
+            format_submitted_pacific("2026-08-11T05:36:55"),
+        )
+        self.assertEqual(
+            "2026-08-10  |  22:36",
+            format_submitted_pacific("2026-08-11T05:36:55Z"),
+        )
+        self.assertEqual(
+            "2026-08-10  |  21:59",
+            format_submitted_pacific("2026-08-11T04:59:16.486"),
+        )
+
+    def test_submitted_time_is_formatted_in_pacific_standard_time(self) -> None:
+        self.assertEqual(
+            "2026-01-10  |  21:36",
+            format_submitted_pacific("2026-01-11T05:36:55+00:00"),
+        )
+
+    def test_invalid_submitted_time_is_preserved_for_diagnosis(self) -> None:
+        self.assertEqual("unknown", format_submitted_pacific("unknown"))
+        self.assertEqual("", format_submitted_pacific(""))
+
     def test_job_name_is_the_leftmost_column(self) -> None:
         self.assertEqual("job_name", JOB_COLUMNS[0].key)
         self.assertEqual("Job Name", JOB_COLUMNS[0].heading)
+
+    def test_job_name_column_is_compact_and_does_not_expand(self) -> None:
+        self.assertEqual(125, JOB_COLUMNS[0].width)
+        self.assertFalse(JOB_COLUMNS[0].stretch)
 
     def test_worker_column_is_immediately_left_of_user(self) -> None:
         keys = [column.key for column in JOB_COLUMNS]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from queue import Empty, Queue
@@ -74,7 +74,7 @@ class ListColumn:
 # The column definitions are intentionally centralized. The real queue schema can
 # replace or extend them without requiring layout changes.
 JOB_COLUMNS = (
-    ListColumn("job_name", "Job Name", 250, stretch=True),
+    ListColumn("job_name", "Job Name", 125),
     ListColumn("worker", "Worker", 125),
     ListColumn("user", "User", 90),
     ListColumn("status", "Status", 95),
@@ -97,6 +97,57 @@ JobSelectionKey = tuple[str, str]
 WorkerSelectionKey = tuple[str, str, str]
 JOBS_VIEW = "jobs"
 WORKERS_VIEW = "workers"
+PACIFIC_STANDARD_TIME = timezone(timedelta(hours=-8), name="PST")
+PACIFIC_DAYLIGHT_TIME = timezone(timedelta(hours=-7), name="PDT")
+
+
+def _nth_sunday(year: int, month: int, occurrence: int) -> int:
+    first_weekday = datetime(year, month, 1).weekday()
+    first_sunday = 1 + ((6 - first_weekday) % 7)
+    return first_sunday + (occurrence - 1) * 7
+
+
+def _pacific_timezone_for(utc_value: datetime) -> timezone:
+    year = utc_value.year
+    daylight_start_utc = datetime(
+        year,
+        3,
+        _nth_sunday(year, 3, 2),
+        10,
+        tzinfo=timezone.utc,
+    )
+    daylight_end_utc = datetime(
+        year,
+        11,
+        _nth_sunday(year, 11, 1),
+        9,
+        tzinfo=timezone.utc,
+    )
+    if daylight_start_utc <= utc_value < daylight_end_utc:
+        return PACIFIC_DAYLIGHT_TIME
+    return PACIFIC_STANDARD_TIME
+
+
+def format_submitted_pacific(value: str) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return ""
+
+    normalized_value = raw_value
+    if normalized_value.upper().endswith("Z"):
+        normalized_value = normalized_value[:-1] + "+00:00"
+    try:
+        submitted = datetime.fromisoformat(normalized_value)
+    except ValueError:
+        return raw_value
+
+    if submitted.tzinfo is None:
+        submitted = submitted.replace(tzinfo=timezone.utc)
+    submitted_utc = submitted.astimezone(timezone.utc)
+    submitted_pacific = submitted_utc.astimezone(
+        _pacific_timezone_for(submitted_utc)
+    )
+    return submitted_pacific.strftime("%Y-%m-%d  |  %H:%M")
 
 
 class FarmRenderManagerApp:
@@ -1206,7 +1257,7 @@ class FarmRenderManagerApp:
                 job.status.title(),
                 job.error_count,
                 f"{job.progress:g}%",
-                job.submitted_utc,
+                format_submitted_pacific(job.submitted_utc),
             )
             tag = self._status_tag(job.status)
             item_id = self.job_tree.insert(

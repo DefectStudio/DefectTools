@@ -126,6 +126,9 @@ worker displays its heartbeat details and raw status JSON. Right-clicking a
 worker and choosing **STOP Worker** creates an empty `WORKERNAME_STOP.json`
 marker in that show's `renderFarm\Workers` folder.
 
+The Jobs table displays submitted UTC timestamps in Pacific time using
+`YYYY-MM-DD  |  HH:MM`, with PST/PDT selected automatically for the job date.
+
 ## Render farm worker
 
 The filesystem worker can publish a fake test job, atomically claim one queued
