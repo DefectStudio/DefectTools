@@ -37,6 +37,7 @@ from portable_pipe_tools.render_farm.manager_settings import (
     save_dropbox_folder,
 )
 from portable_pipe_tools.render_farm.render_job import RenderJob
+from portable_pipe_tools.render_farm.render_time import format_render_time
 from portable_pipe_tools.render_farm.sort_render_jobs import (
     default_sort_descending,
     sort_render_jobs,
@@ -75,10 +76,11 @@ class ListColumn:
 # replace or extend them without requiring layout changes.
 JOB_COLUMNS = (
     ListColumn("job_name", "Job Name", 125),
-    ListColumn("worker", "Worker", 125),
-    ListColumn("user", "User", 90),
-    ListColumn("status", "Status", 95),
-    ListColumn("errors", "Errors", 55, anchor="center"),
+    ListColumn("worker", "Worker", 94),
+    ListColumn("user", "User", 68),
+    ListColumn("status", "Status", 71),
+    ListColumn("render_time", "Render Time", 85, anchor="center"),
+    ListColumn("errors", "Errors", 41, anchor="center"),
     ListColumn("progress", "Progress", 80, anchor="center"),
     ListColumn("submitted", "Submitted", 135),
 )
@@ -99,6 +101,7 @@ JOBS_VIEW = "jobs"
 WORKERS_VIEW = "workers"
 PACIFIC_STANDARD_TIME = timezone(timedelta(hours=-8), name="PST")
 PACIFIC_DAYLIGHT_TIME = timezone(timedelta(hours=-7), name="PDT")
+RENDER_TIME_REFRESH_MILLISECONDS = 1_000
 
 
 def _nth_sunday(year: int, month: int, occurrence: int) -> int:
@@ -203,6 +206,7 @@ class FarmRenderManagerApp:
         self._auto_refresh_results: Queue[AutoRefreshResult] = Queue()
         self._auto_refresh_after_id: str | None = None
         self._refresh_feedback_after_id: str | None = None
+        self._render_time_after_id: str | None = None
         self._closing = False
         self.auto_refresh_worker = AutoRefreshWorker(
             repository_path_provider=lambda: self.repository_path,
@@ -214,6 +218,7 @@ class FarmRenderManagerApp:
         self._build_menu()
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._schedule_render_time_refresh()
         if self.auto_refresh_var.get():
             self.auto_refresh_worker.start()
         self._schedule_auto_refresh_poll()
@@ -776,7 +781,7 @@ class FarmRenderManagerApp:
             tree.column(
                 column.key,
                 width=column.width,
-                minwidth=50,
+                minwidth=min(50, column.width),
                 anchor=column.anchor,
                 stretch=column.stretch,
             )
@@ -1114,6 +1119,33 @@ class FarmRenderManagerApp:
             self._poll_auto_refresh_results,
         )
 
+    def _schedule_render_time_refresh(self) -> None:
+        self._render_time_after_id = self.root.after(
+            RENDER_TIME_REFRESH_MILLISECONDS,
+            self._refresh_render_time_cells,
+        )
+
+    def _refresh_render_time_cells(self) -> None:
+        self._render_time_after_id = None
+        if self._closing:
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        for item_id, job in self._jobs_by_item.items():
+            if job.status.casefold() != "rendering":
+                continue
+            self.job_tree.set(
+                item_id,
+                "render_time",
+                format_render_time(
+                    job.render_started_utc,
+                    job.render_finished_utc,
+                    running=True,
+                    now_utc=now_utc,
+                ),
+            )
+        self._schedule_render_time_refresh()
+
     def _poll_auto_refresh_results(self) -> None:
         self._auto_refresh_after_id = None
         if self._closing:
@@ -1255,6 +1287,11 @@ class FarmRenderManagerApp:
                 worker,
                 user,
                 job.status.title(),
+                format_render_time(
+                    job.render_started_utc,
+                    job.render_finished_utc,
+                    running=job.status.casefold() == "rendering",
+                ),
                 job.error_count,
                 f"{job.progress:g}%",
                 format_submitted_pacific(job.submitted_utc),
@@ -1725,6 +1762,9 @@ class FarmRenderManagerApp:
         if self._refresh_feedback_after_id is not None:
             self.root.after_cancel(self._refresh_feedback_after_id)
             self._refresh_feedback_after_id = None
+        if self._render_time_after_id is not None:
+            self.root.after_cancel(self._render_time_after_id)
+            self._render_time_after_id = None
         self.auto_refresh_worker.stop()
         self.root.destroy()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ from portable_pipe_tools.apps.farm_render_manager_app import (
     WORKER_COLUMNS,
     format_submitted_pacific,
 )
+from portable_pipe_tools.render_farm.render_time import format_render_time
 from portable_pipe_tools.render_farm.manager_settings import (
     load_saved_auto_refresh_interval_minutes,
     save_auto_refresh_enabled,
@@ -77,6 +79,42 @@ class FarmRenderManagerAppTests(unittest.TestCase):
 
         self.assertEqual("Worker", JOB_COLUMNS[worker_index].heading)
         self.assertEqual("user", keys[worker_index + 1])
+
+    def test_compact_job_columns_make_room_for_render_time(self) -> None:
+        columns = {column.key: column for column in JOB_COLUMNS}
+
+        self.assertEqual(94, columns["worker"].width)
+        self.assertEqual(68, columns["user"].width)
+        self.assertEqual(71, columns["status"].width)
+        self.assertEqual(41, columns["errors"].width)
+        self.assertEqual(
+            ["status", "render_time", "errors"],
+            [column.key for column in JOB_COLUMNS][3:6],
+        )
+        self.assertEqual("Render Time", columns["render_time"].heading)
+
+    def test_render_time_formats_live_and_finished_durations(self) -> None:
+        now_utc = datetime(2026, 8, 11, 7, 3, 4, tzinfo=timezone.utc)
+
+        self.assertEqual(
+            "02:03:04",
+            format_render_time(
+                "2026-08-11T05:00:00Z",
+                running=True,
+                now_utc=now_utc,
+            ),
+        )
+        self.assertEqual(
+            "01:30:15",
+            format_render_time(
+                "2026-08-11T05:00:00Z",
+                "2026-08-11T06:30:15Z",
+            ),
+        )
+        self.assertEqual(
+            "",
+            format_render_time("", running=True, now_utc=now_utc),
+        )
 
     def test_worker_name_is_the_leftmost_worker_column(self) -> None:
         self.assertEqual("worker_name", WORKER_COLUMNS[0].key)

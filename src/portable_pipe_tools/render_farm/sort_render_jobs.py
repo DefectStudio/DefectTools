@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from portable_pipe_tools.render_farm.render_job import RenderJob
+from portable_pipe_tools.render_farm.render_time import render_duration_seconds
 
 
 SORTABLE_JOB_COLUMNS = frozenset(
@@ -12,12 +13,15 @@ SORTABLE_JOB_COLUMNS = frozenset(
         "worker",
         "user",
         "status",
+        "render_time",
         "errors",
         "progress",
         "submitted",
     }
 )
-DEFAULT_DESCENDING_COLUMNS = frozenset({"errors", "progress", "submitted"})
+DEFAULT_DESCENDING_COLUMNS = frozenset(
+    {"render_time", "errors", "progress", "submitted"}
+)
 
 
 def default_sort_descending(column: str) -> bool:
@@ -58,6 +62,12 @@ def _sort_value(job: RenderJob, column: str) -> Any:
         return (job.submitted_user or job.submitted_by).casefold()
     if column == "status":
         return job.status.casefold()
+    if column == "render_time":
+        return render_duration_seconds(
+            job.render_started_utc,
+            job.render_finished_utc,
+            running=job.status.casefold() == "rendering",
+        )
     if column == "errors":
         return job.error_count
     if column == "progress":

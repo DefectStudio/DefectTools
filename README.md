@@ -128,6 +128,8 @@ marker in that show's `renderFarm\Workers` folder.
 
 The Jobs table displays submitted UTC timestamps in Pacific time using
 `YYYY-MM-DD  |  HH:MM`, with PST/PDT selected automatically for the job date.
+Its **Render Time** column updates active jobs every second as `HH:MM:SS` and
+keeps the final duration visible for completed jobs.
 
 ## Render farm worker
 

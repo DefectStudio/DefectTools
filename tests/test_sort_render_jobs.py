@@ -19,6 +19,8 @@ def _job(
     errors: int = 0,
     progress: float = 0,
     submitted: str = "2026-08-04T12:00:00Z",
+    render_started: str = "",
+    render_finished: str = "",
 ) -> RenderJob:
     folder = Path("renderFarm") / name
     return RenderJob(
@@ -43,8 +45,8 @@ def _job(
         frame_count=1,
         progress=progress,
         error_count=errors,
-        render_started_utc="",
-        render_finished_utc="",
+        render_started_utc=render_started,
+        render_finished_utc=render_finished,
         output_directory="",
         render_config="",
     )
@@ -113,10 +115,35 @@ class SortRenderJobsTests(unittest.TestCase):
             [job.job_name for job in oldest_first],
         )
 
+    def test_render_time_sorts_by_duration_with_missing_values_last(self) -> None:
+        jobs = [
+            _job(
+                "short",
+                status="complete",
+                render_started="2026-08-04T10:00:00Z",
+                render_finished="2026-08-04T10:10:00Z",
+            ),
+            _job("missing", status="queued"),
+            _job(
+                "long",
+                status="complete",
+                render_started="2026-08-04T10:00:00Z",
+                render_finished="2026-08-04T11:30:00Z",
+            ),
+        ]
+
+        sorted_jobs = sort_render_jobs(jobs, "render_time", descending=True)
+
+        self.assertEqual(
+            ["long", "short", "missing"],
+            [job.job_name for job in sorted_jobs],
+        )
+
     def test_useful_numeric_columns_default_to_highest_first(self) -> None:
         self.assertTrue(default_sort_descending("errors"))
         self.assertTrue(default_sort_descending("progress"))
         self.assertTrue(default_sort_descending("submitted"))
+        self.assertTrue(default_sort_descending("render_time"))
         self.assertFalse(default_sort_descending("job_name"))
 
     def test_unknown_column_is_rejected(self) -> None:
