@@ -11,6 +11,7 @@ from portable_pipe_tools.show_manager.shot_manager_core import (
     ShotRow,
     apply_edl_sequence_comparison,
     build_updated_sequence_manifest,
+    calculate_estimated_frames_cut,
     calculate_edl_proposed_range,
     export_edl_updates_to_sequence_manifest,
     format_edl_frame_ranges,
@@ -325,6 +326,24 @@ class ShotManagerEdlTests(unittest.TestCase):
             frame_only["shots"][0]["end_frame"],
         ))
         self.assertEqual(1, frame_only["active_shot_count"])
+
+    def test_estimated_frames_cut_sums_inclusive_range_differences(self) -> None:
+        rows = [
+            _shot_row("JNG_000_0050", 201, True),
+            _shot_row("JNG_000_0100", 202, True),
+            _shot_row("JNG_000_0150", 203, False),
+        ]
+        rows[0].start_frame = 1001
+        rows[0].end_frame = 1100
+        rows[0].edl_proposed_range = (1021, 1080)
+        rows[1].start_frame = 1101
+        rows[1].end_frame = 1200
+        rows[1].edl_proposed_range = (1111, 1190)
+        rows[2].start_frame = 1201
+        rows[2].end_frame = 1300
+
+        self.assertEqual(60, calculate_estimated_frames_cut(rows))
+        self.assertEqual(0, calculate_estimated_frames_cut([]))
 
     def test_export_overwrites_stable_updated_file_without_backup(self) -> None:
         rows = [_shot_row("JNG_000_0050", 900, False)]

@@ -278,6 +278,31 @@ def calculate_edl_proposed_range(
     return proposed_start_frame, proposed_end_frame
 
 
+def calculate_estimated_frames_cut(shot_rows: list[ShotRow]) -> int:
+    estimated_frames_cut = 0
+    for shot_row in shot_rows:
+        if (
+            shot_row.start_frame is None
+            or shot_row.end_frame is None
+            or shot_row.edl_proposed_range is None
+        ):
+            continue
+        original_frame_count = max(
+            0,
+            shot_row.end_frame - shot_row.start_frame + 1,
+        )
+        proposed_start_frame, proposed_end_frame = shot_row.edl_proposed_range
+        proposed_frame_count = max(
+            0,
+            proposed_end_frame - proposed_start_frame + 1,
+        )
+        estimated_frames_cut += max(
+            0,
+            original_frame_count - proposed_frame_count,
+        )
+    return estimated_frames_cut
+
+
 def _xml_local_name(tag: str) -> str:
     return str(tag).rsplit("}", 1)[-1]
 
@@ -1080,6 +1105,7 @@ class ShotManagerApp:
         self.update_shot_order_var = tk.BooleanVar(value=True)
         self.update_shot_active_var = tk.BooleanVar(value=True)
         self.update_frame_range_var = tk.BooleanVar(value=True)
+        self.estimated_frames_cut_var = tk.StringVar(value="0")
         self.status_var = tk.StringVar(value="Choose a Dropbox folder to begin.")
         self.saved_show_name = ""
         self.saved_sequence_name = ""
@@ -1170,6 +1196,14 @@ class ShotManagerApp:
             text="Update Frame Range",
             variable=self.update_frame_range_var,
         ).pack(side="left", padx=(18, 0))
+        ttk.Label(
+            export_options_frame,
+            text="Estimated Frames Cut",
+        ).pack(side="left", padx=(28, 6))
+        ttk.Label(
+            export_options_frame,
+            textvariable=self.estimated_frames_cut_var,
+        ).pack(side="left")
 
         edl_frame = ttk.LabelFrame(
             outer,
@@ -1951,6 +1985,9 @@ class ShotManagerApp:
         return f"#{column_index}"
 
     def _render_shot_rows(self) -> None:
+        self.estimated_frames_cut_var.set(
+            f"{calculate_estimated_frames_cut(self.current_shot_rows):,}"
+        )
         self._clear_shots()
         for shot_row in self._get_sorted_shot_rows():
             item_id = self.shots_tree.insert(
