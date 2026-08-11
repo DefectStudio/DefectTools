@@ -133,13 +133,23 @@ def _configure_new_writer(writer_name, writer):
         _set_choice_option(writer.getParam("codec"), "libx264")
 
 
+def _has_format_options(writer, format_param_name):
+    format_param = writer.getParam(format_param_name)
+    if format_param is None:
+        return False
+    try:
+        return bool(format_param.getOptions())
+    except (AttributeError, TypeError):
+        return True
+
+
 def _ensure_concrete_writer(app, group, writer_name, filename):
     writer = group.getNode(writer_name)
     if writer is None or not filename:
         return writer
 
     label, x_position, format_param_name = WRITER_LAYOUT[writer_name]
-    if writer.getParam(format_param_name) is not None:
+    if _has_format_options(writer, format_param_name):
         return writer
 
     replacement = app.createWriter(filename, group)
@@ -203,13 +213,16 @@ def _copy_choice_options(native_param, exposed_param):
     try:
         options = native_param.getOptions()
     except (AttributeError, TypeError):
-        return
+        return False
     if options is None:
-        return
+        return False
     try:
-        exposed_param.setOptions(list(options))
+        exposed_param.setOptions(
+            [(str(option), "") for option in options]
+        )
     except (AttributeError, TypeError):
-        pass
+        return False
+    return True
 
 
 def _create_setting_proxy(
@@ -225,8 +238,15 @@ def _create_setting_proxy(
         return False
 
     proxy_name = "{0}_{1}".format(proxy_prefix, native_name)
-    if group.getParam(proxy_name) is not None:
-        return False
+    existing_proxy = group.getParam(proxy_name)
+    if existing_proxy is not None:
+        if creator_name != "createChoiceParam":
+            return False
+        selected_value = existing_proxy.get()
+        if not _copy_choice_options(native_param, existing_proxy):
+            return False
+        existing_proxy.set(selected_value)
+        return True
 
     creator = getattr(group, creator_name)
     proxy = creator(proxy_name, native_param.getLabel())
@@ -238,7 +258,7 @@ def _create_setting_proxy(
     return True
 
 
-def _ensure_settings_sections(group):
+def _ensure_settings_sections(group, active_writers=None):
     controls = group.getParam("smartWrite")
     if controls is None:
         return
@@ -259,7 +279,11 @@ def _ensure_settings_sections(group):
             controls.addParam(settings_group)
             ui_changed = True
 
-        writer = group.getNode(writer_name)
+        writer = (
+            active_writers.get(writer_name)
+            if active_writers is not None
+            else group.getNode(writer_name)
+        )
         if writer is None:
             continue
         format_param_name = WRITER_LAYOUT[writer_name][2]
@@ -280,7 +304,7 @@ def _ensure_settings_sections(group):
         group.refreshUserParamsGUI()
 
 
-def _sync_setting_to_writer(group, exposed_param):
+def _sync_setting_to_writer(group, exposed_param, active_writers=None):
     exposed_name = exposed_param.getScriptName()
     for section in SETTINGS_SECTIONS:
         writer_name = section[3]
@@ -288,7 +312,11 @@ def _sync_setting_to_writer(group, exposed_param):
         for native_name, _creator_name in section[5]:
             if exposed_name != "{0}_{1}".format(proxy_prefix, native_name):
                 continue
-            writer = group.getNode(writer_name)
+            writer = (
+                active_writers.get(writer_name)
+                if active_writers is not None
+                else group.getNode(writer_name)
+            )
             native_param = writer.getParam(native_name) if writer else None
             if native_param is not None:
                 native_param.set(exposed_param.get())
@@ -296,7 +324,7 @@ def _sync_setting_to_writer(group, exposed_param):
     return False
 
 
-def _sync_settings_to_writers(group):
+def _sync_settings_to_writers(group, active_writers=None):
     for section in SETTINGS_SECTIONS:
         proxy_prefix = section[4]
         for native_name, _creator_name in section[5]:
@@ -304,7 +332,7 @@ def _sync_settings_to_writers(group):
                 "{0}_{1}".format(proxy_prefix, native_name)
             )
             if exposed is not None:
-                _sync_setting_to_writer(group, exposed)
+                _sync_setting_to_writer(group, exposed, active_writers)
 
 
 def _set_settings_section_open(group, checkbox_name, opened):
@@ -345,6 +373,7 @@ def refreshOutputs(app, group, select_next_version=False):
             paths = None
 
     group.beginChanges()
+    active_writers = {}
     try:
         for checkbox_name, writer_name, path_attribute in WRITER_SPECS:
             path = getattr(paths, path_attribute).as_posix() if paths else ""
@@ -354,11 +383,13 @@ def refreshOutputs(app, group, select_next_version=False):
                 writer_name,
                 path,
             )
+            if writer is not None:
+                active_writers[writer_name] = writer
             _configure_writer(writer, path, enabled_outputs[checkbox_name])
     finally:
         group.endChanges()
-    _ensure_settings_sections(group)
-    _sync_settings_to_writers(group)
+    _ensure_settings_sections(group, active_writers)
+    _sync_settings_to_writers(group, active_writers)
 
 
 def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):

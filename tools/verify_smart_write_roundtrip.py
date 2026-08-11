@@ -84,8 +84,19 @@ def verify_roundtrip(
 
     with tempfile.TemporaryDirectory(prefix="smartwrite-roundtrip-") as temp_name:
         temporary = Path(temp_name)
-        saved_project = temporary / "smartwrite_roundtrip.ntp"
+        saved_project = (
+            temporary
+            / "show"
+            / "sequences"
+            / "TST"
+            / "TST_000_0001"
+            / "comp"
+            / "natron"
+            / "TST_000_0001_comp_v001.ntp"
+        )
+        saved_project.parent.mkdir(parents=True)
         save_script = temporary / "save_roundtrip.py"
+        reload_script = temporary / "verify_choices.py"
         save_script.write_text(
             "TARGET = {0!r}\n"
             "if not app.saveProjectAs(TARGET):\n"
@@ -93,6 +104,29 @@ def verify_roundtrip(
             "print('CODEX_SMARTWRITE_ROUNDTRIP_SAVED')\n".format(
                 saved_project.as_posix()
             ),
+            encoding="utf-8",
+        )
+        reload_script.write_text(
+            "import SmartWriteExt\n"
+            "SmartWriteExt.afterProjectLoaded(app)\n"
+            "checked = 0\n"
+            "empty = []\n"
+            "for node in app.getChildren():\n"
+            "    if node.getPluginID() != SmartWriteExt.PLUGIN_ID:\n"
+            "        continue\n"
+            "    for section in SmartWriteExt.SETTINGS_SECTIONS:\n"
+            "        prefix = section[4]\n"
+            "        for native_name, creator_name in section[5]:\n"
+            "            if creator_name != 'createChoiceParam':\n"
+            "                continue\n"
+            "            checked += 1\n"
+            "            name = '{0}_{1}'.format(prefix, native_name)\n"
+            "            param = node.getParam(name)\n"
+            "            if param is None or not param.getOptions():\n"
+            "                empty.append(name)\n"
+            "if empty:\n"
+            "    raise RuntimeError('Empty SmartWrite choices: {0}'.format(empty))\n"
+            "print('CODEX_SMARTWRITE_CHOICES_OK|{0}'.format(checked))\n",
             encoding="utf-8",
         )
 
@@ -108,12 +142,17 @@ def verify_roundtrip(
         if not saved_project.is_file():
             raise RuntimeError("Natron did not create the round-trip project")
 
-        _run_natron(
+        second_output = _run_natron(
             renderer,
             saved_project,
             plugin_directory,
             temporary / "reload-profile",
+            reload_script,
         )
+        if "CODEX_SMARTWRITE_CHOICES_OK" not in second_output:
+            raise RuntimeError(
+                "Natron did not restore the exposed SmartWrite choice options"
+            )
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -37,4 +37,6 @@ The controls are independent user parameters synchronized to curated parameters
 on the concrete internal OIIO or FFmpeg writer, including EXR compression and
 bit depth or video codec, quality, bitrate, and FPS. New MP4 writers default to
 `libx264`. Smart Write continues to own filenames, writer disable controls,
-callbacks, and other pipeline-sensitive parameters.
+callbacks, and other pipeline-sensitive parameters. On project load, it
+rebuilds restored writers whose format menus are incomplete and repopulates the
+exposed choice menus from the active writer implementations.

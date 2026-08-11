@@ -47,7 +47,10 @@ class FakeParam:
         return True
 
     def setOptions(self, options) -> None:
-        self.options = list(options)
+        self.options = [
+            option[0] if isinstance(option, tuple) else option
+            for option in options
+        ]
 
     def getOptions(self):
         return list(self.options)
@@ -441,6 +444,15 @@ def test_smart_write_refreshes_paths_after_template_copy(
     app.groups.append(group)
     plugin["createInstance"](app, group)
 
+    group.getParam("exr_compression").setOptions([])
+    group.getParam("mp4_codec").setOptions([])
+    group.getNode("EXRWrite").getParam("compression").setOptions([])
+    group.getNode("MP4Write").getParam("codec").setOptions([])
+    group.getNode("MOVWrite").getParam("codec").setOptions([])
+    group.getNode("HeroWrite").getParam("compression").setOptions([])
+    assert group.getParam("exr_compression").getOptions() == []
+    assert group.getParam("mp4_codec").getOptions() == []
+
     app.project_directory = (
         tmp_path
         / "show"
@@ -456,6 +468,15 @@ def test_smart_write_refreshes_paths_after_template_copy(
     assert group.getNode("EXRWrite").getParam("filename").get().endswith(
         "/BSH_000_0030_beauty_v001/BSH_000_0030_beauty_v001.####.exr"
     )
+    assert group.getParam("exr_compression").getOptions() == [
+        "Zip",
+        "Piz",
+        "DWAA",
+    ]
+    assert group.getParam("mp4_codec").getOptions() == [
+        "prores_ksap4h",
+        "libx264",
+    ]
 
 
 def test_each_new_smart_write_reserves_the_next_version(
