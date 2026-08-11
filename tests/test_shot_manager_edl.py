@@ -326,7 +326,7 @@ class ShotManagerEdlTests(unittest.TestCase):
         ))
         self.assertEqual(1, frame_only["active_shot_count"])
 
-    def test_export_writes_stable_updated_file_and_preserves_source(self) -> None:
+    def test_export_overwrites_stable_updated_file_without_backup(self) -> None:
         rows = [_shot_row("JNG_000_0050", 900, False)]
         rows[0].edl_order = 201
         rows[0].edl_is_active = True
@@ -371,22 +371,27 @@ class ShotManagerEdlTests(unittest.TestCase):
                 rows,
                 "JNG",
             )
-            self.assertIsNotNone(second_export.previous_output_backup_path)
-            assert second_export.previous_output_backup_path is not None
-            previous_updated_data = json.loads(
-                second_export.previous_output_backup_path.read_text(encoding="utf-8")
-            )
+            self.assertIsNone(second_export.previous_output_backup_path)
             second_updated_data = json.loads(
                 second_export.output_path.read_text(encoding="utf-8")
             )
             source_data_after_second_export = json.loads(
                 manifest_path.read_text(encoding="utf-8")
             )
+            json_filenames = sorted(
+                path.name for path in Path(temporary_directory).glob("*.json")
+            )
 
-        self.assertEqual(201, previous_updated_data["shots"][0]["order"])
         self.assertEqual(202, second_updated_data["shots"][0]["order"])
         self.assertTrue(second_updated_data["shots"][0]["is_active"])
         self.assertEqual(900, source_data_after_second_export["shots"][0]["order"])
+        self.assertEqual(
+            [
+                "jng_sequence_shots_manifest.json",
+                "jng_sequence_shots_manifest_updated.json",
+            ],
+            json_filenames,
+        )
 
 
 if __name__ == "__main__":

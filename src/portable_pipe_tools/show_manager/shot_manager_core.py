@@ -905,7 +905,7 @@ def export_edl_updates_to_sequence_manifest(
     update_active: bool = True,
     update_frame_range: bool = True,
 ) -> SequenceManifestExportResult:
-    """Write a stable *_updated.json without modifying the Unreal export."""
+    """Overwrite the stable *_updated.json without modifying the Unreal export."""
     resolved_manifest_path = _as_path(manifest_path)
     if not resolved_manifest_path.is_file():
         raise FileNotFoundError(
@@ -922,25 +922,10 @@ def export_edl_updates_to_sequence_manifest(
         update_frame_range=update_frame_range,
     )
     output_path = get_updated_sequence_manifest_path(resolved_manifest_path)
-    previous_output_backup_path: Path | None = None
-    if output_path.exists():
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        previous_output_backup_path = output_path.with_name(
-            f"{output_path.stem}.pre_edl_{timestamp}{output_path.suffix}"
-        )
-        suffix_number = 2
-        while previous_output_backup_path.exists():
-            previous_output_backup_path = output_path.with_name(
-                f"{output_path.stem}.pre_edl_{timestamp}_{suffix_number}"
-                f"{output_path.suffix}"
-            )
-            suffix_number += 1
-        shutil.copy2(output_path, previous_output_backup_path)
-
     _write_json_file_atomically(output_path, updated_manifest)
     return SequenceManifestExportResult(
         output_path=output_path,
-        previous_output_backup_path=previous_output_backup_path,
+        previous_output_backup_path=None,
     )
 
 
@@ -1488,7 +1473,7 @@ class ShotManagerApp:
             f"Shot Active: {active_export_text}\n"
             f"Frame Range: {frame_export_text}"
             f"{warning_text}\n\n"
-            "If the updated JSON already exists, its previous version will be backed up.",
+            "If the updated JSON already exists, it will be overwritten.",
         )
         if not confirmed:
             self._set_status("Sequence JSON export cancelled; no files were changed.")
@@ -1514,27 +1499,14 @@ class ShotManagerApp:
             if update_active and shot_row.edl_is_active is not None:
                 shot_row.is_active = shot_row.edl_is_active
         self._render_shot_rows()
-        backup_status = ""
-        if export_result.previous_output_backup_path is not None:
-            backup_status = (
-                f" Previous updated JSON backed up as "
-                f"{export_result.previous_output_backup_path.name}."
-            )
         self._set_status(
             f"Exported {summary.sequence} sequence JSON to "
             f"{export_result.output_path.name}; source manifest unchanged."
-            f"{backup_status}"
         )
-        backup_message = ""
-        if export_result.previous_output_backup_path is not None:
-            backup_message = (
-                f"\n\nPrevious updated-file backup:\n"
-                f"{export_result.previous_output_backup_path}"
-            )
         messagebox.showinfo(
             "Sequence JSON Exported",
             f"Updated export:\n{export_result.output_path}\n\n"
-            f"Source unchanged:\n{manifest_path}{backup_message}",
+            f"Source unchanged:\n{manifest_path}",
         )
 
     def _load_saved_local_state(self) -> None:
