@@ -6,10 +6,14 @@ import tempfile
 import unittest
 
 from portable_pipe_tools.show_manager.shot_manager_core import (
+    COLUMN_TITLES,
+    EDL_EMPTY_DISPLAY,
     ShotRow,
     apply_edl_sequence_comparison,
     build_updated_sequence_manifest,
     export_edl_updates_to_sequence_manifest,
+    format_edl_frame_ranges,
+    format_shot_frame_range,
     parse_resolve_edl_xml,
 )
 
@@ -30,6 +34,35 @@ def _shot_row(shot_name: str, order: int, is_active: bool) -> ShotRow:
 
 
 class ShotManagerEdlTests(unittest.TestCase):
+    def test_frame_range_column_precedes_sequence_and_formats_manifest_frames(self) -> None:
+        column_keys = list(COLUMN_TITLES)
+
+        self.assertEqual(["move", "shot"], column_keys[:2])
+        self.assertEqual(
+            column_keys.index("frame_range") + 1,
+            column_keys.index("edl_frame_range"),
+        )
+        self.assertEqual(
+            column_keys.index("edl_frame_range") + 1,
+            column_keys.index("sequence"),
+        )
+        self.assertEqual("Frame Range", COLUMN_TITLES["frame_range"])
+        self.assertEqual("EDL Frame Range", COLUMN_TITLES["edl_frame_range"])
+        self.assertEqual("1001 - 1100", format_shot_frame_range(1001, 1100))
+        self.assertEqual(
+            f"1001 - {EDL_EMPTY_DISPLAY}",
+            format_shot_frame_range(1001, None),
+        )
+        self.assertEqual(
+            EDL_EMPTY_DISPLAY,
+            format_shot_frame_range(None, None),
+        )
+        self.assertEqual(
+            "1051 - 1094; 1101 - 1110",
+            format_edl_frame_ranges(((1051, 1094), (1101, 1110))),
+        )
+        self.assertEqual(EDL_EMPTY_DISPLAY, format_edl_frame_ranges(()))
+
     def test_parse_resolve_xml_uses_timeline_order_and_ignores_return_deduping(self) -> None:
         xml_text = """<?xml version="1.0" encoding="UTF-8"?>
 <xmeml version="5">
@@ -38,10 +71,10 @@ class ShotManagerEdlTests(unittest.TestCase):
     <media>
       <video>
         <track>
-          <clipitem><name>JNG_000_0100.Layer1.mp4</name><start>20</start><end>30</end><enabled>TRUE</enabled></clipitem>
-          <clipitem><name>519_TIC_000_0825_beauty_v007.mp4</name><start>5</start><end>10</end><enabled>TRUE</enabled></clipitem>
-          <clipitem><name>10000_JNG_000_0050_beauty_v002.mp4</name><start>10</start><end>20</end><enabled>TRUE</enabled></clipitem>
-          <clipitem><name>JNG_000_0100.Layer1.mp4</name><start>30</start><end>40</end><enabled>TRUE</enabled></clipitem>
+          <clipitem><name>JNG_000_0100.Layer1.mp4</name><start>20</start><end>30</end><in>2</in><out>12</out><enabled>TRUE</enabled></clipitem>
+          <clipitem><name>519_TIC_000_0825_beauty_v007.mp4</name><start>5</start><end>10</end><in>5</in><out>10</out><enabled>TRUE</enabled></clipitem>
+          <clipitem><name>10000_JNG_000_0050_beauty_v002.mp4</name><start>10</start><end>20</end><in>7</in><out>17</out><enabled>TRUE</enabled></clipitem>
+          <clipitem><name>JNG_000_0100.Layer1.mp4</name><start>30</start><end>40</end><in>22</in><out>32</out><enabled>TRUE</enabled></clipitem>
           <clipitem><name>Reference Slate.mp4</name><start>40</start><end>45</end><enabled>TRUE</enabled></clipitem>
         </track>
         <track>
@@ -67,13 +100,20 @@ class ShotManagerEdlTests(unittest.TestCase):
             ],
             [occurrence.shot_name for occurrence in edl_import.occurrences],
         )
+        self.assertEqual(
+            [(5, 10), (7, 17), (2, 12), (22, 32)],
+            [
+                (occurrence.source_in, occurrence.source_out)
+                for occurrence in edl_import.occurrences
+            ],
+        )
         self.assertEqual(("Reference Slate.mp4",), edl_import.unrecognized_clip_names)
 
     def test_per_sequence_proposal_numbers_active_then_inactive_shots(self) -> None:
         xml_text = """<xmeml><sequence><name>Edit</name><media><video><track>
-<clipitem><name>JNG_000_0100.mp4</name><start>30</start><end>40</end></clipitem>
-<clipitem><name>JNG_000_0050.mp4</name><start>10</start><end>20</end></clipitem>
-<clipitem><name>JNG_000_0100.mp4</name><start>50</start><end>60</end></clipitem>
+<clipitem><name>JNG_000_0100.mp4</name><start>30</start><end>40</end><in>10</in><out>20</out></clipitem>
+<clipitem><name>JNG_000_0050.mp4</name><start>10</start><end>20</end><in>5</in><out>15</out></clipitem>
+<clipitem><name>JNG_000_0100.mp4</name><start>50</start><end>60</end><in>30</in><out>40</out></clipitem>
 </track></video></media></sequence></xmeml>"""
         with tempfile.TemporaryDirectory() as temporary_directory:
             xml_path = Path(temporary_directory) / "edit.xml"
@@ -85,6 +125,8 @@ class ShotManagerEdlTests(unittest.TestCase):
             _shot_row("JNG_000_0100", 905, False),
             _shot_row("JNG_000_0150", 910, True),
         ]
+        rows[0].start_frame = 1001
+        rows[1].start_frame = 1101
         summary = apply_edl_sequence_comparison(rows, edl_import, "JNG", 201)
 
         rows_by_name = {row.shot_name: row for row in rows}
@@ -94,6 +136,15 @@ class ShotManagerEdlTests(unittest.TestCase):
         self.assertTrue(rows_by_name["JNG_000_0050"].edl_is_active)
         self.assertTrue(rows_by_name["JNG_000_0100"].edl_is_active)
         self.assertFalse(rows_by_name["JNG_000_0150"].edl_is_active)
+        self.assertEqual(
+            ((1006, 1015),),
+            rows_by_name["JNG_000_0050"].edl_frame_ranges,
+        )
+        self.assertEqual(
+            ((1111, 1120), (1131, 1140)),
+            rows_by_name["JNG_000_0100"].edl_frame_ranges,
+        )
+        self.assertEqual((), rows_by_name["JNG_000_0150"].edl_frame_ranges)
         self.assertEqual(2, summary.active_count)
         self.assertEqual(1, summary.inactive_count)
         self.assertEqual(1, summary.return_cut_count)
@@ -105,6 +156,7 @@ class ShotManagerEdlTests(unittest.TestCase):
         ]
         rows[0].edl_order = 201
         rows[0].edl_is_active = True
+        rows[0].edl_frame_ranges = ((1051, 1094),)
         rows[1].edl_order = 202
         rows[1].edl_is_active = False
         manifest = {
@@ -119,6 +171,8 @@ class ShotManagerEdlTests(unittest.TestCase):
                     "order": 900,
                     "is_active": False,
                     "is_active_value": 0,
+                    "start_frame": 1001,
+                    "end_frame": 1100,
                     "level_path": "/Game/LevelA",
                 },
                 {
@@ -135,6 +189,9 @@ class ShotManagerEdlTests(unittest.TestCase):
 
         self.assertEqual("preserve me", updated["custom_metadata"])
         self.assertEqual("/Game/LevelA", updated["shots"][0]["level_path"])
+        self.assertEqual(1001, updated["shots"][0]["start_frame"])
+        self.assertEqual(1100, updated["shots"][0]["end_frame"])
+        self.assertNotIn("edl_frame_ranges", updated["shots"][0])
         self.assertEqual(201, updated["shots"][0]["order"])
         self.assertTrue(updated["shots"][0]["is_active"])
         self.assertEqual(1, updated["shots"][0]["is_active_value"])

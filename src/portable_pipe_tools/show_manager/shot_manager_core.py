@@ -31,12 +31,14 @@ EDL_EMPTY_DISPLAY = "—"
 
 COLUMN_TITLES = {
     "move": "Move",
+    "shot": "Shot",
     "order": "Current Order",
     "edl_order": "EDL Order",
     "is_active": "Current Active",
     "edl_is_active": "EDL Active",
+    "frame_range": "Frame Range",
+    "edl_frame_range": "EDL Frame Range",
     "sequence": "Sequence",
-    "shot": "Shot",
     "path": "Folder Path",
 }
 SHOT_NAME_RE = re.compile(r"^(?P<sequence>[A-Za-z0-9]{3})_(?P<section>\d{3})_(?P<shot>\d{4,})$")
@@ -75,6 +77,7 @@ class ShotRow:
     source: str = "folder"
     edl_order: int | None = None
     edl_is_active: bool | None = None
+    edl_frame_ranges: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,8 @@ class EdlShotOccurrence:
     edit_index: int
     timeline_start: int
     timeline_end: int
+    source_in: int | None
+    source_out: int | None
     sequence: str
     shot_name: str
     source_name: str
@@ -220,6 +225,28 @@ def _coerce_optional_int(value: object) -> int | None:
         return None
 
 
+def format_shot_frame_range(
+    start_frame: int | None,
+    end_frame: int | None,
+) -> str:
+    if start_frame is None and end_frame is None:
+        return EDL_EMPTY_DISPLAY
+    start_display = EDL_EMPTY_DISPLAY if start_frame is None else str(start_frame)
+    end_display = EDL_EMPTY_DISPLAY if end_frame is None else str(end_frame)
+    return f"{start_display} - {end_display}"
+
+
+def format_edl_frame_ranges(
+    frame_ranges: tuple[tuple[int, int], ...],
+) -> str:
+    if not frame_ranges:
+        return EDL_EMPTY_DISPLAY
+    return "; ".join(
+        format_shot_frame_range(start_frame, end_frame)
+        for start_frame, end_frame in frame_ranges
+    )
+
+
 def _xml_local_name(tag: str) -> str:
     return str(tag).rsplit("}", 1)[-1]
 
@@ -258,8 +285,13 @@ def _extract_edl_shot_name(candidates: list[str]) -> tuple[str, str, str] | None
 
 def _read_edl_track(
     track: ET.Element,
-) -> tuple[list[tuple[int, int, int, str, str, str]], list[str]]:
-    recognized: list[tuple[int, int, int, str, str, str]] = []
+) -> tuple[
+    list[tuple[int, int, int, int | None, int | None, str, str, str]],
+    list[str],
+]:
+    recognized: list[
+        tuple[int, int, int, int | None, int | None, str, str, str]
+    ] = []
     unrecognized: list[str] = []
 
     for clip_index, clip_item in enumerate(_xml_children(track, "clipitem")):
@@ -272,6 +304,9 @@ def _read_edl_track(
             timeline_end = int(_xml_text(clip_item, "end"))
         except (TypeError, ValueError):
             continue
+
+        source_in = _coerce_optional_int(_xml_text(clip_item, "in"))
+        source_out = _coerce_optional_int(_xml_text(clip_item, "out"))
 
         file_node = _xml_child(clip_item, "file")
         candidates = [
@@ -291,6 +326,8 @@ def _read_edl_track(
                 timeline_start,
                 timeline_end,
                 clip_index,
+                source_in,
+                source_out,
                 sequence_name,
                 shot_name,
                 source_name,
@@ -320,7 +357,15 @@ def parse_resolve_edl_xml(xml_path: str | Path) -> ResolveEdlImport:
         raise ValueError("The XML does not contain an editable sequence.")
 
     track_candidates: list[
-        tuple[int, int, str, list[tuple[int, int, int, str, str, str]], list[str]]
+        tuple[
+            int,
+            int,
+            str,
+            list[
+                tuple[int, int, int, int | None, int | None, str, str, str]
+            ],
+            list[str],
+        ]
     ] = []
     for sequence_index, sequence_node in enumerate(sequence_nodes):
         timeline_name = _xml_text(sequence_node, "name", f"Sequence {sequence_index + 1}")
@@ -365,6 +410,8 @@ def parse_resolve_edl_xml(xml_path: str | Path) -> ResolveEdlImport:
             edit_index=edit_index,
             timeline_start=timeline_start,
             timeline_end=timeline_end,
+            source_in=source_in,
+            source_out=source_out,
             sequence=sequence_name,
             shot_name=shot_name,
             source_name=source_name,
@@ -373,6 +420,8 @@ def parse_resolve_edl_xml(xml_path: str | Path) -> ResolveEdlImport:
             timeline_start,
             timeline_end,
             _clip_index,
+            source_in,
+            source_out,
             sequence_name,
             shot_name,
             source_name,
@@ -391,6 +440,7 @@ def clear_edl_comparison(shot_rows: list[ShotRow]) -> None:
     for shot_row in shot_rows:
         shot_row.edl_order = None
         shot_row.edl_is_active = None
+        shot_row.edl_frame_ranges = ()
 
 
 def apply_edl_sequence_comparison(
@@ -429,7 +479,11 @@ def apply_edl_sequence_comparison(
     ]
     ordered_edl_shot_names: list[str] = []
     seen_edl_shot_names: set[str] = set()
+    occurrences_by_shot_name: dict[str, list[EdlShotOccurrence]] = {}
     for occurrence in sequence_occurrences:
+        occurrences_by_shot_name.setdefault(occurrence.shot_name, []).append(
+            occurrence
+        )
         if occurrence.shot_name in seen_edl_shot_names:
             continue
         seen_edl_shot_names.add(occurrence.shot_name)
@@ -442,6 +496,19 @@ def apply_edl_sequence_comparison(
             continue
         shot_row.edl_is_active = True
         shot_row.edl_order = first_order + order_offset
+        edl_frame_ranges: list[tuple[int, int]] = []
+        if shot_row.start_frame is not None:
+            for occurrence in occurrences_by_shot_name.get(shot_name, []):
+                if occurrence.source_in is None or occurrence.source_out is None:
+                    continue
+                # Resolve XMEML source-out frames are exclusive. Manifest ranges
+                # are inclusive, so subtract one when displaying the used range.
+                edl_start_frame = shot_row.start_frame + occurrence.source_in
+                edl_end_frame = shot_row.start_frame + occurrence.source_out - 1
+                frame_range = (edl_start_frame, edl_end_frame)
+                if edl_end_frame >= edl_start_frame and frame_range not in edl_frame_ranges:
+                    edl_frame_ranges.append(frame_range)
+        shot_row.edl_frame_ranges = tuple(edl_frame_ranges)
 
     inactive_rows = sorted(
         (
@@ -1021,7 +1088,9 @@ class ShotManagerApp:
         self.shots_tree.column("is_active", width=110, minwidth=105, stretch=False, anchor="center")
         self.shots_tree.column("edl_is_active", width=95, minwidth=90, stretch=False, anchor="center")
         self.shots_tree.column("sequence", width=100, minwidth=80, stretch=False, anchor="center")
-        self.shots_tree.column("shot", width=160, minwidth=130, stretch=False)
+        self.shots_tree.column("shot", width=160, minwidth=130, stretch=False, anchor="center")
+        self.shots_tree.column("frame_range", width=125, minwidth=110, stretch=False, anchor="center")
+        self.shots_tree.column("edl_frame_range", width=235, minwidth=135, stretch=False, anchor="center")
         self.shots_tree.column("path", width=650, minwidth=280, stretch=True)
         self.shots_tree.bind("<Button-1>", self._on_shots_tree_click)
         self.shots_tree.bind("<Configure>", self._on_tree_configure, add="+")
@@ -1088,12 +1157,6 @@ class ShotManagerApp:
 
         actions_frame = ttk.Frame(outer)
         actions_frame.pack(fill="x", pady=(8, 0))
-        ttk.Button(actions_frame, text="Fix 0 Orders", command=self._fix_zero_orders).pack(side="left")
-        ttk.Button(
-            actions_frame,
-            text="Set Inactive Orders to 999",
-            command=self._set_inactive_orders_to_999,
-        ).pack(side="left", padx=(8, 0))
         ttk.Button(actions_frame, text="Gather Show MP4s", command=self._gather_show_mp4s).pack(side="right")
         ttk.Label(outer, textvariable=self.status_var, anchor="w").pack(fill="x", pady=(8, 0))
         self._update_edl_control_states()
@@ -1622,8 +1685,13 @@ class ShotManagerApp:
 
     def _move_shot_order(self, shot_row: ShotRow, direction: int) -> None:
         if any(row.order <= 0 for row in self.current_shot_rows):
-            messagebox.showwarning("Shot Manager", "Please run Fix 0 Orders before moving shots.")
-            self._set_status("Run Fix 0 Orders before moving shots so every shot has a valid order number.")
+            messagebox.showwarning(
+                "Shot Manager",
+                "Shots with order 0 cannot be moved. Update those order values first.",
+            )
+            self._set_status(
+                "Update order 0 values before moving shots so every shot has a valid order number."
+            )
             return
 
         ordered_rows = sorted(
@@ -1817,6 +1885,7 @@ class ShotManagerApp:
                 "end",
                 values=(
                     MOVE_DISPLAY,
+                    shot_row.shot_name,
                     shot_row.order,
                     (
                         f"{shot_row.edl_order:03d}"
@@ -1829,8 +1898,12 @@ class ShotManagerApp:
                         if shot_row.edl_is_active is not None
                         else EDL_EMPTY_DISPLAY
                     ),
+                    format_shot_frame_range(
+                        shot_row.start_frame,
+                        shot_row.end_frame,
+                    ),
+                    format_edl_frame_ranges(shot_row.edl_frame_ranges),
                     shot_row.sequence,
-                    shot_row.shot_name,
                     str(shot_row.shot_path),
                 ),
             )
@@ -1910,6 +1983,26 @@ class ShotManagerApp:
                 return (shot_row.sequence.lower(), shot_row.order, shot_row.section_number, shot_row.shot_number, shot_row.shot_name.lower())
             if self.shot_sort_column == "shot":
                 return (shot_row.shot_name.lower(), shot_row.sequence.lower(), shot_row.section_number, shot_row.shot_number)
+            if self.shot_sort_column == "frame_range":
+                return (
+                    shot_row.start_frame is None,
+                    shot_row.start_frame if shot_row.start_frame is not None else 0,
+                    shot_row.end_frame is None,
+                    shot_row.end_frame if shot_row.end_frame is not None else 0,
+                    shot_row.shot_name.lower(),
+                )
+            if self.shot_sort_column == "edl_frame_range":
+                first_edl_range = (
+                    shot_row.edl_frame_ranges[0]
+                    if shot_row.edl_frame_ranges
+                    else (0, 0)
+                )
+                return (
+                    not shot_row.edl_frame_ranges,
+                    first_edl_range[0],
+                    first_edl_range[1],
+                    shot_row.shot_name.lower(),
+                )
             if self.shot_sort_column == "path":
                 return (str(shot_row.shot_path).lower(),)
             return (shot_row.order, shot_row.sequence.lower())
