@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 import sys
 import time
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from portable_pipe_tools.render_farm.git_sync import (
     GIT_PULL_LOG_FILENAME,
@@ -26,6 +26,7 @@ from portable_pipe_tools.render_farm.queue import (
     finish_claimed_job,
     list_job_candidates,
     mark_job_rendering,
+    path_exists_with_retry,
     read_json_object,
     reconcile_completed_jobs,
     safe_name,
@@ -37,6 +38,10 @@ from portable_pipe_tools.render_farm.unreal_runner import (
     UnrealExecutionResult,
     execute_unreal_job,
     resolve_unreal_project,
+)
+from portable_pipe_tools.render_farm.workers import (
+    WorkerPaths,
+    clear_worker_stop_request,
 )
 
 
@@ -159,6 +164,7 @@ def run_once(
     render_timeout_seconds: float = DEFAULT_RENDER_TIMEOUT_SECONDS,
     unreal_runner: Callable[..., UnrealExecutionResult] | None = None,
     should_stop_before_claim: Callable[[], bool] | None = None,
+    should_cancel_render: Callable[[], bool] | None = None,
     job_callback: JobCallback | None = None,
     local_uproject: str | Path | None = None,
     git_sync: GitSyncCallback | None = None,
@@ -301,14 +307,17 @@ def run_once(
             return success, reason, None
 
         runner = unreal_runner or execute_unreal_job
+        runner_arguments: dict[str, Any] = {
+            "claimed_folder": claimed_job.folder,
+            "job": claimed_job.job,
+            "unreal_editor_cmd": unreal_editor_cmd,
+            "timeout_seconds": render_timeout_seconds,
+            "local_uproject": local_uproject,
+        }
+        if should_cancel_render is not None:
+            runner_arguments["should_cancel"] = should_cancel_render
         try:
-            execution_result = runner(
-                claimed_folder=claimed_job.folder,
-                job=claimed_job.job,
-                unreal_editor_cmd=unreal_editor_cmd,
-                timeout_seconds=render_timeout_seconds,
-                local_uproject=local_uproject,
-            )
+            execution_result = runner(**runner_arguments)
         except Exception as error:
             reason = (
                 "Real Unreal render could not run: "
@@ -426,6 +435,11 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.info("Queue folders ready: %s", paths.root)
         return 0
 
+    worker_paths = WorkerPaths.from_farm_root(args.farm_root, args.worker_name)
+
+    def stop_requested() -> bool:
+        return path_exists_with_retry(worker_paths.stop_file)
+
     try:
         result = run_once(
             farm_root=args.farm_root,
@@ -436,10 +450,19 @@ def main(argv: list[str] | None = None) -> int:
             unreal_editor_cmd=args.unreal_editor_cmd,
             local_uproject=args.local_uproject,
             render_timeout_seconds=args.render_timeout_seconds,
+            should_stop_before_claim=stop_requested,
+            should_cancel_render=stop_requested,
         )
     except Exception:
         LOGGER.exception("Worker stopped because of an unexpected queue error")
         return 2
+    finally:
+        try:
+            if stop_requested():
+                clear_worker_stop_request(args.farm_root, args.worker_name)
+                LOGGER.info("Consumed worker STOP marker: %s", worker_paths.stop_file)
+        except Exception:
+            LOGGER.exception("Could not consume the worker STOP marker")
 
     if result is None:
         return 0

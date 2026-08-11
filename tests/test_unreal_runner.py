@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 from portable_pipe_tools.render_farm.queue import JOB_FILENAME
 from portable_pipe_tools.render_farm.unreal_runner import (
@@ -11,6 +12,7 @@ from portable_pipe_tools.render_farm.unreal_runner import (
     HOST_EXECUTOR_CLASS,
     PYTHON_EXECUTOR_CLASS,
     _interpret_unreal_result,
+    _wait_for_unreal_process,
     build_unreal_command,
     resolve_unreal_project,
     resolve_unreal_editor_cmd,
@@ -139,6 +141,50 @@ class UnrealRunnerTests(unittest.TestCase):
             output_validation,
             result.terminal_result_details()["output_validation"],
         )
+
+    def test_stop_request_terminates_a_running_unreal_process(self) -> None:
+        process = Mock()
+        process.returncode = -15
+        process.wait.return_value = process.returncode
+
+        exit_code, stop_reason = _wait_for_unreal_process(
+            process,
+            timeout_seconds=60.0,
+            should_cancel=lambda: True,
+        )
+
+        self.assertEqual(-15, exit_code)
+        self.assertEqual("cancelled", stop_reason)
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=30)
+
+    def test_process_wait_returns_normally_without_a_stop_request(self) -> None:
+        process = Mock()
+        process.wait.return_value = 0
+
+        exit_code, stop_reason = _wait_for_unreal_process(
+            process,
+            timeout_seconds=60.0,
+            should_cancel=lambda: False,
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertIsNone(stop_reason)
+        process.terminate.assert_not_called()
+
+    def test_stop_check_error_does_not_abandon_the_unreal_process(self) -> None:
+        process = Mock()
+        process.wait.return_value = 0
+
+        exit_code, stop_reason = _wait_for_unreal_process(
+            process,
+            timeout_seconds=60.0,
+            should_cancel=Mock(side_effect=OSError("Dropbox unavailable")),
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertIsNone(stop_reason)
+        process.terminate.assert_not_called()
 
 
 if __name__ == "__main__":

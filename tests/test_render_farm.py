@@ -330,6 +330,41 @@ class RenderFarmPrototypeTests(unittest.TestCase):
         self.assertTrue(result_json["unreal_reported_success"])
         self.assertEqual(100, result_json["output_file_count"])
 
+    def test_cancelled_real_render_is_requeued_and_records_interruption(self) -> None:
+        create_test_job(self.farm_root)
+
+        def cancellation_check() -> bool:
+            return True
+
+        def cancelled_runner(**kwargs) -> UnrealExecutionResult:
+            self.assertIs(cancellation_check, kwargs["should_cancel"])
+            return UnrealExecutionResult(
+                success=False,
+                reason="Unreal render interrupted by worker STOP request.",
+                exit_code=-15,
+                cancelled=True,
+            )
+
+        result = run_once(
+            self.farm_root,
+            "RENDER-CANCELLED",
+            simulate_success=False,
+            minimum_stage_seconds=0.0,
+            render_with_unreal=True,
+            unreal_runner=cancelled_runner,
+            should_cancel_render=cancellation_check,
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("requeued", result.status)
+        self.assertEqual(self.paths.needs_rendering, result.final_folder.parent)
+        job = read_json_object(result.final_folder / JOB_FILENAME)
+        result_json = read_json_object(result.final_folder / RESULT_FILENAME)
+        self.assertEqual(["RENDER-CANCELLED"], job["blacklisted_workers"])
+        self.assertTrue(result_json["cancelled"])
+        self.assertIn("STOP request", result_json["reason"])
+
     def test_real_job_pulls_before_claim_and_records_latest_commit(self) -> None:
         queued_folder = create_test_job(self.farm_root)
         worker_uproject = self.farm_root / "worker" / "s3bishop.uproject"

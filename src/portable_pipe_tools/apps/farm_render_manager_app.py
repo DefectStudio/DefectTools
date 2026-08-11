@@ -1533,7 +1533,8 @@ class FarmRenderManagerApp:
             return
 
         active_job_note = (
-            "\n\nThe worker will finish its current job before stopping."
+            "\n\nThe worker will interrupt its current render, return the job "
+            "to the queue, and then stop."
             if worker.current_job_id or worker.status == "rendering"
             else "\n\nThe waiting worker will stop without claiming another job."
         )

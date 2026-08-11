@@ -406,6 +406,15 @@ class WorkerHeartbeat:
         with self._state_lock:
             self._stop_requested = True
 
+    def poll_remote_stop(self) -> bool:
+        if self.remote_stop_event.is_set():
+            return True
+        if not path_exists_with_retry(self.paths.stop_file):
+            return False
+        self.remote_stop_event.set()
+        self.request_stop()
+        return True
+
     def pop_errors(self) -> tuple[Exception, ...]:
         errors: list[Exception] = []
         while True:
@@ -430,9 +439,7 @@ class WorkerHeartbeat:
         try:
             while not self._shutdown_event.wait(self.heartbeat_interval_seconds):
                 try:
-                    if path_exists_with_retry(self.paths.stop_file):
-                        self.remote_stop_event.set()
-                        self.request_stop()
+                    self.poll_remote_stop()
                     self._publish_status()
                 except Exception as error:
                     LOGGER.warning("Worker heartbeat update failed: %s", error)

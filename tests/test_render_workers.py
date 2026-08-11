@@ -52,6 +52,10 @@ class RenderWorkersTests(unittest.TestCase):
             self.assertEqual(0, stop_file.stat().st_size)
             self.assertEqual("VENGEANCE_STOP.json", stop_file.name)
 
+            heartbeat = WorkerHeartbeat(farm_root, "VENGEANCE")
+            self.assertTrue(heartbeat.poll_remote_stop())
+            self.assertTrue(heartbeat.remote_stop_event.is_set())
+
     def test_heartbeat_publishes_activity_and_honors_stop_marker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             farm_root = Path(temporary_directory) / "show" / "renderFarm"

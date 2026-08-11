@@ -115,10 +115,12 @@ A successful worker moves it normally to `03_RenderComplete` with the accumulate
 blacklist retained for diagnostics. Invalid or unreadable `job.json` packages
 still move to `04_RenderFailed` so malformed jobs cannot circulate forever.
 
-**Stop Worker** is graceful. If no job has been claimed, the current queue check
-stops before claiming one. If a render is already claimed, that render finishes
-and reaches its terminal queue folder before the listener stops. It never kills
-Unreal in the middle of a render.
+**Stop Worker** is immediate for an active Unreal render. If no job has been
+claimed, the current queue check stops before claiming one. If a render is
+already claimed, the worker terminates Unreal, records the interruption as a
+failed attempt, returns the job to `01_NeedsRendering`, and then stops. The
+interrupted worker is blacklisted from that job, and any partial render output is
+preserved for manual inspection or cleanup.
 
 ## Worker heartbeat and remote STOP protocol
 
@@ -132,12 +134,13 @@ allowing a crashed or disconnected machine to remain visible without appearing
 online.
 
 `Workers\WORKERNAME_STOP.json` is an existence-only command and may be a
-completely empty, zero-byte file. The worker checks for it during every
-heartbeat. A waiting worker stops immediately; a worker with an active queue
-check or render finishes safely and stops before claiming another job. The
-status changes to `stopping_after_current_job` while draining. After a clean
-stop, the worker removes both its status and STOP files. A marker created while
-the worker is offline remains pending and prevents its next startup.
+completely empty, zero-byte file. A waiting worker checks for it during every
+heartbeat; an active Unreal render checks every half-second. A waiting worker
+stops before claiming another job, while a rendering worker interrupts Unreal,
+requeues the job as a failed attempt, and stops. The status changes to
+`stopping_after_current_job` while the interrupted attempt is finalized. After
+a clean stop, the worker removes both its status and STOP files. A marker created
+while the worker is offline remains pending and prevents its next startup.
 
 Farm Render Manager's **Workers** toolbar button toggles the left panel between
 Jobs and Workers. The Workers view shows project, status, current job, last seen,
@@ -207,7 +210,10 @@ tools\render_worker.bat "F:\Defect Dropbox\defect\s3bishop\renderFarm" --worker-
 The worker claims at most one job. It launches Unreal in `-game`, unattended,
 offscreen mode, creates an MRQ job from the published snapshot, assigns the Movie
 Render Graph, reapplies the exact serialized overrides, and waits for an explicit
-Unreal completion result. The default process timeout is 24 hours.
+Unreal completion result. The default process timeout is 24 hours. The
+command-line worker also watches its `Workers\WORKERNAME_STOP.json` marker while
+Unreal runs, interrupts the process when requested, and consumes the marker
+before exiting.
 
 The claimed/final job folder records:
 

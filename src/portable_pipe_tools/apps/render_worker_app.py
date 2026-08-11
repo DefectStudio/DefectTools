@@ -767,7 +767,8 @@ class RenderWorkerApp:
             "The worker will continuously claim and render real Unreal jobs "
             f"until stopped.\n\nWhen the queue is empty it will check every "
             f"{configuration.poll_interval_seconds} seconds. Stop Worker will "
-            "finish an already-claimed render before stopping.\n\nBefore every job, "
+            "interrupt an already-claimed render, requeue it, and then stop.\n\n"
+            "Before every job, "
             "the worker requires a clean Git checkout and pulls the latest "
             "upstream branch using git pull --ff-only.\n\n"
             f"Local Unreal project:\n{local_project_message}\n\n"
@@ -864,14 +865,13 @@ class RenderWorkerApp:
         self._refresh_control_states()
         if action is ListenerAction.FINISH_CURRENT:
             self.status_var.set(
-                "Remote stop requested — finishing the current job or queue check"
-                if remotely
-                else "Stop requested — finishing the current job or queue check"
+                ("Remote stop requested" if remotely else "Stop requested")
+                + " — interrupting the render or finishing the queue check"
             )
             self._log(
                 ("Remote STOP marker detected. " if remotely else "Stop requested. ")
-                + "No new job will be claimed; an already-claimed render will "
-                "finish first."
+                + "No new job will be claimed; an active Unreal render will be "
+                "interrupted and requeued."
             )
             return
 
@@ -894,6 +894,13 @@ class RenderWorkerApp:
                 self._finish_listener_stopped()
             return
 
+        heartbeat = self._worker_heartbeat
+
+        def stop_requested() -> bool:
+            return self._listener_state.stop_requested or (
+                heartbeat is not None and heartbeat.poll_remote_stop()
+            )
+
         started = self._run_background(
             label="Automatic worker job check",
             work=lambda: run_once(
@@ -905,9 +912,8 @@ class RenderWorkerApp:
                 render_with_unreal=True,
                 unreal_editor_cmd=configuration.unreal_editor_cmd,
                 local_uproject=configuration.local_uproject,
-                should_stop_before_claim=(
-                    lambda: self._listener_state.stop_requested
-                ),
+                should_stop_before_claim=stop_requested,
+                should_cancel_render=stop_requested,
                 job_callback=self._job_queue.put,
             ),
             on_success=self._listener_job_check_finished,
@@ -1458,12 +1464,13 @@ class RenderWorkerApp:
             self._refresh_control_states()
             if action is ListenerAction.FINISH_CURRENT:
                 self.status_var.set(
-                    "Stop requested — finishing the current job or queue check"
+                    "Stop requested — interrupting the render or finishing the "
+                    "queue check"
                 )
                 messagebox.showwarning(
                     "Render Worker Stopping",
                     "Stop has been requested. The window will remain open until "
-                    "the current job or queue check finishes.",
+                    "the active render is interrupted or the queue check finishes.",
                     parent=self.root,
                 )
                 return

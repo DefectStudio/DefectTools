@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import json
 import logging
@@ -9,6 +10,7 @@ import re
 import shutil
 import subprocess
 from threading import Thread
+import time
 from typing import Any
 
 from portable_pipe_tools.render_farm.git_sync import GIT_PULL_LOG_FILENAME
@@ -32,6 +34,7 @@ UNREAL_STDOUT_FILENAME = "unreal_stdout.log"
 RENDER_COMMAND_FILENAME = "render_command.txt"
 
 DEFAULT_RENDER_TIMEOUT_SECONDS = 24.0 * 60.0 * 60.0
+UNREAL_PROCESS_POLL_INTERVAL_SECONDS = 0.5
 PYTHON_EXECUTOR_CLASS = "/Engine/PythonTypes.DefectRenderFarmExecutor"
 HOST_EXECUTOR_CLASS = (
     "/Script/MovieRenderPipelineCore.MoviePipelinePythonHostExecutor"
@@ -50,12 +53,14 @@ class UnrealExecutionResult:
     reason: str
     exit_code: int | None
     unreal_result: dict[str, Any] | None = None
+    cancelled: bool = False
 
     def terminal_result_details(self) -> dict[str, Any]:
         unreal_result = self.unreal_result or {}
         return {
             "simulated": False,
             "exit_code": self.exit_code,
+            "cancelled": self.cancelled,
             "unreal_result_file": UNREAL_RESULT_FILENAME,
             "unreal_reported_success": unreal_result.get("success"),
             "unreal_result_stage": unreal_result.get("stage"),
@@ -302,13 +307,51 @@ def _pump_unreal_stdout(process: subprocess.Popen[str], log_path: Path) -> None:
     )
 
 
-def _stop_timed_out_process(process: subprocess.Popen[str]) -> None:
+def _stop_unreal_process(process: subprocess.Popen[str]) -> None:
     try:
         process.terminate()
         process.wait(timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         process.kill()
         process.wait(timeout=30)
+
+
+def _wait_for_unreal_process(
+    process: subprocess.Popen[str],
+    timeout_seconds: float,
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[int | None, str | None]:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        cancel_requested = False
+        if should_cancel is not None:
+            try:
+                cancel_requested = should_cancel()
+            except Exception as error:
+                LOGGER.warning(
+                    "Could not check for a worker STOP request; Unreal will "
+                    "continue running: %s",
+                    error,
+                )
+        if cancel_requested:
+            _stop_unreal_process(process)
+            return process.returncode, "cancelled"
+
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            _stop_unreal_process(process)
+            return process.returncode, "timed_out"
+
+        try:
+            exit_code = process.wait(
+                timeout=min(
+                    UNREAL_PROCESS_POLL_INTERVAL_SECONDS,
+                    remaining_seconds,
+                )
+            )
+            return exit_code, None
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _read_unreal_result(path: Path) -> dict[str, Any] | None:
@@ -365,6 +408,7 @@ def execute_unreal_job(
     unreal_editor_cmd: str | Path | None = None,
     timeout_seconds: float = DEFAULT_RENDER_TIMEOUT_SECONDS,
     local_uproject: str | Path | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> UnrealExecutionResult:
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be greater than zero")
@@ -472,22 +516,36 @@ def execute_unreal_job(
     )
     output_thread.start()
 
-    try:
-        exit_code = process.wait(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
+    exit_code, stop_reason = _wait_for_unreal_process(
+        process,
+        timeout_seconds,
+        should_cancel,
+    )
+    if stop_reason == "cancelled":
+        LOGGER.warning("Worker STOP requested; Unreal render process interrupted.")
+        output_thread.join(timeout=30)
+        return UnrealExecutionResult(
+            False,
+            "Unreal render interrupted by worker STOP request.",
+            exit_code,
+            _read_unreal_result(unreal_result_path),
+            cancelled=True,
+        )
+
+    if stop_reason == "timed_out":
         LOGGER.error(
             "Unreal render exceeded timeout of %.1f seconds; stopping process.",
             timeout_seconds,
         )
-        _stop_timed_out_process(process)
         output_thread.join(timeout=30)
         return UnrealExecutionResult(
             False,
             f"Unreal render exceeded timeout of {timeout_seconds:.1f} seconds.",
-            process.returncode,
+            exit_code,
             _read_unreal_result(unreal_result_path),
         )
 
+    assert exit_code is not None
     output_thread.join(timeout=30)
     if output_thread.is_alive():
         LOGGER.warning("Unreal stdout capture thread did not finish promptly.")
