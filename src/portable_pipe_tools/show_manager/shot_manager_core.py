@@ -28,6 +28,7 @@ SHOT_TREE_ROW_HEIGHT = 30
 RENDER_CONTEXT_SEGMENTS = ("lite", "unreal", "_output")
 HERO_MP4_SUFFIX = "_heroMP4s"
 EDL_EMPTY_DISPLAY = "—"
+EDL_FRAME_HANDLE_COUNT = 10
 
 COLUMN_TITLES = {
     "move": "Move",
@@ -38,6 +39,7 @@ COLUMN_TITLES = {
     "edl_is_active": "EDL Active",
     "frame_range": "Frame Range",
     "edl_frame_range": "EDL Frame Range",
+    "edl_proposed_range": "EDL Proposed Range",
     "sequence": "Sequence",
     "path": "Folder Path",
 }
@@ -78,6 +80,7 @@ class ShotRow:
     edl_order: int | None = None
     edl_is_active: bool | None = None
     edl_frame_ranges: tuple[tuple[int, int], ...] = ()
+    edl_proposed_range: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -245,6 +248,34 @@ def format_edl_frame_ranges(
         format_shot_frame_range(start_frame, end_frame)
         for start_frame, end_frame in frame_ranges
     )
+
+
+def calculate_edl_proposed_range(
+    edl_frame_ranges: tuple[tuple[int, int], ...],
+    original_start_frame: int | None,
+    original_end_frame: int | None,
+    handle_frame_count: int = EDL_FRAME_HANDLE_COUNT,
+) -> tuple[int, int] | None:
+    if (
+        not edl_frame_ranges
+        or original_start_frame is None
+        or original_end_frame is None
+    ):
+        return None
+
+    edl_start_frame = min(start_frame for start_frame, _ in edl_frame_ranges)
+    edl_end_frame = max(end_frame for _, end_frame in edl_frame_ranges)
+    proposed_start_frame = max(
+        original_start_frame,
+        edl_start_frame - handle_frame_count,
+    )
+    proposed_end_frame = min(
+        original_end_frame,
+        edl_end_frame + handle_frame_count,
+    )
+    if proposed_start_frame > proposed_end_frame:
+        return None
+    return proposed_start_frame, proposed_end_frame
 
 
 def _xml_local_name(tag: str) -> str:
@@ -441,6 +472,7 @@ def clear_edl_comparison(shot_rows: list[ShotRow]) -> None:
         shot_row.edl_order = None
         shot_row.edl_is_active = None
         shot_row.edl_frame_ranges = ()
+        shot_row.edl_proposed_range = None
 
 
 def apply_edl_sequence_comparison(
@@ -509,6 +541,11 @@ def apply_edl_sequence_comparison(
                 if edl_end_frame >= edl_start_frame and frame_range not in edl_frame_ranges:
                     edl_frame_ranges.append(frame_range)
         shot_row.edl_frame_ranges = tuple(edl_frame_ranges)
+        shot_row.edl_proposed_range = calculate_edl_proposed_range(
+            shot_row.edl_frame_ranges,
+            shot_row.start_frame,
+            shot_row.end_frame,
+        )
 
     inactive_rows = sorted(
         (
@@ -744,8 +781,12 @@ def build_updated_sequence_manifest(
     manifest_data: dict,
     shot_rows: list[ShotRow],
     expected_sequence_name: str,
+    *,
+    update_order: bool = True,
+    update_active: bool = True,
+    update_frame_range: bool = True,
 ) -> dict:
-    """Return a manifest copy containing only the reviewed EDL proposal changes."""
+    """Return a manifest copy containing only the selected EDL proposal changes."""
     sequence_name = str(expected_sequence_name or "").strip().upper()
     manifest_sequence_name = str(
         manifest_data.get("sequence_name") or sequence_name
@@ -762,15 +803,21 @@ def build_updated_sequence_manifest(
     ]
     if not sequence_rows:
         raise ValueError(f"No shot rows are loaded for sequence {sequence_name}.")
-    if any(
-        shot_row.edl_order is None or shot_row.edl_is_active is None
+    if update_order and any(
+        shot_row.edl_order is None
         for shot_row in sequence_rows
     ):
-        raise ValueError("Import and review a Resolve EDL before exporting JSON.")
+        raise ValueError("Import and review Resolve EDL order values before exporting JSON.")
+    if update_active and any(
+        shot_row.edl_is_active is None
+        for shot_row in sequence_rows
+    ):
+        raise ValueError("Import and review Resolve EDL active values before exporting JSON.")
 
-    proposed_orders = [int(shot_row.edl_order) for shot_row in sequence_rows]
-    if len(proposed_orders) != len(set(proposed_orders)):
-        raise ValueError("Proposed EDL order numbers must be unique.")
+    if update_order:
+        proposed_orders = [int(shot_row.edl_order) for shot_row in sequence_rows]
+        if len(proposed_orders) != len(set(proposed_orders)):
+            raise ValueError("Proposed EDL order numbers must be unique.")
 
     updated_manifest = deepcopy(manifest_data)
     shots = updated_manifest.get("shots")
@@ -789,8 +836,13 @@ def build_updated_sequence_manifest(
         if shot_name in matched_shot_names:
             raise ValueError(f"Manifest contains duplicate shot row: {shot_name}")
         matched_shot_names.add(shot_name)
-        shot_data["order"] = int(shot_row.edl_order)
-        _set_shot_active_fields(shot_data, bool(shot_row.edl_is_active))
+        if update_order:
+            shot_data["order"] = int(shot_row.edl_order)
+        if update_active:
+            _set_shot_active_fields(shot_data, bool(shot_row.edl_is_active))
+        if update_frame_range and shot_row.edl_proposed_range is not None:
+            shot_data["start_frame"] = shot_row.edl_proposed_range[0]
+            shot_data["end_frame"] = shot_row.edl_proposed_range[1]
 
     missing_manifest_rows = sorted(set(rows_by_name) - matched_shot_names)
     if missing_manifest_rows:
@@ -798,18 +850,19 @@ def build_updated_sequence_manifest(
             f"Could not find loaded shot rows in the manifest: {missing_manifest_rows}"
         )
 
-    active_count = sum(
-        1
-        for shot_data in shots
-        if isinstance(shot_data, dict)
-        and _coerce_bool(
-            shot_data.get("is_active", shot_data.get("is_active_value")),
-            default=False,
+    if update_active:
+        active_count = sum(
+            1
+            for shot_data in shots
+            if isinstance(shot_data, dict)
+            and _coerce_bool(
+                shot_data.get("is_active", shot_data.get("is_active_value")),
+                default=False,
+            )
         )
-    )
-    updated_manifest["shot_count"] = len(shots)
-    updated_manifest["active_shot_count"] = active_count
-    updated_manifest["inactive_shot_count"] = len(shots) - active_count
+        updated_manifest["shot_count"] = len(shots)
+        updated_manifest["active_shot_count"] = active_count
+        updated_manifest["inactive_shot_count"] = len(shots) - active_count
     return updated_manifest
 
 
@@ -847,6 +900,10 @@ def export_edl_updates_to_sequence_manifest(
     manifest_path: str | Path,
     shot_rows: list[ShotRow],
     sequence_name: str,
+    *,
+    update_order: bool = True,
+    update_active: bool = True,
+    update_frame_range: bool = True,
 ) -> SequenceManifestExportResult:
     """Write a stable *_updated.json without modifying the Unreal export."""
     resolved_manifest_path = _as_path(manifest_path)
@@ -860,6 +917,9 @@ def export_edl_updates_to_sequence_manifest(
         manifest_data,
         shot_rows,
         sequence_name,
+        update_order=update_order,
+        update_active=update_active,
+        update_frame_range=update_frame_range,
     )
     output_path = get_updated_sequence_manifest_path(resolved_manifest_path)
     previous_output_backup_path: Path | None = None
@@ -1032,6 +1092,9 @@ class ShotManagerApp:
         self.sequence_select_var = tk.StringVar(value=ALL_SEQUENCES_LABEL)
         self.first_shot_number_var = tk.StringVar(value="001")
         self.edl_source_var = tk.StringVar(value="No Resolve XML loaded.")
+        self.update_shot_order_var = tk.BooleanVar(value=True)
+        self.update_shot_active_var = tk.BooleanVar(value=True)
+        self.update_frame_range_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="Choose a Dropbox folder to begin.")
         self.saved_show_name = ""
         self.saved_sequence_name = ""
@@ -1091,6 +1154,7 @@ class ShotManagerApp:
         self.shots_tree.column("shot", width=160, minwidth=130, stretch=False, anchor="center")
         self.shots_tree.column("frame_range", width=125, minwidth=110, stretch=False, anchor="center")
         self.shots_tree.column("edl_frame_range", width=235, minwidth=135, stretch=False, anchor="center")
+        self.shots_tree.column("edl_proposed_range", width=155, minwidth=135, stretch=False, anchor="center")
         self.shots_tree.column("path", width=650, minwidth=280, stretch=True)
         self.shots_tree.bind("<Button-1>", self._on_shots_tree_click)
         self.shots_tree.bind("<Configure>", self._on_tree_configure, add="+")
@@ -1103,6 +1167,24 @@ class ShotManagerApp:
         x_scroll = ttk.Scrollbar(listing_frame, orient="horizontal", command=self._on_tree_x_scroll)
         x_scroll.grid(row=1, column=0, sticky="ew")
         self.shots_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+
+        export_options_frame = ttk.Frame(outer)
+        export_options_frame.pack(fill="x", pady=(8, 0))
+        ttk.Checkbutton(
+            export_options_frame,
+            text="Update Shot Order",
+            variable=self.update_shot_order_var,
+        ).pack(side="left")
+        ttk.Checkbutton(
+            export_options_frame,
+            text="Update Shot Active",
+            variable=self.update_shot_active_var,
+        ).pack(side="left", padx=(18, 0))
+        ttk.Checkbutton(
+            export_options_frame,
+            text="Update Frame Range",
+            variable=self.update_frame_range_var,
+        ).pack(side="left", padx=(18, 0))
 
         edl_frame = ttk.LabelFrame(
             outer,
@@ -1373,6 +1455,9 @@ class ShotManagerApp:
         manifest_path = next(iter(manifest_paths))
         assert manifest_path is not None
         output_path = get_updated_sequence_manifest_path(manifest_path)
+        update_order = bool(self.update_shot_order_var.get())
+        update_active = bool(self.update_shot_active_var.get())
+        update_frame_range = bool(self.update_frame_range_var.get())
 
         warning_text = ""
         if self.edl_import.unrecognized_clip_names:
@@ -1381,14 +1466,27 @@ class ShotManagerApp:
                 f"{len(self.edl_import.unrecognized_clip_names)} unrecognized "
                 "enabled clip(s)."
             )
+        order_export_text = (
+            f"Use EDL order {summary.first_order:03d}–{summary.last_order:03d}"
+            if update_order
+            else "Keep original JSON"
+        )
+        active_export_text = (
+            "Use EDL active status" if update_active else "Keep original JSON"
+        )
+        frame_export_text = (
+            "Use EDL Proposed Range"
+            if update_frame_range
+            else "Keep original JSON"
+        )
         confirmed = messagebox.askyesno(
             "Export Sequence JSON",
             f"Write the reviewed EDL values here?\n\n{output_path}\n\n"
             f"Source manifest (will not be changed):\n{manifest_path}\n\n"
             f"Sequence: {summary.sequence}\n"
-            f"Active shots: {summary.active_count}\n"
-            f"Inactive shots: {summary.inactive_count}\n"
-            f"Order range: {summary.first_order:03d}–{summary.last_order:03d}"
+            f"Shot Order: {order_export_text}\n"
+            f"Shot Active: {active_export_text}\n"
+            f"Frame Range: {frame_export_text}"
             f"{warning_text}\n\n"
             "If the updated JSON already exists, its previous version will be backed up.",
         )
@@ -1401,6 +1499,9 @@ class ShotManagerApp:
                 manifest_path,
                 self.current_shot_rows,
                 summary.sequence,
+                update_order=update_order,
+                update_active=update_active,
+                update_frame_range=update_frame_range,
             )
         except Exception as error:
             self._set_status(f"Error exporting sequence JSON: {error}")
@@ -1408,9 +1509,9 @@ class ShotManagerApp:
             return
 
         for shot_row in self.current_shot_rows:
-            if shot_row.edl_order is not None:
+            if update_order and shot_row.edl_order is not None:
                 shot_row.order = shot_row.edl_order
-            if shot_row.edl_is_active is not None:
+            if update_active and shot_row.edl_is_active is not None:
                 shot_row.is_active = shot_row.edl_is_active
         self._render_shot_rows()
         backup_status = ""
@@ -1903,6 +2004,11 @@ class ShotManagerApp:
                         shot_row.end_frame,
                     ),
                     format_edl_frame_ranges(shot_row.edl_frame_ranges),
+                    (
+                        format_shot_frame_range(*shot_row.edl_proposed_range)
+                        if shot_row.edl_proposed_range is not None
+                        else EDL_EMPTY_DISPLAY
+                    ),
                     shot_row.sequence,
                     str(shot_row.shot_path),
                 ),
@@ -2001,6 +2107,14 @@ class ShotManagerApp:
                     not shot_row.edl_frame_ranges,
                     first_edl_range[0],
                     first_edl_range[1],
+                    shot_row.shot_name.lower(),
+                )
+            if self.shot_sort_column == "edl_proposed_range":
+                proposed_range = shot_row.edl_proposed_range or (0, 0)
+                return (
+                    shot_row.edl_proposed_range is None,
+                    proposed_range[0],
+                    proposed_range[1],
                     shot_row.shot_name.lower(),
                 )
             if self.shot_sort_column == "path":

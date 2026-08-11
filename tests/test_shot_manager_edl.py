@@ -11,6 +11,7 @@ from portable_pipe_tools.show_manager.shot_manager_core import (
     ShotRow,
     apply_edl_sequence_comparison,
     build_updated_sequence_manifest,
+    calculate_edl_proposed_range,
     export_edl_updates_to_sequence_manifest,
     format_edl_frame_ranges,
     format_shot_frame_range,
@@ -44,10 +45,18 @@ class ShotManagerEdlTests(unittest.TestCase):
         )
         self.assertEqual(
             column_keys.index("edl_frame_range") + 1,
+            column_keys.index("edl_proposed_range"),
+        )
+        self.assertEqual(
+            column_keys.index("edl_proposed_range") + 1,
             column_keys.index("sequence"),
         )
         self.assertEqual("Frame Range", COLUMN_TITLES["frame_range"])
         self.assertEqual("EDL Frame Range", COLUMN_TITLES["edl_frame_range"])
+        self.assertEqual(
+            "EDL Proposed Range",
+            COLUMN_TITLES["edl_proposed_range"],
+        )
         self.assertEqual("1001 - 1100", format_shot_frame_range(1001, 1100))
         self.assertEqual(
             f"1001 - {EDL_EMPTY_DISPLAY}",
@@ -62,6 +71,19 @@ class ShotManagerEdlTests(unittest.TestCase):
             format_edl_frame_ranges(((1051, 1094), (1101, 1110))),
         )
         self.assertEqual(EDL_EMPTY_DISPLAY, format_edl_frame_ranges(()))
+        self.assertEqual(
+            (1001, 1110),
+            calculate_edl_proposed_range(
+                ((1006, 1050), (1080, 1100)),
+                1001,
+                1200,
+            ),
+        )
+        self.assertEqual(
+            (1001, 1050),
+            calculate_edl_proposed_range(((1002, 1049),), 1001, 1050),
+        )
+        self.assertIsNone(calculate_edl_proposed_range((), 1001, 1100))
 
     def test_parse_resolve_xml_uses_timeline_order_and_ignores_return_deduping(self) -> None:
         xml_text = """<?xml version="1.0" encoding="UTF-8"?>
@@ -126,7 +148,9 @@ class ShotManagerEdlTests(unittest.TestCase):
             _shot_row("JNG_000_0150", 910, True),
         ]
         rows[0].start_frame = 1001
+        rows[0].end_frame = 1050
         rows[1].start_frame = 1101
+        rows[1].end_frame = 1150
         summary = apply_edl_sequence_comparison(rows, edl_import, "JNG", 201)
 
         rows_by_name = {row.shot_name: row for row in rows}
@@ -145,6 +169,15 @@ class ShotManagerEdlTests(unittest.TestCase):
             rows_by_name["JNG_000_0100"].edl_frame_ranges,
         )
         self.assertEqual((), rows_by_name["JNG_000_0150"].edl_frame_ranges)
+        self.assertEqual(
+            (1001, 1025),
+            rows_by_name["JNG_000_0050"].edl_proposed_range,
+        )
+        self.assertEqual(
+            (1101, 1150),
+            rows_by_name["JNG_000_0100"].edl_proposed_range,
+        )
+        self.assertIsNone(rows_by_name["JNG_000_0150"].edl_proposed_range)
         self.assertEqual(2, summary.active_count)
         self.assertEqual(1, summary.inactive_count)
         self.assertEqual(1, summary.return_cut_count)
@@ -157,6 +190,7 @@ class ShotManagerEdlTests(unittest.TestCase):
         rows[0].edl_order = 201
         rows[0].edl_is_active = True
         rows[0].edl_frame_ranges = ((1051, 1094),)
+        rows[0].edl_proposed_range = (1041, 1100)
         rows[1].edl_order = 202
         rows[1].edl_is_active = False
         manifest = {
@@ -189,9 +223,10 @@ class ShotManagerEdlTests(unittest.TestCase):
 
         self.assertEqual("preserve me", updated["custom_metadata"])
         self.assertEqual("/Game/LevelA", updated["shots"][0]["level_path"])
-        self.assertEqual(1001, updated["shots"][0]["start_frame"])
+        self.assertEqual(1041, updated["shots"][0]["start_frame"])
         self.assertEqual(1100, updated["shots"][0]["end_frame"])
         self.assertNotIn("edl_frame_ranges", updated["shots"][0])
+        self.assertNotIn("edl_proposed_range", updated["shots"][0])
         self.assertEqual(201, updated["shots"][0]["order"])
         self.assertTrue(updated["shots"][0]["is_active"])
         self.assertEqual(1, updated["shots"][0]["is_active_value"])
@@ -201,6 +236,95 @@ class ShotManagerEdlTests(unittest.TestCase):
         self.assertEqual(1, updated["active_shot_count"])
         self.assertEqual(1, updated["inactive_shot_count"])
         self.assertEqual(900, manifest["shots"][0]["order"])
+
+    def test_manifest_update_options_independently_preserve_original_fields(self) -> None:
+        rows = [
+            _shot_row("JNG_000_0050", 900, False),
+            _shot_row("JNG_000_0100", 905, True),
+        ]
+        rows[0].edl_order = 201
+        rows[0].edl_is_active = True
+        rows[0].edl_proposed_range = (1041, 1100)
+        rows[1].edl_order = 202
+        rows[1].edl_is_active = False
+        rows[1].edl_proposed_range = (1110, 1180)
+        manifest = {
+            "sequence_name": "JNG",
+            "shot_count": 2,
+            "active_shot_count": 1,
+            "inactive_shot_count": 1,
+            "shots": [
+                {
+                    "shot_name": "JNG_000_0050",
+                    "order": 900,
+                    "is_active": False,
+                    "is_active_value": 0,
+                    "start_frame": 1001,
+                    "end_frame": 1150,
+                },
+                {
+                    "shot_name": "JNG_000_0100",
+                    "order": 905,
+                    "is_active": True,
+                    "is_active_value": 1,
+                    "start_frame": 1080,
+                    "end_frame": 1200,
+                },
+            ],
+        }
+
+        unchanged = build_updated_sequence_manifest(
+            manifest,
+            rows,
+            "JNG",
+            update_order=False,
+            update_active=False,
+            update_frame_range=False,
+        )
+        self.assertEqual(manifest, unchanged)
+
+        order_only = build_updated_sequence_manifest(
+            manifest,
+            rows,
+            "JNG",
+            update_order=True,
+            update_active=False,
+            update_frame_range=False,
+        )
+        self.assertEqual([201, 202], [shot["order"] for shot in order_only["shots"]])
+        self.assertFalse(order_only["shots"][0]["is_active"])
+        self.assertEqual(1001, order_only["shots"][0]["start_frame"])
+        self.assertEqual(1, order_only["active_shot_count"])
+
+        active_only = build_updated_sequence_manifest(
+            manifest,
+            rows,
+            "JNG",
+            update_order=False,
+            update_active=True,
+            update_frame_range=False,
+        )
+        self.assertEqual([900, 905], [shot["order"] for shot in active_only["shots"]])
+        self.assertTrue(active_only["shots"][0]["is_active"])
+        self.assertFalse(active_only["shots"][1]["is_active"])
+        self.assertEqual(1, active_only["active_shot_count"])
+        self.assertEqual(1001, active_only["shots"][0]["start_frame"])
+
+        frame_only = build_updated_sequence_manifest(
+            manifest,
+            rows,
+            "JNG",
+            update_order=False,
+            update_active=False,
+            update_frame_range=True,
+        )
+        self.assertEqual([900, 905], [shot["order"] for shot in frame_only["shots"]])
+        self.assertFalse(frame_only["shots"][0]["is_active"])
+        self.assertEqual((1041, 1100), (
+            frame_only["shots"][0]["start_frame"],
+            frame_only["shots"][0]["end_frame"],
+        ))
+        self.assertEqual(1, frame_only["active_shot_count"])
 
     def test_export_writes_stable_updated_file_and_preserves_source(self) -> None:
         rows = [_shot_row("JNG_000_0050", 900, False)]
