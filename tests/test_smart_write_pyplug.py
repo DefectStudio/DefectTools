@@ -4,6 +4,8 @@ import runpy
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PLUGIN_FILE = Path(__file__).resolve().parents[1] / "natron_plugins" / "SmartWrite.py"
 
@@ -95,7 +97,11 @@ class FakeNode:
         self.destroyed = False
         self.inputs = {}
         self.params = {}
-        if plugin_id == "fr.inria.built-in.Write":
+        if plugin_id in (
+            "fr.inria.built-in.Write",
+            "fr.inria.openfx.WriteOIIO",
+            "fr.inria.openfx.WriteFFmpeg",
+        ):
             common_param_names = (
                 "filename",
                 "disableNode",
@@ -134,11 +140,21 @@ class FakeNode:
                 "HapFormat",
             )
             param_names = common_param_names + (
-                format_param_names if include_format_params else ()
+                format_param_names
+                if include_format_params or plugin_id != "fr.inria.built-in.Write"
+                else ()
             )
             self.params = {
                 name: FakeParam(name, name) for name in param_names
             }
+            if plugin_id == "fr.inria.openfx.WriteOIIO":
+                self.params["compression"].setOptions(["Zip", "Piz", "DWAA"])
+                self.params["compression"].set(0)
+                self.params["bitDepth"].setOptions(["16f", "32f"])
+                self.params["bitDepth"].set(0)
+            if plugin_id == "fr.inria.openfx.WriteFFmpeg":
+                self.params["codec"].setOptions(["prores_ksap4h", "libx264"])
+                self.params["codec"].set(0)
 
     def setScriptName(self, name: str) -> None:
         self.script_name = name
@@ -155,6 +171,9 @@ class FakeNode:
 
     def getInput(self, index: int):
         return self.inputs.get(index)
+
+    def getMaxInputCount(self) -> int:
+        return max(self.inputs, default=-1) + 1
 
     def getParam(self, name: str):
         return self.params.get(name)
@@ -181,11 +200,25 @@ class FakeGroup:
         self.pages_order = []
         self.refreshed = False
         self.editable = True
+        self.inputs = {}
 
     def createPageParam(self, name: str, label: str):
         page = FakePage(name, label)
         self.params[name] = page
         return page
+
+    def connectInput(self, index: int, node) -> bool:
+        self.inputs[index] = node
+        return True
+
+    def getScriptName(self) -> str:
+        return "SmartWrite1"
+
+    def getInput(self, index: int):
+        return self.inputs.get(index)
+
+    def getMaxInputCount(self) -> int:
+        return max(self.inputs, default=-1) + 1
 
     def createBooleanParam(self, name: str, label: str):
         param = FakeParam(name, label)
@@ -232,7 +265,11 @@ class FakeGroup:
 
     def getNode(self, name: str):
         return next(
-            (node for node in self.nodes if node.script_name == name),
+            (
+                node
+                for node in self.nodes
+                if getattr(node, "script_name", None) == name
+            ),
             None,
         )
 
@@ -363,10 +400,10 @@ def test_smart_write_metadata_and_initial_scaffold() -> None:
 
     assert [node.plugin_id for node in app.nodes] == [
         "fr.inria.built-in.Input",
-        "fr.inria.built-in.Write",
-        "fr.inria.built-in.Write",
-        "fr.inria.built-in.Write",
-        "fr.inria.built-in.Write",
+        "fr.inria.openfx.WriteOIIO",
+        "fr.inria.openfx.WriteFFmpeg",
+        "fr.inria.openfx.WriteFFmpeg",
+        "fr.inria.openfx.WriteOIIO",
         "fr.inria.built-in.Output",
     ]
     input_node, *writers, output = app.nodes
@@ -428,11 +465,214 @@ def test_render_buttons_submit_enabled_writers_over_project_range(
     assert [task[0].script_name for task in app.render_calls[1]] == ["MOVWrite"]
     assert app.render_calls[1][0][1:] == (1001, 1040, 1)
 
-    for checkbox_name in ("exrOutput", "mp4Output", "movOutput", "heroOutput"):
-        checkbox = group.getParam(checkbox_name)
-        checkbox.set(False)
-        plugin["onParamChanged"](checkbox, group, group, app, True)
-    assert group.getParam("renderAll").enabled is False
+
+def test_render_buttons_prefer_upstream_reader_range_over_stale_project_range(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    project_directory = (
+        tmp_path
+        / "defect"
+        / "s3bishop"
+        / "sequences"
+        / "ZZZ"
+        / "ZZZ_000_0850"
+        / "comp"
+        / "natron"
+    )
+    project_directory.mkdir(parents=True)
+    app = FakeApp(project_directory)
+    app.timeline_bounds = (1, 1099)
+    group = FakeGroup()
+    app.groups.append(group)
+    plugin["createInstance"](app, group)
+
+    reader = FakeNode("fr.inria.built-in.Read")
+    reader.params["firstFrame"] = FakeParam("firstFrame")
+    reader.params["firstFrame"].set(1001)
+    reader.params["lastFrame"] = FakeParam("lastFrame")
+    reader.params["lastFrame"].set(1040)
+    smart_read = FakeNode("com.portablepipetools.SmartRead")
+    smart_read.getChildren = lambda: [reader]
+    grade = FakeNode("net.sf.openfx.GradePlugin")
+    grade.connectInput(0, smart_read)
+    group.connectInput(0, grade)
+
+    plugin["onParamChanged"](
+        group.getParam("renderAll"), group, group, app, True
+    )
+
+    assert len(app.render_calls) == 1
+    assert [task[1:] for task in app.render_calls[0]] == [
+        (1001, 1040, 1),
+        (1001, 1040, 1),
+        (1001, 1040, 1),
+    ]
+
+
+def test_exr_render_buttons_sync_every_exposed_setting_before_render(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    project_directory = (
+        tmp_path
+        / "defect"
+        / "s3bishop"
+        / "sequences"
+        / "BSH"
+        / "BSH_000_0020"
+        / "comp"
+        / "natron"
+    )
+    project_directory.mkdir(parents=True)
+    expected_settings = {
+        "outputComponents": 11,
+        "inputPremult": 12,
+        "ocioInputSpaceIndex": 13,
+        "ocioOutputSpaceIndex": 14,
+        "frameRange": 15,
+        "firstFrame": 1011,
+        "lastFrame": 1037,
+        "frameIncr": 3,
+        "readBack": True,
+        "bitDepth": 1,
+        "compression": 2,
+        "quality": 87,
+        "dwaCompressionLevel": 42.5,
+        "outputChannels": 16,
+        "processAllPlanes": True,
+        "partSplitting": 17,
+        "viewsSelector": 18,
+        "tileSize": 19,
+    }
+
+    for expected_version, button_name in enumerate(
+        ("renderEXR", "renderAll"), start=1
+    ):
+        app = FakeApp(project_directory)
+        group = FakeGroup()
+        app.groups.append(group)
+        plugin["createInstance"](app, group)
+        writer = group.getNode("EXRWrite")
+
+        exposed_names = {
+            name.removeprefix("exr_")
+            for name in group.params
+            if name.startswith("exr_")
+        }
+        assert exposed_names == set(expected_settings)
+        for native_name, value in expected_settings.items():
+            group.getParam(f"exr_{native_name}").set(value)
+
+        writer.getParam("filename").set("stale.exr")
+        writer.getParam("disableNode").set(True)
+        render_snapshots = []
+
+        def capture_render(tasks) -> None:
+            render_snapshots.append(
+                {
+                    "tasks": list(tasks),
+                    "filename": writer.getParam("filename").get(),
+                    "disableNode": writer.getParam("disableNode").get(),
+                    "settings": {
+                        name: writer.getParam(name).get()
+                        for name in expected_settings
+                    },
+                }
+            )
+
+        app.render = capture_render
+        plugin["onParamChanged"](
+            group.getParam(button_name), group, group, app, True
+        )
+
+        assert len(render_snapshots) == 1
+        snapshot = render_snapshots[0]
+        assert snapshot["filename"].endswith(
+            (
+                "/BSH_000_0020_beauty_v{0:03d}/"
+                "BSH_000_0020_beauty_v{0:03d}.####.exr"
+            ).format(expected_version)
+        )
+        assert snapshot["disableNode"] is False
+        assert snapshot["settings"] == expected_settings
+        assert snapshot["tasks"][0][0] is writer
+        assert snapshot["tasks"][0][1:] == (1001, 1040, 1)
+
+
+@pytest.mark.parametrize("button_name", ["renderHero", "renderAll"])
+def test_hero_render_buttons_sync_every_exposed_setting_before_submission(
+    monkeypatch, tmp_path: Path, button_name: str
+) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    project_directory = (
+        tmp_path
+        / "show"
+        / "sequences"
+        / "BSH"
+        / "BSH_000_0020"
+        / "comp"
+        / "natron"
+    )
+    project_directory.mkdir(parents=True)
+    app = FakeApp(project_directory)
+    app.timeline_bounds = (1101, 1123)
+    group = FakeGroup()
+    app.groups.append(group)
+    plugin["createInstance"](app, group)
+
+    expected_settings = {
+        "outputComponents": 3,
+        "inputPremult": 4,
+        "ocioInputSpaceIndex": 5,
+        "ocioOutputSpaceIndex": 6,
+        "frameRange": 7,
+        "firstFrame": 2001,
+        "lastFrame": 2010,
+        "frameIncr": 2,
+        "readBack": True,
+        "bitDepth": 1,
+        "compression": 2,
+        "quality": 91,
+        "dwaCompressionLevel": 33.5,
+        "outputChannels": 8,
+        "processAllPlanes": True,
+        "partSplitting": 9,
+        "viewsSelector": 10,
+        "tileSize": 11,
+    }
+    extension = sys.modules["SmartWriteExt"]
+    hero_section = next(
+        section for section in extension.SETTINGS_SECTIONS if section[3] == "HeroWrite"
+    )
+    exposed_names = [native_name for native_name, _creator in hero_section[5]]
+    assert set(exposed_names) == set(expected_settings)
+
+    hero_writer = group.getNode("HeroWrite")
+    for native_name, expected_value in expected_settings.items():
+        group.getParam(f"hero_{native_name}").set(expected_value)
+        hero_writer.getParam(native_name).set(None)
+
+    render_calls = []
+
+    def capture_render(tasks) -> None:
+        hero_task = next(task for task in tasks if task[0] is hero_writer)
+        assert hero_task[1:] == (1101, 1123, 1)
+        assert {
+            name: hero_writer.getParam(name).get() for name in exposed_names
+        } == expected_settings
+        render_calls.append(list(tasks))
+
+    app.render = capture_render
+    plugin["onParamChanged"](
+        group.getParam(button_name), group, group, app, True
+    )
+
+    assert len(render_calls) == 1
+    if button_name == "renderHero":
+        assert [task[0].script_name for task in render_calls[0]] == ["HeroWrite"]
+    else:
+        assert "HeroWrite" in [task[0].script_name for task in render_calls[0]]
 
 
 def test_project_load_adds_render_buttons_to_legacy_smart_write(
@@ -512,6 +752,16 @@ def test_smart_write_configures_exact_shot_output_paths(
 
     plugin["createInstance"](app, group)
 
+    assert {
+        name: group.getNode(name).getPluginID()
+        for name in ("EXRWrite", "MP4Write", "MOVWrite", "HeroWrite")
+    } == {
+        "EXRWrite": "fr.inria.openfx.WriteOIIO",
+        "MP4Write": "fr.inria.openfx.WriteFFmpeg",
+        "MOVWrite": "fr.inria.openfx.WriteFFmpeg",
+        "HeroWrite": "fr.inria.openfx.WriteOIIO",
+    }
+
     expected_base = (shot_root / "comp" / "_output").as_posix()
     assert group.getNode("EXRWrite").getParam("filename").get() == (
         expected_base
@@ -539,6 +789,15 @@ def test_smart_write_configures_exact_shot_output_paths(
         group.getNode(name).getParam("disableNode").get()
         for name in ("EXRWrite", "MP4Write", "MOVWrite", "HeroWrite")
     ] == [False, False, True, False]
+    for checkbox_name, button_name, writer_name in (
+        ("exrOutput", "renderEXR", "EXRWrite"),
+        ("mp4Output", "renderMP4", "MP4Write"),
+        ("movOutput", "renderMOV", "MOVWrite"),
+        ("heroOutput", "renderHero", "HeroWrite"),
+    ):
+        writer_enabled = not group.getNode(writer_name).getParam("disableNode").get()
+        assert bool(group.getParam(checkbox_name).get()) is writer_enabled
+        assert group.getParam(button_name).enabled is writer_enabled
     assert group.getParam("onParamChanged").get() == "SmartWrite.onParamChanged"
     assert not any(
         node.script_name.endswith("Placeholder") for node in group.nodes
@@ -588,7 +847,51 @@ def test_smart_write_configures_exact_shot_output_paths(
         group.getParam("exrOutput"), group, group, app, True
     )
     assert group.getNode("EXRWrite").getParam("disableNode").get() is True
+    assert group.getParam("renderEXR").enabled is False
     assert group.getParam("exrSettings").opened is False
+
+    group.getParam("heroOutput").set(False)
+    plugin["onParamChanged"](
+        group.getParam("heroOutput"), group, group, app, True
+    )
+    assert group.getNode("HeroWrite").getParam("disableNode").get() is True
+    assert group.getParam("renderHero").enabled is False
+    group.getParam("heroOutput").set(True)
+    plugin["onParamChanged"](
+        group.getParam("heroOutput"), group, group, app, True
+    )
+    assert group.getNode("HeroWrite").getParam("disableNode").get() is False
+    assert group.getParam("renderHero").enabled is True
+
+
+def test_refresh_recreates_a_missing_internal_writer(monkeypatch, tmp_path: Path) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    project_directory = (
+        tmp_path
+        / "defect"
+        / "s3bishop"
+        / "sequences"
+        / "ZZZ"
+        / "ZZZ_000_0850"
+        / "comp"
+        / "natron"
+    )
+    project_directory.mkdir(parents=True)
+    app = FakeApp(project_directory)
+    group = FakeGroup()
+    app.groups.append(group)
+    plugin["createInstance"](app, group)
+
+    group.getNode("MP4Write").destroy(False)
+    assert group.getNode("MP4Write") is None
+
+    plugin["refreshOutputs"](app, group)
+
+    writer = group.getNode("MP4Write")
+    assert writer is not None
+    assert writer.getPluginID() == "fr.inria.openfx.WriteFFmpeg"
+    assert writer.getParam("filename").get().endswith("_beauty_v001.mp4")
+    assert writer.getInput(0) is group.getNode("Input1")
 
 
 def test_smart_write_refreshes_paths_after_template_copy(
@@ -675,3 +978,185 @@ def test_each_new_smart_write_reserves_the_next_version(
     assert second_group.getNode("EXRWrite").getParam("filename").get().endswith(
         "/BSH_000_0020_beauty_v002/BSH_000_0020_beauty_v002.####.exr"
     )
+    expected_hero = "/_hero/BSH_000_0020.####.exr"
+    assert first_group.getNode("HeroWrite").getParam("filename").get().endswith(
+        expected_hero
+    )
+    assert second_group.getNode("HeroWrite").getParam("filename").get().endswith(
+        expected_hero
+    )
+
+
+def test_video_render_buttons_resync_every_writer_option_before_submit(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    common_values = {
+        "outputComponents": 11,
+        "inputPremult": 12,
+        "ocioInputSpaceIndex": 13,
+        "ocioOutputSpaceIndex": 14,
+        "frameRange": 15,
+        "firstFrame": 101,
+        "lastFrame": 202,
+        "frameIncr": 3,
+        "readBack": True,
+    }
+    mp4_values = {
+        **common_values,
+        "codec": 1,
+        "fps": 23.976,
+        "prefPixelCoding": 21,
+        "prefBitDepth": 22,
+        "crf": 23,
+        "x26xSpeed": 24,
+        "bitrateMbps": 42.5,
+        "gopSize": 48,
+        "bFrames": 4,
+        "fastStart": True,
+    }
+    mov_values = {
+        **{
+            name: value + 100 if type(value) is int else value
+            for name, value in common_values.items()
+        },
+        "codec": 1,
+        "fps": 29.97,
+        "prefPixelCoding": 121,
+        "prefBitDepth": 122,
+        "crf": 123,
+        "x26xSpeed": 124,
+        "bitrateMbps": 85.0,
+        "gopSize": 96,
+        "bFrames": 8,
+        "fastStart": False,
+        "enableAlpha": True,
+        "DNxHDCodecProfile": 131,
+        "HapFormat": 132,
+    }
+    writer_values = {
+        "MP4Write": ("mp4", mp4_values),
+        "MOVWrite": ("mov", mov_values),
+    }
+    cases = (
+        (
+            "renderMP4",
+            {"mp4Output": True, "movOutput": False},
+            ["MP4Write"],
+        ),
+        (
+            "renderMOV",
+            {"mp4Output": False, "movOutput": True},
+            ["MOVWrite"],
+        ),
+        (
+            "renderAll",
+            {"mp4Output": True, "movOutput": True},
+            ["MP4Write", "MOVWrite"],
+        ),
+    )
+
+    for case_index, (button_name, video_enabled, expected_tasks) in enumerate(cases):
+        project_directory = (
+            tmp_path
+            / button_name
+            / "defect"
+            / "s3bishop"
+            / "sequences"
+            / "BSH"
+            / "BSH_000_0020"
+            / "comp"
+            / "natron"
+        )
+        project_directory.mkdir(parents=True)
+        app = FakeApp(project_directory)
+        app.timeline_bounds = (1101 + case_index, 1124 + case_index)
+        group = FakeGroup()
+        app.groups.append(group)
+        plugin["createInstance"](app, group)
+        assert {
+            name.removeprefix("mp4_")
+            for name in group.params
+            if name.startswith("mp4_")
+        } == set(mp4_values)
+        assert {
+            name.removeprefix("mov_")
+            for name in group.params
+            if name.startswith("mov_")
+        } == set(mov_values)
+
+        output_states = {
+            "exrOutput": False,
+            **video_enabled,
+            "heroOutput": False,
+        }
+        for checkbox_name, enabled in output_states.items():
+            checkbox = group.getParam(checkbox_name)
+            checkbox.set(enabled)
+            plugin["onParamChanged"](checkbox, group, group, app, True)
+
+        expected_filenames = {}
+        for writer_name, (proxy_prefix, expected_values) in writer_values.items():
+            writer = group.getNode(writer_name)
+            expected_filenames[writer_name] = writer.getParam("filename").get()
+            for param_name, expected_value in expected_values.items():
+                exposed = group.getParam(f"{proxy_prefix}_{param_name}")
+                assert exposed is not None
+                exposed.set(expected_value)
+                writer.getParam(param_name).set("stale")
+            writer.getParam("filename").set(f"stale/{writer_name}")
+            writer.getParam("disableNode").set("stale")
+
+        snapshots = []
+
+        def capture_render(tasks) -> None:
+            snapshots.append(
+                {
+                    "tasks": [(task[0].script_name, *task[1:]) for task in tasks],
+                    "writers": {
+                        writer_name: {
+                            "filename": group.getNode(writer_name)
+                            .getParam("filename")
+                            .get(),
+                            "disabled": group.getNode(writer_name)
+                            .getParam("disableNode")
+                            .get(),
+                            "settings": {
+                                param_name: group.getNode(writer_name)
+                                .getParam(param_name)
+                                .get()
+                                for param_name in expected_values
+                            },
+                        }
+                        for writer_name, (
+                            _proxy_prefix,
+                            expected_values,
+                        ) in writer_values.items()
+                    },
+                }
+            )
+
+        app.render = capture_render
+        plugin["onParamChanged"](
+            group.getParam(button_name), group, group, app, True
+        )
+
+        assert len(snapshots) == 1
+        snapshot = snapshots[0]
+        assert [task[0] for task in snapshot["tasks"]] == expected_tasks
+        assert [task[1:] for task in snapshot["tasks"]] == [
+            (*app.timeline_bounds, 1) for _writer_name in expected_tasks
+        ]
+        assert expected_filenames["MP4Write"].endswith(".mp4")
+        assert expected_filenames["MOVWrite"].endswith(".mov")
+        for writer_name, (_proxy_prefix, expected_values) in writer_values.items():
+            writer_snapshot = snapshot["writers"][writer_name]
+            assert writer_snapshot["filename"] == expected_filenames[writer_name]
+            checkbox_name = (
+                "mp4Output" if writer_name == "MP4Write" else "movOutput"
+            )
+            assert (
+                writer_snapshot["disabled"]
+                is not video_enabled[checkbox_name]
+            )
+            assert writer_snapshot["settings"] == expected_values

@@ -50,6 +50,12 @@ WRITER_LAYOUT = {
     "MOVWrite": ("MOV Write", 100, "codec"),
     "HeroWrite": ("Hero Write", 300, "compression"),
 }
+WRITER_PLUGIN_IDS = {
+    "EXRWrite": "fr.inria.openfx.WriteOIIO",
+    "MP4Write": "fr.inria.openfx.WriteFFmpeg",
+    "MOVWrite": "fr.inria.openfx.WriteFFmpeg",
+    "HeroWrite": "fr.inria.openfx.WriteOIIO",
+}
 COMMON_SETTING_PARAMS = (
     ("outputComponents", "createChoiceParam"),
     ("inputPremult", "createChoiceParam"),
@@ -126,6 +132,7 @@ SETTINGS_SECTIONS = (
 GUI_REFRESH_DELAY_MS = 100
 _PENDING_GUI_REFRESHES = []
 _GROUP_OUTPUT_SELECTIONS = []
+_GROUP_ACTIVE_WRITERS = []
 _MIGRATING_GROUPS = []
 
 
@@ -177,20 +184,36 @@ def _has_format_options(writer, format_param_name):
         return True
 
 
+def _retired_writer_name(group, writer_name):
+    base_name = "{0}Placeholder".format(writer_name)
+    candidate = base_name
+    suffix = 2
+    while group.getNode(candidate) is not None:
+        candidate = "{0}{1}".format(base_name, suffix)
+        suffix += 1
+    return candidate
+
+
 def _ensure_concrete_writer(app, group, writer_name, filename):
     writer = group.getNode(writer_name)
-    if writer is None or not filename:
+    if not filename:
         return writer
 
     label, x_position, format_param_name = WRITER_LAYOUT[writer_name]
-    if _has_format_options(writer, format_param_name):
+    if writer is not None and _has_format_options(writer, format_param_name):
         return writer
 
-    replacement = app.createWriter(filename, group)
+    replacement = app.createNode(WRITER_PLUGIN_IDS[writer_name], 1, group)
+    if replacement is not None:
+        replacement_filename = replacement.getParam("filename")
+        if replacement_filename is not None:
+            replacement_filename.set(filename)
+    else:
+        replacement = app.createWriter(filename, group)
     if replacement is None:
         return writer
 
-    source = writer.getInput(0)
+    source = writer.getInput(0) if writer is not None else group.getNode("Input1")
     if source is not None and replacement.connectInput(0, source) is False:
         replacement.destroy(False)
         return writer
@@ -198,10 +221,12 @@ def _ensure_concrete_writer(app, group, writer_name, filename):
     replacement.setLabel(label)
     replacement.setPosition(x_position, 100)
     _configure_new_writer(writer_name, replacement)
-    writer.setScriptName("{0}Placeholder".format(writer_name))
+    if writer is not None:
+        writer.setScriptName(_retired_writer_name(group, writer_name))
     replacement.setScriptName(writer_name)
-    _configure_writer(writer, "", False)
-    writer.destroy(False)
+    if writer is not None:
+        _configure_writer(writer, "", False)
+        writer.destroy(False)
     return replacement
 
 
@@ -209,26 +234,58 @@ def _project_key(project_directory):
     return str(project_directory).replace("\\", "/").casefold()
 
 
+def _group_key(group):
+    """Return a stable key across Natron's short-lived Python node proxies."""
+
+    try:
+        name = group.getFullyQualifiedName()
+    except (AttributeError, RuntimeError):
+        try:
+            name = group.getScriptName()
+        except (AttributeError, RuntimeError):
+            name = str(group)
+    return str(name).casefold()
+
+
 def _cached_paths(group, project_directory):
+    group_key = _group_key(group)
     key = _project_key(project_directory)
-    for selected_group, selected_key, paths in _GROUP_OUTPUT_SELECTIONS:
-        if selected_group is group and selected_key == key:
+    for selected_group_key, selected_key, paths in _GROUP_OUTPUT_SELECTIONS:
+        if selected_group_key == group_key and selected_key == key:
             return paths
     return None
 
 
 def _remember_paths(group, project_directory, paths):
+    group_key = _group_key(group)
     for index, selection in enumerate(_GROUP_OUTPUT_SELECTIONS):
-        if selection[0] is group:
+        if selection[0] == group_key:
             _GROUP_OUTPUT_SELECTIONS[index] = (
-                group,
+                group_key,
                 _project_key(project_directory),
                 paths,
             )
             return
     _GROUP_OUTPUT_SELECTIONS.append(
-        (group, _project_key(project_directory), paths)
+        (group_key, _project_key(project_directory), paths)
     )
+
+
+def _remember_active_writers(group, active_writers):
+    group_key = _group_key(group)
+    for index, selection in enumerate(_GROUP_ACTIVE_WRITERS):
+        if selection[0] == group_key:
+            _GROUP_ACTIVE_WRITERS[index] = (group_key, dict(active_writers))
+            return
+    _GROUP_ACTIVE_WRITERS.append((group_key, dict(active_writers)))
+
+
+def _active_writers(group):
+    group_key = _group_key(group)
+    for selected_group_key, writers in _GROUP_ACTIVE_WRITERS:
+        if selected_group_key == group_key:
+            return writers
+    return {}
 
 
 def _create_output_directories(paths, enabled_outputs):
@@ -423,7 +480,7 @@ def _create_ordered_render_controls(group, controls, checkbox_values):
 
     render_all = group.createButtonParam("renderAll", "Render All")
     render_all.setHelp(
-        "Render every enabled Smart Write output over the project frame range."
+        "Render every enabled Smart Write output over the upstream media frame range."
     )
     render_all.setAddNewLine(True)
     controls.addParam(render_all)
@@ -527,21 +584,87 @@ def _restore_setting_values(group, setting_values):
         group.endChanges()
 
 
+def _input_nodes(node):
+    """Return connected inputs without assuming every test/API node has inputs."""
+
+    try:
+        count = node.getMaxInputCount()
+    except (AttributeError, RuntimeError):
+        return []
+    inputs = []
+    for index in range(count):
+        try:
+            input_node = node.getInput(index)
+        except (AttributeError, RuntimeError):
+            continue
+        if input_node is not None:
+            inputs.append(input_node)
+    return inputs
+
+
+def _upstream_reader_ranges(group):
+    """Collect frame ranges from Read nodes feeding this SmartWrite."""
+
+    pending = _input_nodes(group)
+    # Keep wrapper objects alive while traversing. Natron may return short-lived
+    # Python proxies whose ``id`` values are reused after each hop.
+    visited = []
+    ranges = []
+    while pending:
+        node = pending.pop()
+        if node in visited:
+            continue
+        visited.append(node)
+
+        try:
+            plugin_id = node.getPluginID()
+        except (AttributeError, RuntimeError):
+            plugin_id = ""
+        if plugin_id == "fr.inria.built-in.Read":
+            first_param = node.getParam("firstFrame")
+            last_param = node.getParam("lastFrame")
+            if first_param is not None and last_param is not None:
+                try:
+                    first_frame = int(first_param.get())
+                    last_frame = int(last_param.get())
+                except (TypeError, ValueError, RuntimeError):
+                    pass
+                else:
+                    if last_frame >= first_frame:
+                        ranges.append((first_frame, last_frame))
+
+        pending.extend(_input_nodes(node))
+        try:
+            pending.extend(node.getChildren())
+        except (AttributeError, RuntimeError):
+            pass
+    return ranges
+
+
+def _render_frame_range(app, group):
+    """Prefer the actual upstream media range over a stale project timeline."""
+
+    ranges = _upstream_reader_ranges(group)
+    if ranges:
+        return min(item[0] for item in ranges), max(item[1] for item in ranges)
+    return app.timelineGetLeftBound(), app.timelineGetRightBound()
+
+
 def _render_enabled_outputs(app, group, checkbox_names):
     """Submit selected, enabled internal writers as one Natron render batch."""
 
     refreshOutputs(app, group)
+    active_writers = _active_writers(group)
     selected_names = set(checkbox_names)
     tasks = []
-    first_frame = app.timelineGetLeftBound()
-    last_frame = app.timelineGetRightBound()
+    first_frame, last_frame = _render_frame_range(app, group)
     for checkbox_name, writer_name, _path_attribute in WRITER_SPECS:
         if checkbox_name not in selected_names:
             continue
         checkbox = group.getParam(checkbox_name)
         if checkbox is None or not bool(checkbox.get()):
             continue
-        writer = group.getNode(writer_name)
+        writer = active_writers.get(writer_name) or group.getNode(writer_name)
         if writer is None:
             continue
         filename = writer.getParam("filename")
@@ -582,6 +705,7 @@ def refreshOutputs(app, group, select_next_version=False):
         except OSError:
             paths = None
 
+    group.setSubGraphEditable(True)
     group.beginChanges()
     active_writers = {}
     try:
@@ -598,6 +722,8 @@ def refreshOutputs(app, group, select_next_version=False):
             _configure_writer(writer, path, enabled_outputs[checkbox_name])
     finally:
         group.endChanges()
+        group.setSubGraphEditable(False)
+    _remember_active_writers(group, active_writers)
     migrated_setting_values = _ensure_render_controls(group)
     _ensure_settings_sections(group, active_writers)
     _restore_setting_values(group, migrated_setting_values)
@@ -670,6 +796,9 @@ def _ensure_natron_callback_inspection():
 def createInstanceExt(app, group):
     """Install callbacks and configure a newly created Smart Write."""
 
+    mp4_writer = group.getNode("MP4Write")
+    if mp4_writer is not None:
+        _configure_new_writer("MP4Write", mp4_writer)
     callback = group.getParam("onParamChanged")
     if callback is not None:
         _ensure_natron_callback_inspection()

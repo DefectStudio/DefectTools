@@ -153,13 +153,13 @@ def createInstance(app, group):
     input_node.setPosition(0, 0)
 
     writer_specs = (
-        ("EXRWrite", "EXR Write", -300),
-        ("MP4Write", "MP4 Write", -100),
-        ("MOVWrite", "MOV Write", 100),
-        ("HeroWrite", "Hero Write", 300),
+        ("EXRWrite", "EXR Write", -300, "fr.inria.openfx.WriteOIIO"),
+        ("MP4Write", "MP4 Write", -100, "fr.inria.openfx.WriteFFmpeg"),
+        ("MOVWrite", "MOV Write", 100, "fr.inria.openfx.WriteFFmpeg"),
+        ("HeroWrite", "Hero Write", 300, "fr.inria.openfx.WriteOIIO"),
     )
-    for script_name, label, x_position in writer_specs:
-        writer = app.createNode("fr.inria.built-in.Write", 1, group)
+    for script_name, label, x_position, plugin_id in writer_specs:
+        writer = app.createNode(plugin_id, 1, group)
         if writer is None:
             raise RuntimeError(
                 "SmartWrite could not create its internal {0} node".format(label)
