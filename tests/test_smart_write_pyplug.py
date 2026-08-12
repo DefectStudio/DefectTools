@@ -714,6 +714,7 @@ def test_project_load_adds_render_buttons_to_legacy_smart_write(
     sys.modules["SmartWriteExt"].afterProjectLoaded(app)
 
     assert all(group.getParam(name) is not None for name in render_names)
+    assert group.getParam("smartWriteUiVersion").visible is False
     assert group.getParam("renderMOV").enabled is False
     assert group.getParam("exr_compression").get() == 2
     page = group.getParam("smartWrite")
@@ -730,6 +731,23 @@ def test_project_load_adds_render_buttons_to_legacy_smart_write(
         "heroOutput",
         "renderHero",
     ]
+
+
+def test_refresh_rehides_current_ui_version_marker(monkeypatch, tmp_path: Path) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    project_directory = tmp_path / "show" / "shot" / "comp" / "natron"
+    project_directory.mkdir(parents=True)
+    app = FakeApp(project_directory)
+    group = FakeGroup()
+    app.groups.append(group)
+    plugin["createInstance"](app, group)
+    marker = group.getParam("smartWriteUiVersion")
+    assert marker.get() == sys.modules["SmartWriteExt"].SMART_WRITE_UI_VERSION
+
+    marker.setVisible(True)
+    plugin["refreshOutputs"](app, group)
+
+    assert marker.visible is False
 
 
 def test_smart_write_configures_exact_shot_output_paths(
@@ -892,6 +910,88 @@ def test_refresh_recreates_a_missing_internal_writer(monkeypatch, tmp_path: Path
     assert writer.getPluginID() == "fr.inria.openfx.WriteFFmpeg"
     assert writer.getParam("filename").get().endswith("_beauty_v001.mp4")
     assert writer.getInput(0) is group.getNode("Input1")
+
+
+@pytest.mark.parametrize(
+    "prefix,writer_name",
+    [
+        ("exr", "EXRWrite"),
+        ("mp4", "MP4Write"),
+        ("mov", "MOVWrite"),
+        ("hero", "HeroWrite"),
+    ],
+)
+def test_frame_range_gui_hides_project_fields_and_initializes_manual_range(
+    monkeypatch,
+    tmp_path: Path,
+    prefix: str,
+    writer_name: str,
+) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    project_directory = (
+        tmp_path
+        / prefix
+        / "sequences"
+        / "ZZZ"
+        / "ZZZ_000_0850"
+        / "comp"
+        / "natron"
+    )
+    project_directory.mkdir(parents=True)
+    app = FakeApp(project_directory)
+    app.timeline_bounds = (1001, 1040)
+    group = FakeGroup()
+    app.groups.append(group)
+    plugin["createInstance"](app, group)
+
+    frame_range = group.getParam(f"{prefix}_frameRange")
+    first_frame = group.getParam(f"{prefix}_firstFrame")
+    last_frame = group.getParam(f"{prefix}_lastFrame")
+    writer = group.getNode(writer_name)
+    frame_range.setOptions(["union", "project", "manual"])
+    writer.getParam("frameRange").setOptions(["union", "project", "manual"])
+
+    frame_range.set(1)
+    plugin["onParamChanged"](frame_range, group, group, app, True)
+    assert first_frame.visible is False
+    assert last_frame.visible is False
+
+    frame_range.set(2)
+    plugin["onParamChanged"](frame_range, group, group, app, True)
+    assert first_frame.visible is True
+    assert last_frame.visible is True
+    assert (first_frame.get(), last_frame.get()) == (1001, 1040)
+    assert (
+        writer.getParam("firstFrame").get(),
+        writer.getParam("lastFrame").get(),
+    ) == (1001, 1040)
+
+
+def test_refresh_repairs_zero_manual_frame_range_values(monkeypatch, tmp_path: Path) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    project_directory = tmp_path / "show" / "shot" / "comp" / "natron"
+    project_directory.mkdir(parents=True)
+    app = FakeApp(project_directory)
+    app.timeline_bounds = (1101, 1124)
+    group = FakeGroup()
+    app.groups.append(group)
+    plugin["createInstance"](app, group)
+
+    writer = group.getNode("EXRWrite")
+    writer.getParam("frameRange").setOptions(["union", "project", "manual"])
+    group.getParam("exr_frameRange").setOptions(["union", "project", "manual"])
+    group.getParam("exr_frameRange").set(2)
+    group.getParam("exr_firstFrame").set(0)
+    group.getParam("exr_lastFrame").set(0)
+
+    plugin["refreshOutputs"](app, group)
+
+    assert group.getParam("exr_firstFrame").visible is True
+    assert group.getParam("exr_lastFrame").visible is True
+    assert group.getParam("exr_firstFrame").get() == 1101
+    assert group.getParam("exr_lastFrame").get() == 1124
+    assert writer.getParam("firstFrame").get() == 1101
+    assert writer.getParam("lastFrame").get() == 1124
 
 
 def test_smart_write_refreshes_paths_after_template_copy(

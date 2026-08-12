@@ -426,6 +426,70 @@ def _sync_settings_to_writers(group, active_writers=None):
                 _sync_setting_to_writer(group, exposed, active_writers)
 
 
+def _selected_choice_label(param):
+    try:
+        options = list(param.getOptions())
+        selected = int(param.get())
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        return ""
+    if 0 <= selected < len(options):
+        return str(options[selected]).casefold()
+    return ""
+
+
+def _update_frame_range_controls(
+    app,
+    group,
+    proxy_prefix,
+    force_manual_values=False,
+    active_writers=None,
+):
+    frame_range = group.getParam("{0}_frameRange".format(proxy_prefix))
+    first_frame = group.getParam("{0}_firstFrame".format(proxy_prefix))
+    last_frame = group.getParam("{0}_lastFrame".format(proxy_prefix))
+    if frame_range is None or first_frame is None or last_frame is None:
+        return False
+
+    selected_label = _selected_choice_label(frame_range)
+    try:
+        selected_value = int(frame_range.get())
+    except (TypeError, ValueError, RuntimeError):
+        selected_value = -1
+    manual = selected_label == "manual" or (
+        not selected_label and selected_value == 2
+    )
+    first_frame.setVisible(manual)
+    last_frame.setVisible(manual)
+
+    if manual:
+        try:
+            first_value = int(first_frame.get())
+            last_value = int(last_frame.get())
+        except (TypeError, ValueError, RuntimeError):
+            first_value, last_value = 0, 0
+        uninitialized = (first_value == 0 and last_value == 0) or last_value < first_value
+        if force_manual_values or uninitialized:
+            actual_first, actual_last = _render_frame_range(app, group)
+            first_frame.set(int(actual_first))
+            last_frame.set(int(actual_last))
+            _sync_setting_to_writer(group, first_frame, active_writers)
+            _sync_setting_to_writer(group, last_frame, active_writers)
+    return True
+
+
+def _update_all_frame_range_controls(app, group, active_writers=None):
+    updated = False
+    for section in SETTINGS_SECTIONS:
+        updated = _update_frame_range_controls(
+            app,
+            group,
+            section[4],
+            active_writers=active_writers,
+        ) or updated
+    if updated:
+        group.refreshUserParamsGUI()
+
+
 def _set_settings_section_open(group, checkbox_name, opened):
     for section in SETTINGS_SECTIONS:
         if section[0] != checkbox_name:
@@ -527,6 +591,10 @@ def _ensure_render_controls(group):
         return None
 
     layout_version = group.getParam("smartWriteUiVersion")
+    if layout_version is not None:
+        # This is an internal migration sentinel, never a user-facing control.
+        # Reapply visibility because older saved projects can restore it as visible.
+        layout_version.setVisible(False)
     if layout_version is None or layout_version.get() != SMART_WRITE_UI_VERSION:
         checkbox_values = {
             name: bool(group.getParam(name).get())
@@ -728,6 +796,7 @@ def refreshOutputs(app, group, select_next_version=False):
     _ensure_settings_sections(group, active_writers)
     _restore_setting_values(group, migrated_setting_values)
     _sync_settings_to_writers(group, active_writers)
+    _update_all_frame_range_controls(app, group, active_writers)
 
 
 def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
@@ -756,6 +825,17 @@ def onParamChanged(thisParam, thisNode, thisGroup, app, userEdited):
         if param_name == button_name:
             _render_enabled_outputs(app, thisNode, [checkbox_name])
             return
+    if param_name.endswith("_frameRange"):
+        _sync_setting_to_writer(thisNode, thisParam)
+        _update_frame_range_controls(
+            app,
+            thisNode,
+            param_name[: -len("_frameRange")],
+            force_manual_values=True,
+            active_writers=_active_writers(thisNode),
+        )
+        thisNode.refreshUserParamsGUI()
+        return
     _sync_setting_to_writer(thisNode, thisParam)
 
 
