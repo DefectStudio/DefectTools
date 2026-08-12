@@ -38,6 +38,7 @@ COLUMN_TITLES = {
     "is_active": "Current Active",
     "edl_is_active": "EDL Active",
     "frame_range": "Frame Range",
+    "keep_range": "Keep Range",
     "edl_frame_range": "EDL Frame Range",
     "edl_proposed_range": "EDL Proposed Range",
     "sequence": "Sequence",
@@ -77,6 +78,7 @@ class ShotRow:
     level_path: str = ""
     manifest_path: Path | None = None
     source: str = "folder"
+    keep_range: bool = False
     edl_order: int | None = None
     edl_is_active: bool | None = None
     edl_frame_ranges: tuple[tuple[int, int], ...] = ()
@@ -276,6 +278,24 @@ def calculate_edl_proposed_range(
     if proposed_start_frame > proposed_end_frame:
         return None
     return proposed_start_frame, proposed_end_frame
+
+
+def refresh_edl_proposed_range(shot_row: ShotRow) -> None:
+    if (
+        shot_row.keep_range
+        and shot_row.start_frame is not None
+        and shot_row.end_frame is not None
+    ):
+        shot_row.edl_proposed_range = (
+            shot_row.start_frame,
+            shot_row.end_frame,
+        )
+        return
+    shot_row.edl_proposed_range = calculate_edl_proposed_range(
+        shot_row.edl_frame_ranges,
+        shot_row.start_frame,
+        shot_row.end_frame,
+    )
 
 
 def calculate_estimated_frames_cut(shot_rows: list[ShotRow]) -> int:
@@ -566,11 +586,6 @@ def apply_edl_sequence_comparison(
                 if edl_end_frame >= edl_start_frame and frame_range not in edl_frame_ranges:
                     edl_frame_ranges.append(frame_range)
         shot_row.edl_frame_ranges = tuple(edl_frame_ranges)
-        shot_row.edl_proposed_range = calculate_edl_proposed_range(
-            shot_row.edl_frame_ranges,
-            shot_row.start_frame,
-            shot_row.end_frame,
-        )
 
     inactive_rows = sorted(
         (
@@ -589,6 +604,9 @@ def apply_edl_sequence_comparison(
     for order_offset, shot_row in enumerate(inactive_rows):
         shot_row.edl_is_active = False
         shot_row.edl_order = inactive_first_order + order_offset
+
+    for shot_row in sequence_rows:
+        refresh_edl_proposed_range(shot_row)
 
     missing_shot_names = tuple(
         shot_name
@@ -1164,6 +1182,7 @@ class ShotManagerApp:
         self.shots_tree.column("sequence", width=100, minwidth=80, stretch=False, anchor="center")
         self.shots_tree.column("shot", width=160, minwidth=130, stretch=False, anchor="center")
         self.shots_tree.column("frame_range", width=125, minwidth=110, stretch=False, anchor="center")
+        self.shots_tree.column("keep_range", width=90, minwidth=80, stretch=False, anchor="center")
         self.shots_tree.column("edl_frame_range", width=235, minwidth=135, stretch=False, anchor="center")
         self.shots_tree.column("edl_proposed_range", width=155, minwidth=135, stretch=False, anchor="center")
         self.shots_tree.column("path", width=650, minwidth=280, stretch=True)
@@ -1922,11 +1941,22 @@ class ShotManagerApp:
         if column_key == "move":
             return self._handle_move_cell_click(event, item_id, shot_row)
 
+        if column_key == "keep_range":
+            self._toggle_keep_range(shot_row)
+            return "break"
+
         if column_key != "is_active":
             return None
 
         self._toggle_shot_active_state(shot_row)
         return "break"
+
+    def _toggle_keep_range(self, shot_row: ShotRow) -> None:
+        shot_row.keep_range = not shot_row.keep_range
+        refresh_edl_proposed_range(shot_row)
+        self._render_shot_rows()
+        state_text = "keeping the original frame range" if shot_row.keep_range else "using the EDL proposed frame range"
+        self._set_status(f"{shot_row.shot_name} is now {state_text}.")
 
     def _toggle_shot_active_state(self, shot_row: ShotRow) -> None:
         if shot_row.manifest_path is None:
@@ -2012,6 +2042,7 @@ class ShotManagerApp:
                         shot_row.start_frame,
                         shot_row.end_frame,
                     ),
+                    _active_display(shot_row.keep_range),
                     format_edl_frame_ranges(shot_row.edl_frame_ranges),
                     (
                         format_shot_frame_range(*shot_row.edl_proposed_range)
@@ -2104,6 +2135,12 @@ class ShotManagerApp:
                     shot_row.start_frame if shot_row.start_frame is not None else 0,
                     shot_row.end_frame is None,
                     shot_row.end_frame if shot_row.end_frame is not None else 0,
+                    shot_row.shot_name.lower(),
+                )
+            if self.shot_sort_column == "keep_range":
+                return (
+                    shot_row.keep_range,
+                    shot_row.order,
                     shot_row.shot_name.lower(),
                 )
             if self.shot_sort_column == "edl_frame_range":

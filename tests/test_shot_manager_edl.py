@@ -17,6 +17,7 @@ from portable_pipe_tools.show_manager.shot_manager_core import (
     format_edl_frame_ranges,
     format_shot_frame_range,
     parse_resolve_edl_xml,
+    refresh_edl_proposed_range,
 )
 
 
@@ -42,6 +43,10 @@ class ShotManagerEdlTests(unittest.TestCase):
         self.assertEqual(["move", "shot"], column_keys[:2])
         self.assertEqual(
             column_keys.index("frame_range") + 1,
+            column_keys.index("keep_range"),
+        )
+        self.assertEqual(
+            column_keys.index("keep_range") + 1,
             column_keys.index("edl_frame_range"),
         )
         self.assertEqual(
@@ -53,6 +58,7 @@ class ShotManagerEdlTests(unittest.TestCase):
             column_keys.index("sequence"),
         )
         self.assertEqual("Frame Range", COLUMN_TITLES["frame_range"])
+        self.assertEqual("Keep Range", COLUMN_TITLES["keep_range"])
         self.assertEqual("EDL Frame Range", COLUMN_TITLES["edl_frame_range"])
         self.assertEqual(
             "EDL Proposed Range",
@@ -344,6 +350,26 @@ class ShotManagerEdlTests(unittest.TestCase):
 
         self.assertEqual(60, calculate_estimated_frames_cut(rows))
         self.assertEqual(0, calculate_estimated_frames_cut([]))
+
+    def test_keep_range_uses_original_range_and_removes_estimated_cut(self) -> None:
+        row = _shot_row("JNG_000_0050", 201, True)
+        row.start_frame = 1001
+        row.end_frame = 1100
+        row.edl_frame_ranges = ((1021, 1060),)
+
+        refresh_edl_proposed_range(row)
+        self.assertFalse(row.keep_range)
+        self.assertEqual((1011, 1070), row.edl_proposed_range)
+        self.assertEqual(40, calculate_estimated_frames_cut([row]))
+
+        row.keep_range = True
+        refresh_edl_proposed_range(row)
+        self.assertEqual((1001, 1100), row.edl_proposed_range)
+        self.assertEqual(0, calculate_estimated_frames_cut([row]))
+
+        row.keep_range = False
+        refresh_edl_proposed_range(row)
+        self.assertEqual((1011, 1070), row.edl_proposed_range)
 
     def test_export_overwrites_stable_updated_file_without_backup(self) -> None:
         rows = [_shot_row("JNG_000_0050", 900, False)]
