@@ -56,6 +56,47 @@ WRITER_PLUGIN_IDS = {
     "MOVWrite": "fr.inria.openfx.WriteFFmpeg",
     "HeroWrite": "fr.inria.openfx.WriteOIIO",
 }
+ARTIST_EXR_CHOICE_DEFAULTS = (
+    ("outputComponents", "RGBA"),
+    ("inputPremult", "premult"),
+    ("ocioInputSpaceIndex", "linear/Linear"),
+    ("ocioOutputSpaceIndex", "linear/Linear"),
+    ("frameRange", "project"),
+    ("bitDepth", "auto"),
+    ("compression", "default"),
+    ("partSplitting", "views_layers"),
+    ("viewsSelector", "All"),
+    ("tileSize", "0"),
+)
+ARTIST_EXR_VALUE_DEFAULTS = (
+    ("frameIncr", 1),
+    ("readBack", False),
+    ("quality", 100),
+    ("dwaCompressionLevel", 45.0),
+    ("outputChannels", 0),
+    ("processAllPlanes", False),
+)
+ARTIST_MP4_CHOICE_DEFAULTS = (
+    ("codec", "libx264"),
+    ("outputComponents", "RGBA"),
+    ("inputPremult", "premult"),
+    ("ocioInputSpaceIndex", "linear/Linear"),
+    ("ocioOutputSpaceIndex", "display/nuke_rec709"),
+    ("frameRange", "project"),
+    ("prefPixelCoding", "yuv422"),
+    ("prefBitDepth", "8"),
+    ("crf", "crf23"),
+    ("x26xSpeed", "medium"),
+)
+ARTIST_MP4_VALUE_DEFAULTS = (
+    ("frameIncr", 1),
+    ("readBack", False),
+    ("fps", 24.0),
+    ("bitrateMbps", 185.0),
+    ("gopSize", -1),
+    ("bFrames", -1),
+    ("fastStart", False),
+)
 COMMON_SETTING_PARAMS = (
     ("outputComponents", "createChoiceParam"),
     ("inputPremult", "createChoiceParam"),
@@ -170,8 +211,21 @@ def _set_choice_option(param, option_name):
 
 
 def _configure_new_writer(writer_name, writer):
-    if writer_name == "MP4Write":
-        _set_choice_option(writer.getParam("codec"), "libx264")
+    if writer_name in ("EXRWrite", "HeroWrite"):
+        choice_defaults = ARTIST_EXR_CHOICE_DEFAULTS
+        value_defaults = ARTIST_EXR_VALUE_DEFAULTS
+    elif writer_name == "MP4Write":
+        choice_defaults = ARTIST_MP4_CHOICE_DEFAULTS
+        value_defaults = ARTIST_MP4_VALUE_DEFAULTS
+    else:
+        return
+
+    for param_name, option_name in choice_defaults:
+        _set_choice_option(writer.getParam(param_name), option_name)
+    for param_name, value in value_defaults:
+        param = writer.getParam(param_name)
+        if param is not None:
+            param.set(value)
 
 
 def _has_format_options(writer, format_param_name):
@@ -876,9 +930,10 @@ def _ensure_natron_callback_inspection():
 def createInstanceExt(app, group):
     """Install callbacks and configure a newly created Smart Write."""
 
-    mp4_writer = group.getNode("MP4Write")
-    if mp4_writer is not None:
-        _configure_new_writer("MP4Write", mp4_writer)
+    for writer_name in WRITER_LAYOUT:
+        writer = group.getNode(writer_name)
+        if writer is not None:
+            _configure_new_writer(writer_name, writer)
     callback = group.getParam("onParamChanged")
     if callback is not None:
         _ensure_natron_callback_inspection()

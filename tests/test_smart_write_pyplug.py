@@ -882,6 +882,90 @@ def test_smart_write_configures_exact_shot_output_paths(
     assert group.getParam("renderHero").enabled is True
 
 
+def test_new_writers_use_artist_template_defaults(monkeypatch, tmp_path: Path) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    project_directory = tmp_path / "show" / "shot" / "comp" / "natron"
+    project_directory.mkdir(parents=True)
+    app = FakeApp(project_directory)
+    group = FakeGroup()
+    app.groups.append(group)
+    plugin["createInstance"](app, group)
+
+    extension = sys.modules["SmartWriteExt"]
+    exr_choice_options = {
+        "outputComponents": ["RGB", "RGBA"],
+        "inputPremult": ["opaque", "premult"],
+        "ocioInputSpaceIndex": ["linear/Linear", "scene_linear"],
+        "ocioOutputSpaceIndex": ["display/sRGB", "linear/Linear"],
+        "frameRange": ["union", "project", "manual"],
+        "bitDepth": ["auto", "16f", "32f"],
+        "compression": ["default", "zip", "dwaa"],
+        "partSplitting": ["single", "layers", "views_layers"],
+        "viewsSelector": ["All", "Main"],
+        "tileSize": ["0", "64"],
+    }
+    mp4_choice_options = {
+        "codec": ["prores_ks", "libx264"],
+        "outputComponents": ["RGB", "RGBA"],
+        "inputPremult": ["opaque", "premult"],
+        "ocioInputSpaceIndex": ["linear/Linear", "scene_linear"],
+        "ocioOutputSpaceIndex": ["linear/Linear", "display/nuke_rec709"],
+        "frameRange": ["union", "project", "manual"],
+        "prefPixelCoding": ["rgb", "yuv422"],
+        "prefBitDepth": ["8", "10"],
+        "crf": ["crf18", "crf23"],
+        "x26xSpeed": ["fast", "medium"],
+    }
+
+    for writer_name in ("EXRWrite", "HeroWrite"):
+        writer = group.getNode(writer_name)
+        for name, options in exr_choice_options.items():
+            writer.getParam(name).setOptions(options)
+        extension._configure_new_writer(writer_name, writer)
+        assert {
+            name: writer.getParam(name).get() for name in exr_choice_options
+        } == {
+            "outputComponents": 1,
+            "inputPremult": 1,
+            "ocioInputSpaceIndex": 0,
+            "ocioOutputSpaceIndex": 1,
+            "frameRange": 1,
+            "bitDepth": 0,
+            "compression": 0,
+            "partSplitting": 2,
+            "viewsSelector": 0,
+            "tileSize": 0,
+        }
+        assert writer.getParam("quality").get() == 100
+        assert writer.getParam("dwaCompressionLevel").get() == 45.0
+        assert writer.getParam("outputChannels").get() == 0
+        assert writer.getParam("processAllPlanes").get() is False
+
+    mp4_writer = group.getNode("MP4Write")
+    for name, options in mp4_choice_options.items():
+        mp4_writer.getParam(name).setOptions(options)
+    extension._configure_new_writer("MP4Write", mp4_writer)
+    assert {
+        name: mp4_writer.getParam(name).get() for name in mp4_choice_options
+    } == {
+        "codec": 1,
+        "outputComponents": 1,
+        "inputPremult": 1,
+        "ocioInputSpaceIndex": 0,
+        "ocioOutputSpaceIndex": 1,
+        "frameRange": 1,
+        "prefPixelCoding": 1,
+        "prefBitDepth": 0,
+        "crf": 1,
+        "x26xSpeed": 1,
+    }
+    assert mp4_writer.getParam("fps").get() == 24.0
+    assert mp4_writer.getParam("bitrateMbps").get() == 185.0
+    assert mp4_writer.getParam("gopSize").get() == -1
+    assert mp4_writer.getParam("bFrames").get() == -1
+    assert mp4_writer.getParam("fastStart").get() is False
+
+
 def test_refresh_recreates_a_missing_internal_writer(monkeypatch, tmp_path: Path) -> None:
     plugin = _load_plugin_with_extension(monkeypatch)
     project_directory = (
