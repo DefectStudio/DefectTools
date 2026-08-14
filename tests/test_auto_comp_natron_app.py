@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 from portable_pipe_tools.apps.auto_comp_natron_app import AutoCompNatronApp
 from portable_pipe_tools.auto_comp_natron.create_comp import (
@@ -15,6 +15,11 @@ from portable_pipe_tools.auto_comp_natron.create_comp import (
 from portable_pipe_tools.auto_comp_natron.open_comp import (
     CompNotFoundError,
     OpenCompResult,
+)
+from portable_pipe_tools.auto_comp_natron.render_comp import (
+    RenderCompCompletion,
+    RenderCompResult,
+    SmartWriteNotFoundError,
 )
 from portable_pipe_tools.auto_comp_natron.settings import (
     load_saved_browser_selection,
@@ -303,8 +308,12 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 app.shot_context_menu.entrycget(2, "label"),
             )
             self.assertEqual(
+                "Render Comp",
+                app.shot_context_menu.entrycget(3, "label"),
+            )
+            self.assertEqual(
                 "Open in Explorer",
-                app.shot_context_menu.entrycget(4, "label"),
+                app.shot_context_menu.entrycget(5, "label"),
             )
             self.assertEqual(
                 "Create All Comps",
@@ -741,6 +750,107 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 self.assertEqual(
                     "Opened existing comp: AAA_000_0010_comp_v001.ntp.",
                     app.status_var.get(),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_render_comp_targets_right_clicked_shot_and_reports_completion(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            executable = temporary_path / "Natron.exe"
+            executable.touch()
+            comp_path = Path("AAA_000_0020_comp_v001.ntp")
+            render_result = RenderCompResult(
+                comp_path=comp_path,
+                process=Mock(),
+                status_path=temporary_path / "status.json",
+                hydrated_source_files=38,
+            )
+            completion = RenderCompCompletion(
+                comp_path=comp_path,
+                rendered_smart_writes=1,
+                hydrated_source_files=38,
+            )
+
+            try:
+                app._set_repository_connected(repository)
+                app.natron_executable_path = executable
+                app.shot_list.selection_clear(0, "end")
+                app.shot_list.selection_set(0, 1)
+                app._select_shot_for_context_menu(1)
+                with (
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "render_comp",
+                        return_value=render_result,
+                    ) as render_mock,
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "poll_render_comp",
+                        return_value=completion,
+                    ) as poll_mock,
+                ):
+                    app._render_selected_comp()
+
+                render_mock.assert_called_once_with(
+                    repository / "alpha",
+                    "AAA",
+                    "AAA_000_0020",
+                    natron_executable=executable,
+                    hydration_progress=app._update_source_hydration_progress,
+                )
+                poll_mock.assert_called_once_with(render_result)
+                self.assertEqual(
+                    "Downloaded 38 source frames. Successfully rendered comp: "
+                    "AAA_000_0020_comp_v001.ntp.",
+                    app.status_var.get(),
+                )
+                self.assertEqual(
+                    "StatusSuccess.TLabel",
+                    app.status_label.cget("style"),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_render_comp_reports_missing_smart_write(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            executable = temporary_path / "Natron.exe"
+            executable.touch()
+            comp_path = Path("AAA_000_0010_comp_v001.ntp")
+
+            try:
+                app._set_repository_connected(repository)
+                app.natron_executable_path = executable
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app.render_comp",
+                    side_effect=SmartWriteNotFoundError(comp_path),
+                ):
+                    app._render_selected_comp()
+
+                self.assertIn(
+                    "Failed to render comp for AAA_000_0010: No SmartWrite node",
+                    app.status_var.get(),
+                )
+                self.assertEqual(
+                    "StatusError.TLabel",
+                    app.status_label.cget("style"),
                 )
             finally:
                 app.root.destroy()

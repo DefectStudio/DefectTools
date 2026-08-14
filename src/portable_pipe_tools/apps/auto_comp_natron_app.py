@@ -15,6 +15,11 @@ from portable_pipe_tools.auto_comp_natron.open_comp import (
     create_and_open_comp,
     open_comp,
 )
+from portable_pipe_tools.auto_comp_natron.render_comp import (
+    RenderCompResult,
+    poll_render_comp,
+    render_comp,
+)
 from portable_pipe_tools.auto_comp_natron.settings import (
     get_default_settings_path,
     load_saved_browser_selection,
@@ -307,6 +312,10 @@ class AutoCompNatronApp:
         self.shot_context_menu.add_command(
             label="Open Comp",
             command=self._open_selected_comp,
+        )
+        self.shot_context_menu.add_command(
+            label="Render Comp",
+            command=self._render_selected_comp,
         )
         self.shot_context_menu.add_separator()
         self.shot_context_menu.add_command(
@@ -892,6 +901,72 @@ class AutoCompNatronApp:
         )
         self._set_status(
             f"{hydration}Opened comp: {result.comp_path.name}.",
+            "success",
+        )
+
+    def _render_selected_comp(self) -> None:
+        show_path = self._selected_show_path()
+        sequence_name = self._selected_value(
+            self.sequence_list,
+            self.sequence_names,
+        )
+        shot_name = self._active_selected_shot_name()
+        if show_path is None or not sequence_name or not shot_name:
+            self._set_status("Right-click a shot to render its comp.", "warning")
+            return
+        if not self._ensure_natron_executable():
+            return
+
+        self._set_status(
+            f"Checking Dropbox source files for {shot_name}...",
+            "normal",
+        )
+        self.root.update_idletasks()
+        try:
+            result = render_comp(
+                show_path,
+                sequence_name,
+                shot_name,
+                natron_executable=self.natron_executable_path,
+                hydration_progress=self._update_source_hydration_progress,
+            )
+        except Exception as error:
+            self._set_status(
+                f"Failed to render comp for {shot_name}: {error}",
+                "error",
+            )
+            return
+
+        self._set_status(f"Rendering comp: {result.comp_path.name}...", "normal")
+        self._poll_render_result(result, shot_name)
+
+    def _poll_render_result(
+        self,
+        result: RenderCompResult,
+        shot_name: str,
+    ) -> None:
+        try:
+            completion = poll_render_comp(result)
+        except Exception as error:
+            self._set_status(
+                f"Failed to render comp for {shot_name}: {error}",
+                "error",
+            )
+            return
+        if completion is None:
+            self.root.after(
+                250,
+                lambda: self._poll_render_result(result, shot_name),
+            )
+            return
+
+        hydration = (
+            f"Downloaded {completion.hydrated_source_files} source frames. "
+            if completion.hydrated_source_files
+            else ""
+        )
+        self._set_status(
+            f"{hydration}Successfully rendered comp: {completion.comp_path.name}.",
             "success",
         )
 

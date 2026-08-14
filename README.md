@@ -52,6 +52,11 @@ per-frame download progress and the final download count. An after-load script
 then rescans Smart Read nodes once Natron has restored the whole project,
 replacing any internal Read paths inherited from the comp template.
 
+Shots also provide **Render Comp**. It requires an existing comp containing at
+least one SmartWrite node, hydrates the source sequence, and runs SmartWrite's
+Render All behavior asynchronously through `NatronRenderer.exe`. Completion or
+failure is reported in Auto Comp's status bar.
+
 ## Natron Smart Read PyPlug
 
 The first Smart Read custom-node scaffold lives in `natron_plugins`. Launch
