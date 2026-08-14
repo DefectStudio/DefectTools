@@ -7,6 +7,7 @@ from tkinter import filedialog, messagebox, ttk
 from portable_pipe_tools.auto_comp_natron.create_comp import (
     CompAlreadyExistsError,
     CompTemplateNotFoundError,
+    SmartWriteOutputOptions,
     create_comp,
 )
 from portable_pipe_tools.auto_comp_natron.open_comp import (
@@ -67,8 +68,10 @@ class AutoCompNatronApp:
         self.sequence_paths_by_name: dict[str, Path] = {}
         self.shot_names: list[str] = []
         self.shot_rows_by_name: dict[str, ShotRow] = {}
-        self.hero_var = tk.BooleanVar(value=True)
         self.exr_var = tk.BooleanVar(value=True)
+        self.mp4_var = tk.BooleanVar(value=True)
+        self.mov_var = tk.BooleanVar(value=False)
+        self.hero_var = tk.BooleanVar(value=True)
 
         self._configure_styles()
         self._build_menu()
@@ -821,6 +824,7 @@ class AutoCompNatronApp:
                 show_path,
                 sequence_name,
                 shot_name,
+                smart_write_outputs=self._smart_write_output_options(),
                 natron_executable=self.natron_executable_path,
                 hydration_progress=self._update_source_hydration_progress,
             )
@@ -942,12 +946,18 @@ class AutoCompNatronApp:
         status_action: str,
     ) -> None:
 
+        smart_write_outputs = self._smart_write_output_options()
         succeeded = 0
         failed = 0
         last_failure = ""
         for shot_name in shot_names:
             try:
-                create_comp(show_path, sequence_name, shot_name)
+                create_comp(
+                    show_path,
+                    sequence_name,
+                    shot_name,
+                    smart_write_outputs=smart_write_outputs,
+                )
             except CompAlreadyExistsError:
                 failed += 1
                 last_failure = f"{shot_name} already has a comp"
@@ -971,6 +981,14 @@ class AutoCompNatronApp:
             else "warning"
         )
         self._set_status(message, level)
+
+    def _smart_write_output_options(self) -> SmartWriteOutputOptions:
+        return SmartWriteOutputOptions(
+            exr=self.exr_var.get(),
+            mp4=self.mp4_var.get(),
+            mov=self.mov_var.get(),
+            hero=self.hero_var.get(),
+        )
 
     def _set_status(self, message: str, level: str = "normal") -> None:
         style_by_level = {
@@ -1149,15 +1167,29 @@ class AutoCompNatronApp:
 
         ttk.Checkbutton(
             content,
-            text="Hero",
-            variable=self.hero_var,
+            text="EXR",
+            variable=self.exr_var,
             style="Option.TCheckbutton",
         ).pack(anchor="w")
 
         ttk.Checkbutton(
             content,
-            text="EXR",
-            variable=self.exr_var,
+            text="MP4",
+            variable=self.mp4_var,
+            style="Option.TCheckbutton",
+        ).pack(anchor="w")
+
+        ttk.Checkbutton(
+            content,
+            text="MOV",
+            variable=self.mov_var,
+            style="Option.TCheckbutton",
+        ).pack(anchor="w")
+
+        ttk.Checkbutton(
+            content,
+            text="Hero",
+            variable=self.hero_var,
             style="Option.TCheckbutton",
         ).pack(anchor="w")
 

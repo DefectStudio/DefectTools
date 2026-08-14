@@ -597,7 +597,7 @@ def test_exr_render_buttons_sync_every_exposed_setting_before_render(
         assert snapshot["disableNode"] is False
         assert snapshot["settings"] == expected_settings
         assert snapshot["tasks"][0][0] is writer
-        assert snapshot["tasks"][0][1:] == (1001, 1040, 1)
+        assert snapshot["tasks"][0][1:] == (1001, 1040, 3)
 
 
 @pytest.mark.parametrize("button_name", ["renderHero", "renderAll"])
@@ -657,7 +657,7 @@ def test_hero_render_buttons_sync_every_exposed_setting_before_submission(
 
     def capture_render(tasks) -> None:
         hero_task = next(task for task in tasks if task[0] is hero_writer)
-        assert hero_task[1:] == (1101, 1123, 1)
+        assert hero_task[1:] == (1101, 1123, 2)
         assert {
             name: hero_writer.getParam(name).get() for name in exposed_names
         } == expected_settings
@@ -1329,7 +1329,11 @@ def test_video_render_buttons_resync_every_writer_option_before_submit(
         snapshot = snapshots[0]
         assert [task[0] for task in snapshot["tasks"]] == expected_tasks
         assert [task[1:] for task in snapshot["tasks"]] == [
-            (*app.timeline_bounds, 1) for _writer_name in expected_tasks
+            (
+                *app.timeline_bounds,
+                writer_values[expected_writer][1]["frameIncr"],
+            )
+            for expected_writer in expected_tasks
         ]
         assert expected_filenames["MP4Write"].endswith(".mp4")
         assert expected_filenames["MOVWrite"].endswith(".mov")
@@ -1344,3 +1348,126 @@ def test_video_render_buttons_resync_every_writer_option_before_submit(
                 is not video_enabled[checkbox_name]
             )
             assert writer_snapshot["settings"] == expected_values
+
+
+@pytest.mark.parametrize(
+    "checkbox_name,button_name,writer_name,prefix,render_all",
+    [
+        ("exrOutput", "renderEXR", "EXRWrite", "exr", False),
+        ("exrOutput", "renderAll", "EXRWrite", "exr", True),
+        ("mp4Output", "renderMP4", "MP4Write", "mp4", False),
+        ("mp4Output", "renderAll", "MP4Write", "mp4", True),
+        ("movOutput", "renderMOV", "MOVWrite", "mov", False),
+        ("movOutput", "renderAll", "MOVWrite", "mov", True),
+        ("heroOutput", "renderHero", "HeroWrite", "hero", False),
+        ("heroOutput", "renderAll", "HeroWrite", "hero", True),
+    ],
+)
+def test_every_exposed_field_reaches_writer_before_every_render_submission(
+    monkeypatch,
+    tmp_path: Path,
+    checkbox_name: str,
+    button_name: str,
+    writer_name: str,
+    prefix: str,
+    render_all: bool,
+) -> None:
+    """Contract test for all 77 settings through individual and Render All paths."""
+
+    plugin = _load_plugin_with_extension(monkeypatch)
+    extension = sys.modules["SmartWriteExt"]
+    project_directory = (
+        tmp_path
+        / (prefix + ("_all" if render_all else "_single"))
+        / "sequences"
+        / "TST"
+        / "TST_000_0001"
+        / "comp"
+        / "natron"
+    )
+    project_directory.mkdir(parents=True)
+    app = FakeApp(project_directory)
+    app.timeline_bounds = (1001, 1040)
+    group = FakeGroup()
+    app.groups.append(group)
+    plugin["createInstance"](app, group)
+
+    for candidate, _writer, _path in extension.WRITER_SPECS:
+        checkbox = group.getParam(candidate)
+        checkbox.set(candidate == checkbox_name)
+        plugin["onParamChanged"](checkbox, group, group, app, True)
+
+    section = next(
+        candidate
+        for candidate in extension.SETTINGS_SECTIONS
+        if candidate[3] == writer_name
+    )
+    writer = group.getNode(writer_name)
+    expected = {}
+    for index, (native_name, creator_name) in enumerate(section[5], start=1):
+        exposed = group.getParam(f"{prefix}_{native_name}")
+        native = writer.getParam(native_name)
+        assert exposed is not None, f"missing exposed field {prefix}_{native_name}"
+        assert native is not None, f"missing native field {writer_name}.{native_name}"
+
+        if creator_name == "createChoiceParam":
+            options = (
+                ["union", "project", "manual"]
+                if native_name == "frameRange"
+                else ["choice0", "choice1", "choice2"]
+            )
+            exposed.setOptions(options)
+            native.setOptions(options)
+            value = 2 if native_name == "frameRange" else 1
+        elif creator_name == "createBooleanParam":
+            value = not bool(exposed.get())
+        elif creator_name == "createDoubleParam":
+            value = 40.25 + index
+        else:
+            special_ints = {
+                "firstFrame": 1011,
+                "lastFrame": 1037,
+                "frameIncr": 3,
+            }
+            value = special_ints.get(native_name, 30 + index)
+
+        exposed.set(value)
+        plugin["onParamChanged"](exposed, group, group, app, True)
+        expected[native_name] = exposed.get()
+        assert native.get() == expected[native_name], (
+            f"immediate sync failed for {writer_name}.{native_name}"
+        )
+
+    # Prove the button path performs a final full resync, rather than merely
+    # inheriting the values from individual field-change callbacks.
+    for native_name, expected_value in expected.items():
+        native = writer.getParam(native_name)
+        if isinstance(expected_value, bool):
+            poisoned = not expected_value
+        elif native_name == "frameRange":
+            poisoned = 0
+        elif isinstance(expected_value, float):
+            poisoned = expected_value + 100.0
+        else:
+            poisoned = expected_value + 100
+        native.set(poisoned)
+
+    submissions = []
+
+    def capture_submission(_app, tasks) -> None:
+        submissions.append(list(tasks))
+
+    monkeypatch.setattr(extension, "_submit_render_tasks", capture_submission)
+    plugin["onParamChanged"](
+        group.getParam(button_name), group, group, app, True
+    )
+
+    assert len(submissions) == 1
+    assert len(submissions[0]) == 1
+    task = submissions[0][0]
+    assert task[0] is writer
+    assert task[1:] == (1011, 1037, 3)
+    assert {
+        native_name: writer.getParam(native_name).get()
+        for native_name in expected
+    } == expected

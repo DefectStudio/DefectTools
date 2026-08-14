@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from portable_pipe_tools.auto_comp_natron.create_comp import (
+    SmartWriteOutputOptions,
     get_comp_path,
     get_template_candidates,
 )
@@ -155,18 +156,44 @@ class OpenCompTests(unittest.TestCase):
             show_root = Path(temporary_directory) / "show"
             _, fallback_template = get_template_candidates(show_root, "BSH")
             fallback_template.parent.mkdir(parents=True)
-            fallback_template.write_bytes(b"template")
+            fallback_template.write_text(
+                "<Project>"
+                "<Name>exrOutput</Name><Type>Bool</Type><item><Value>1</Value></item>"
+                "<Name>mp4Output</Name><Type>Bool</Type><item><Value>1</Value></item>"
+                "<Name>movOutput</Name><Type>Bool</Type><item><Value>0</Value></item>"
+                "<Name>heroOutput</Name><Type>Bool</Type><item><Value>1</Value></item>"
+                "</Project>",
+                encoding="utf-8",
+            )
             opener = Mock()
 
             result = create_and_open_comp(
                 show_root,
                 "BSH",
                 "BSH_000_0010",
+                smart_write_outputs=SmartWriteOutputOptions(
+                    exr=False,
+                    mp4=True,
+                    mov=True,
+                    hero=False,
+                ),
                 opener=opener,
             )
 
             self.assertTrue(result.created)
-            self.assertEqual(b"template", result.comp_path.read_bytes())
+            project_text = result.comp_path.read_text(encoding="utf-8")
+            expected_values = {
+                "exrOutput": 0,
+                "mp4Output": 1,
+                "movOutput": 1,
+                "heroOutput": 0,
+            }
+            for parameter_name, expected_value in expected_values.items():
+                self.assertIn(
+                    f"<Name>{parameter_name}</Name><Type>Bool</Type>"
+                    f"<item><Value>{expected_value}</Value>",
+                    project_text,
+                )
             opener.assert_called_once_with(result.comp_path)
 
     @patch(

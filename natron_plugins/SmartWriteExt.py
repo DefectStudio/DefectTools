@@ -772,6 +772,51 @@ def _render_frame_range(app, group):
     return app.timelineGetLeftBound(), app.timelineGetRightBound()
 
 
+def _writer_render_range(app, group, writer):
+    """Resolve the actual task range for one writer's range controls."""
+
+    first_frame, last_frame = _render_frame_range(app, group)
+    frame_increment = 1
+    if writer is None:
+        return first_frame, last_frame, frame_increment
+
+    frame_range = writer.getParam("frameRange")
+    selected_label = _selected_choice_label(frame_range) if frame_range else ""
+    try:
+        selected_value = int(frame_range.get()) if frame_range else -1
+    except (TypeError, ValueError, RuntimeError):
+        selected_value = -1
+    manual = selected_label == "manual" or (
+        not selected_label and selected_value == 2
+    )
+    if manual:
+        first_param = writer.getParam("firstFrame")
+        last_param = writer.getParam("lastFrame")
+        if first_param is not None and last_param is not None:
+            try:
+                manual_first = int(first_param.get())
+                manual_last = int(last_param.get())
+            except (TypeError, ValueError, RuntimeError):
+                pass
+            else:
+                if manual_last >= manual_first:
+                    first_frame, last_frame = manual_first, manual_last
+
+    increment_param = writer.getParam("frameIncr")
+    if increment_param is not None:
+        try:
+            frame_increment = max(1, int(increment_param.get()))
+        except (TypeError, ValueError, RuntimeError):
+            frame_increment = 1
+    return first_frame, last_frame, frame_increment
+
+
+def _submit_render_tasks(app, tasks):
+    """Small seam used by integration tests to inspect button submissions."""
+
+    app.render(tasks)
+
+
 def _render_enabled_outputs(app, group, checkbox_names):
     """Submit selected, enabled internal writers as one Natron render batch."""
 
@@ -779,7 +824,6 @@ def _render_enabled_outputs(app, group, checkbox_names):
     active_writers = _active_writers(group)
     selected_names = set(checkbox_names)
     tasks = []
-    first_frame, last_frame = _render_frame_range(app, group)
     for checkbox_name, writer_name, _path_attribute in WRITER_SPECS:
         if checkbox_name not in selected_names:
             continue
@@ -792,11 +836,14 @@ def _render_enabled_outputs(app, group, checkbox_names):
         filename = writer.getParam("filename")
         if filename is None or not filename.get():
             continue
-        tasks.append((writer, first_frame, last_frame, 1))
+        first_frame, last_frame, frame_increment = _writer_render_range(
+            app, group, writer
+        )
+        tasks.append((writer, first_frame, last_frame, frame_increment))
 
     if not tasks:
         return False
-    app.render(tasks)
+    _submit_render_tasks(app, tasks)
     return True
 
 

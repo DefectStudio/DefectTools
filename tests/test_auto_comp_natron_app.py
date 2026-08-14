@@ -10,6 +10,7 @@ from portable_pipe_tools.auto_comp_natron.create_comp import (
     CompAlreadyExistsError,
     CompTemplateNotFoundError,
     CreateCompResult,
+    SmartWriteOutputOptions,
 )
 from portable_pipe_tools.auto_comp_natron.open_comp import (
     CompNotFoundError,
@@ -75,8 +76,20 @@ class AutoCompNatronAppTests(unittest.TestCase):
             self.assertEqual([], app.show_names)
             self.assertEqual([], app.sequence_names)
             self.assertEqual([], app.shot_names)
-            self.assertTrue(app.hero_var.get())
             self.assertTrue(app.exr_var.get())
+            self.assertTrue(app.mp4_var.get())
+            self.assertFalse(app.mov_var.get())
+            self.assertTrue(app.hero_var.get())
+            widgets = [app.root]
+            checkbox_labels: set[str] = set()
+            while widgets:
+                widget = widgets.pop()
+                widgets.extend(widget.winfo_children())
+                if widget.winfo_class() == "TCheckbutton":
+                    checkbox_labels.add(str(widget.cget("text")))
+            self.assertTrue(
+                {"EXR", "MP4", "MOV", "Hero"}.issubset(checkbox_labels)
+            )
         finally:
             app.root.destroy()
 
@@ -409,6 +422,10 @@ class AutoCompNatronAppTests(unittest.TestCase):
 
             try:
                 app._set_repository_connected(repository)
+                app.exr_var.set(False)
+                app.mp4_var.set(True)
+                app.mov_var.set(True)
+                app.hero_var.set(False)
                 with patch(
                     "portable_pipe_tools.apps.auto_comp_natron_app.create_comp",
                     return_value=result,
@@ -419,6 +436,12 @@ class AutoCompNatronAppTests(unittest.TestCase):
                     repository / "alpha",
                     "AAA",
                     "AAA_000_0010",
+                    smart_write_outputs=SmartWriteOutputOptions(
+                        exr=False,
+                        mp4=True,
+                        mov=True,
+                        hero=False,
+                    ),
                 )
                 self.assertEqual(
                     "Create Comps complete — Succeeded: 1; Failed: 0.",
@@ -536,11 +559,13 @@ class AutoCompNatronAppTests(unittest.TestCase):
                             repository / "alpha",
                             "AAA",
                             "AAA_000_0010",
+                            smart_write_outputs=SmartWriteOutputOptions(),
                         ),
                         call(
                             repository / "alpha",
                             "AAA",
                             "AAA_000_0020",
+                            smart_write_outputs=SmartWriteOutputOptions(),
                         ),
                     ],
                     create_mock.call_args_list,
@@ -614,11 +639,13 @@ class AutoCompNatronAppTests(unittest.TestCase):
                             repository / "alpha",
                             "AAA",
                             "AAA_000_0010",
+                            smart_write_outputs=SmartWriteOutputOptions(),
                         ),
                         call(
                             repository / "alpha",
                             "AAA",
                             "AAA_000_0020",
+                            smart_write_outputs=SmartWriteOutputOptions(),
                         ),
                     ],
                     create_mock.call_args_list,
@@ -669,6 +696,7 @@ class AutoCompNatronAppTests(unittest.TestCase):
                     repository / "alpha",
                     "AAA",
                     "AAA_000_0020",
+                    smart_write_outputs=SmartWriteOutputOptions(),
                     natron_executable=executable,
                     hydration_progress=app._update_source_hydration_progress,
                 )

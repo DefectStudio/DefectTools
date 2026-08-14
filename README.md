@@ -16,8 +16,11 @@ Launch the static Auto Comp interface concept:
 tools\auto_comp_natron.bat
 ```
 
-The window shows placeholder Show, Sequence, and Shot browsers plus Hero and EXR
-options. On first launch it asks for the shared repository folder and saves the
+The window shows placeholder Show, Sequence, and Shot browsers plus EXR, MP4,
+MOV, and Hero output options. EXR, MP4, and Hero default on; MOV defaults off.
+When Auto Comp creates a Natron project, those four choices are persisted on the
+template's SmartWrite node. On first launch it asks for the shared repository
+folder and saves the
 choice to `LocalSaveFiles\auto_comp_natron_local_save.json`. The toolbar reports
 whether that saved repository is connected, and its Repository button or
 **File > Change Repository Folder...** can change the connection later. The

@@ -8,6 +8,7 @@ import subprocess
 
 from portable_pipe_tools.auto_comp_natron.create_comp import (
     CompAlreadyExistsError,
+    SmartWriteOutputOptions,
     create_comp,
     get_comp_path,
 )
@@ -152,6 +153,7 @@ def create_and_open_comp(
     sequence_name: str,
     shot_name: str,
     *,
+    smart_write_outputs: SmartWriteOutputOptions | None = None,
     opener: CompOpener | None = None,
     natron_executable: str | Path | None = None,
     hydration_progress: HydrationProgress | None = None,
@@ -163,7 +165,12 @@ def create_and_open_comp(
         progress=hydration_progress,
     )
     try:
-        create_result = create_comp(show_root, sequence_name, shot_name)
+        create_result = create_comp(
+            show_root,
+            sequence_name,
+            shot_name,
+            smart_write_outputs=smart_write_outputs,
+        )
     except CompAlreadyExistsError as error:
         comp_path = error.comp_path
         created = False

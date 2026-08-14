@@ -40,6 +40,14 @@ class CreateCompResult:
     used_fallback_template: bool
 
 
+@dataclass(frozen=True)
+class SmartWriteOutputOptions:
+    exr: bool = True
+    mp4: bool = True
+    mov: bool = False
+    hero: bool = True
+
+
 def _template_shot_name(sequence_name: str) -> str:
     return f"{sequence_name}_000_{TEMPLATE_SHOT_NUMBER}"
 
@@ -140,10 +148,48 @@ def _set_natron_project_directory(comp_path: Path) -> None:
         comp_path.write_text(updated_text, encoding="utf-8")
 
 
+def _set_smart_write_outputs(
+    comp_path: Path,
+    output_options: SmartWriteOutputOptions,
+) -> None:
+    """Persist Auto Comp's output choices on every SmartWrite in the template."""
+
+    try:
+        project_text = comp_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return
+
+    output_values = {
+        "exrOutput": output_options.exr,
+        "mp4Output": output_options.mp4,
+        "movOutput": output_options.mov,
+        "heroOutput": output_options.hero,
+    }
+    updated_text = project_text
+    for parameter_name, enabled in output_values.items():
+        value_pattern = re.compile(
+            r"(<Name>"
+            + re.escape(parameter_name)
+            + r"</Name>\s*<Type>Bool</Type>.*?<Value>)(?:0|1)(</Value>)",
+            re.DOTALL,
+        )
+        updated_text = value_pattern.sub(
+            lambda match: match.group(1)
+            + ("1" if enabled else "0")
+            + match.group(2),
+            updated_text,
+        )
+
+    if updated_text != project_text:
+        comp_path.write_text(updated_text, encoding="utf-8")
+
+
 def create_comp(
     show_root: str | Path,
     sequence_name: str,
     shot_name: str,
+    *,
+    smart_write_outputs: SmartWriteOutputOptions | None = None,
 ) -> CreateCompResult:
     sequence = sequence_name.strip().upper()
     shot = shot_name.strip()
@@ -164,6 +210,8 @@ def create_comp(
     try:
         _copy_without_overwrite(template_path, target_path)
         _set_natron_project_directory(target_path)
+        if smart_write_outputs is not None:
+            _set_smart_write_outputs(target_path, smart_write_outputs)
     except FileExistsError as error:
         raise CompAlreadyExistsError(target_path) from error
     except Exception:
