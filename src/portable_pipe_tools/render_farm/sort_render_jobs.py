@@ -17,10 +17,11 @@ SORTABLE_JOB_COLUMNS = frozenset(
         "errors",
         "progress",
         "submitted",
+        "completed",
     }
 )
 DEFAULT_DESCENDING_COLUMNS = frozenset(
-    {"render_time", "errors", "progress", "submitted"}
+    {"render_time", "errors", "progress", "submitted", "completed"}
 )
 
 
@@ -74,6 +75,8 @@ def _sort_value(job: RenderJob, column: str) -> Any:
         return job.progress
     if column == "submitted":
         return _timestamp_value(job.submitted_utc)
+    if column == "completed":
+        return _timestamp_value(job.render_finished_utc)
     raise AssertionError(f"Unhandled render-job sort column: {column}")
 
 

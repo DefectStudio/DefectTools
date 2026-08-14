@@ -80,6 +80,13 @@ class FarmRenderManagerAppTests(unittest.TestCase):
         self.assertEqual("Worker", JOB_COLUMNS[worker_index].heading)
         self.assertEqual("user", keys[worker_index + 1])
 
+    def test_completed_column_is_immediately_right_of_submitted(self) -> None:
+        keys = [column.key for column in JOB_COLUMNS]
+        submitted_index = keys.index("submitted")
+
+        self.assertEqual("Completed", JOB_COLUMNS[submitted_index + 1].heading)
+        self.assertEqual("completed", keys[submitted_index + 1])
+
     def test_compact_job_columns_make_room_for_render_time(self) -> None:
         columns = {column.key: column for column in JOB_COLUMNS}
 

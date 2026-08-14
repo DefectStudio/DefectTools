@@ -83,6 +83,7 @@ JOB_COLUMNS = (
     ListColumn("errors", "Errors", 41, anchor="center"),
     ListColumn("progress", "Progress", 80, anchor="center"),
     ListColumn("submitted", "Submitted", 135),
+    ListColumn("completed", "Completed", 135),
 )
 
 WORKER_COLUMNS = (
@@ -1295,6 +1296,7 @@ class FarmRenderManagerApp:
                 job.error_count,
                 f"{job.progress:g}%",
                 format_submitted_pacific(job.submitted_utc),
+                format_submitted_pacific(job.render_finished_utc),
             )
             tag = self._status_tag(job.status)
             item_id = self.job_tree.insert(

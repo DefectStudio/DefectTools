@@ -139,10 +139,30 @@ class SortRenderJobsTests(unittest.TestCase):
             [job.job_name for job in sorted_jobs],
         )
 
+    def test_completed_sorts_by_finish_time_with_missing_values_last(self) -> None:
+        jobs = [
+            _job("missing"),
+            _job("new", render_finished="2026-08-04T13:00:00Z"),
+            _job("old", render_finished="2026-08-04T11:00:00Z"),
+        ]
+
+        newest_first = sort_render_jobs(jobs, "completed", descending=True)
+        oldest_first = sort_render_jobs(jobs, "completed", descending=False)
+
+        self.assertEqual(
+            ["new", "old", "missing"],
+            [job.job_name for job in newest_first],
+        )
+        self.assertEqual(
+            ["old", "new", "missing"],
+            [job.job_name for job in oldest_first],
+        )
+
     def test_useful_numeric_columns_default_to_highest_first(self) -> None:
         self.assertTrue(default_sort_descending("errors"))
         self.assertTrue(default_sort_descending("progress"))
         self.assertTrue(default_sort_descending("submitted"))
+        self.assertTrue(default_sort_descending("completed"))
         self.assertTrue(default_sort_descending("render_time"))
         self.assertFalse(default_sort_descending("job_name"))
 
