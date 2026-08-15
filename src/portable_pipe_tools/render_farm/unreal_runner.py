@@ -378,13 +378,14 @@ def _interpret_unreal_result(
     exit_code: int,
     unreal_result: dict[str, Any] | None,
 ) -> UnrealExecutionResult:
-    if exit_code != 0:
-        reason = f"UnrealEditor-Cmd exited with code {exit_code}."
-        if unreal_result and unreal_result.get("reason"):
-            reason += f" Unreal reported: {unreal_result['reason']}"
-        return UnrealExecutionResult(False, reason, exit_code, unreal_result)
-
     if unreal_result is None:
+        if exit_code != 0:
+            return UnrealExecutionResult(
+                False,
+                f"UnrealEditor-Cmd exited with code {exit_code}.",
+                exit_code,
+                None,
+            )
         return UnrealExecutionResult(
             False,
             "Unreal exited with code 0 but did not write unreal_result.json.",
@@ -398,6 +399,43 @@ def _interpret_unreal_result(
             exit_code,
             unreal_result,
         )
+
+    output_validation = unreal_result.get("output_validation")
+    output_validation_succeeded = (
+        isinstance(output_validation, dict)
+        and output_validation.get("success") is True
+    )
+    if unreal_result.get("success") is True:
+        output_file_count = unreal_result.get("output_file_count", 0)
+        if exit_code == 0:
+            return UnrealExecutionResult(
+                True,
+                (
+                    "Unreal render completed successfully; "
+                    f"{output_file_count} output file(s) reported."
+                ),
+                exit_code,
+                unreal_result,
+            )
+        if output_validation_succeeded:
+            return UnrealExecutionResult(
+                True,
+                (
+                    "Unreal render completed successfully; "
+                    f"{output_file_count} output file(s) were validated. "
+                    f"UnrealEditor-Cmd then exited with code {exit_code} during "
+                    "shutdown."
+                ),
+                exit_code,
+                unreal_result,
+            )
+
+    if exit_code != 0:
+        reason = f"UnrealEditor-Cmd exited with code {exit_code}."
+        if unreal_result.get("reason"):
+            reason += f" Unreal reported: {unreal_result['reason']}"
+        return UnrealExecutionResult(False, reason, exit_code, unreal_result)
+
     if unreal_result.get("success") is not True:
         return UnrealExecutionResult(
             False,
@@ -405,11 +443,9 @@ def _interpret_unreal_result(
             exit_code,
             unreal_result,
         )
-
-    output_file_count = unreal_result.get("output_file_count", 0)
     return UnrealExecutionResult(
-        True,
-        f"Unreal render completed successfully; {output_file_count} output file(s) reported.",
+        False,
+        "Unreal reported success but output validation did not pass.",
         exit_code,
         unreal_result,
     )

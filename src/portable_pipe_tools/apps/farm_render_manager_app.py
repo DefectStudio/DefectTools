@@ -36,6 +36,15 @@ from portable_pipe_tools.render_farm.manager_settings import (
     save_auto_refresh_interval_minutes,
     save_dropbox_folder,
 )
+from portable_pipe_tools.render_farm.manage_render_jobs import (
+    clear_render_job_blacklist,
+    resubmit_failed_render_job,
+)
+from portable_pipe_tools.render_farm.queue import (
+    BLACKLISTED_WORKERS_FIELD,
+    IS_RENDERING_FOLDER,
+    RENDER_FAILED_FOLDER,
+)
 from portable_pipe_tools.render_farm.render_job import RenderJob
 from portable_pipe_tools.render_farm.render_time import format_render_time
 from portable_pipe_tools.render_farm.sort_render_jobs import (
@@ -679,6 +688,17 @@ class FarmRenderManagerApp:
             activeforeground="#ffffff",
             borderwidth=0,
         )
+        self.job_context_menu.add_command(
+            label="Resubmit",
+            command=self._resubmit_selected_jobs,
+        )
+        self._resubmit_job_menu_index = int(self.job_context_menu.index("end"))
+        self.job_context_menu.add_command(
+            label="Clear Black List",
+            command=self._clear_selected_job_blacklists,
+        )
+        self._clear_blacklist_menu_index = int(self.job_context_menu.index("end"))
+        self.job_context_menu.add_separator()
         self.job_context_menu.add_command(
             label="Delete",
             accelerator="Del",
@@ -1567,6 +1587,26 @@ class FarmRenderManagerApp:
         if row_id not in self.job_tree.selection():
             self.job_tree.selection_set(row_id)
         self.job_tree.focus(row_id)
+        selected_jobs = self._selected_jobs()
+        can_resubmit = bool(selected_jobs) and all(
+            job.queue_name == RENDER_FAILED_FOLDER for job in selected_jobs
+        )
+        can_clear_blacklist = (
+            bool(selected_jobs)
+            and all(job.queue_name != IS_RENDERING_FOLDER for job in selected_jobs)
+            and any(
+                bool(job.job_data.get(BLACKLISTED_WORKERS_FIELD))
+                for job in selected_jobs
+            )
+        )
+        self.job_context_menu.entryconfigure(
+            self._resubmit_job_menu_index,
+            state="normal" if can_resubmit else "disabled",
+        )
+        self.job_context_menu.entryconfigure(
+            self._clear_blacklist_menu_index,
+            state="normal" if can_clear_blacklist else "disabled",
+        )
         try:
             self.job_context_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -1695,12 +1735,161 @@ class FarmRenderManagerApp:
         self._delete_selected_jobs()
         return "break"
 
-    def _delete_selected_jobs(self) -> None:
-        selected_jobs = [
+    def _selected_jobs(self) -> list[RenderJob]:
+        return [
             job
             for item_id in self.job_tree.selection()
             if (job := self._jobs_by_item.get(item_id)) is not None
         ]
+
+    def _clear_selected_job_blacklists(self) -> None:
+        selected_jobs = [
+            job
+            for job in self._selected_jobs()
+            if job.queue_name != IS_RENDERING_FOLDER
+            and bool(job.job_data.get(BLACKLISTED_WORKERS_FIELD))
+        ]
+        if not selected_jobs:
+            return
+
+        worker_count = sum(
+            len(job.job_data.get(BLACKLISTED_WORKERS_FIELD, []))
+            for job in selected_jobs
+        )
+        if len(selected_jobs) == 1:
+            prompt = (
+                f'Clear {worker_count} blacklisted worker(s) from '
+                f'"{selected_jobs[0].job_name}"?'
+            )
+        else:
+            prompt = (
+                f"Clear {worker_count} blacklisted worker entries from "
+                f"{len(selected_jobs)} selected jobs?"
+            )
+        prompt += (
+            "\n\nAn active render worker may claim an eligible queued job "
+            "immediately."
+        )
+        confirmed = messagebox.askyesno(
+            "Clear Render Job Black List",
+            prompt,
+            icon="warning",
+            default="no",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        auto_refresh_was_running = self.auto_refresh_worker.running
+        if auto_refresh_was_running:
+            self.auto_refresh_worker.stop()
+        self.status_var.set("Clearing selected render-job black lists...")
+        self.root.update_idletasks()
+
+        changed_count = 0
+        errors: list[str] = []
+        for job in selected_jobs:
+            try:
+                changed_count += int(clear_render_job_blacklist(job))
+            except Exception as error:
+                errors.append(f"{job.job_name}: {error}")
+
+        self._refresh_jobs()
+        if auto_refresh_was_running and self.auto_refresh_var.get():
+            self.auto_refresh_worker.start()
+
+        if errors:
+            messagebox.showerror(
+                "Clear Render Job Black List",
+                "\n".join(errors),
+                parent=self.root,
+            )
+            self.status_var.set(
+                f"Cleared {changed_count} black lists with {len(errors)} errors"
+            )
+            return
+
+        suffix = "job" if changed_count == 1 else "jobs"
+        self.status_var.set(f"Cleared the black list for {changed_count} render {suffix}")
+
+    def _resubmit_selected_jobs(self) -> None:
+        selected_jobs = self._selected_jobs()
+        if not selected_jobs:
+            return
+        if any(job.queue_name != RENDER_FAILED_FOLDER for job in selected_jobs):
+            messagebox.showerror(
+                "Resubmit Render Job",
+                f"Only jobs in {RENDER_FAILED_FOLDER} can be resubmitted.",
+                parent=self.root,
+            )
+            return
+
+        if len(selected_jobs) == 1:
+            prompt = (
+                f'Resubmit failed render job "{selected_jobs[0].job_name}" as a '
+                "brand-new queued job?"
+            )
+        else:
+            prompt = (
+                f"Resubmit {len(selected_jobs)} failed render jobs as brand-new "
+                "queued jobs?"
+            )
+        prompt += (
+            "\n\nEach original failed package will be preserved. The new package "
+            "will receive a new job ID, a fresh submission time, zero attempts, "
+            "and an empty black list."
+            "\n\nThe shot, render version, and output paths do not change. If output "
+            "already exists for that version, the worker will reject the new job "
+            "until the output is removed or a new render version is submitted."
+        )
+        confirmed = messagebox.askyesno(
+            "Resubmit Render Job",
+            prompt,
+            icon="warning",
+            default="no",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        auto_refresh_was_running = self.auto_refresh_worker.running
+        if auto_refresh_was_running:
+            self.auto_refresh_worker.stop()
+        self.status_var.set("Resubmitting selected render jobs...")
+        self.root.update_idletasks()
+
+        destinations: list[Path] = []
+        errors: list[str] = []
+        for job in selected_jobs:
+            try:
+                destinations.append(resubmit_failed_render_job(job))
+            except Exception as error:
+                errors.append(f"{job.job_name}: {error}")
+
+        self._refresh_jobs()
+        if auto_refresh_was_running and self.auto_refresh_var.get():
+            self.auto_refresh_worker.start()
+
+        if errors:
+            messagebox.showerror(
+                "Resubmit Render Job",
+                "\n".join(errors),
+                parent=self.root,
+            )
+            self.status_var.set(
+                f"Resubmitted {len(destinations)} render jobs with "
+                f"{len(errors)} errors"
+            )
+            return
+
+        suffix = "job" if len(destinations) == 1 else "jobs"
+        self.status_var.set(
+            f"Resubmitted {len(destinations)} render {suffix} to "
+            f"01_NeedsRendering"
+        )
+
+    def _delete_selected_jobs(self) -> None:
+        selected_jobs = self._selected_jobs()
         if not selected_jobs:
             return
 

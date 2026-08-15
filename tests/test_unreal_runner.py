@@ -148,6 +148,41 @@ class UnrealRunnerTests(unittest.TestCase):
             result.terminal_result_details()["output_validation"],
         )
 
+    def test_validated_success_survives_nonzero_shutdown_exit(self) -> None:
+        result = _interpret_unreal_result(
+            self.job,
+            3,
+            {
+                "job_id": self.job["job_id"],
+                "success": True,
+                "output_file_count": 58,
+                "output_validation": {
+                    "success": True,
+                    "validated_output_file_count": 58,
+                    "errors": [],
+                },
+            },
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(3, result.exit_code)
+        self.assertIn("58 output file(s) were validated", result.reason)
+        self.assertIn("exited with code 3 during shutdown", result.reason)
+
+    def test_nonzero_exit_without_validated_output_remains_a_failure(self) -> None:
+        result = _interpret_unreal_result(
+            self.job,
+            3,
+            {
+                "job_id": self.job["job_id"],
+                "success": True,
+                "output_file_count": 0,
+            },
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("exited with code 3", result.reason)
+
     def test_stop_request_terminates_a_running_unreal_process(self) -> None:
         process = Mock()
         process.returncode = -15
