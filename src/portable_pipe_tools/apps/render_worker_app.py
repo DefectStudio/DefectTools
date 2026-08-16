@@ -36,6 +36,10 @@ from portable_pipe_tools.render_farm.listener import (
 from portable_pipe_tools.render_farm.local_paths import (
     derive_show_file_server_path,
 )
+from portable_pipe_tools.render_farm.cloud_dispatch import (
+    DispatcherClient,
+    load_dispatcher_connection,
+)
 from portable_pipe_tools.render_farm.test_job import create_test_job
 from portable_pipe_tools.render_farm.settings import (
     load_saved_local_uproject,
@@ -166,6 +170,7 @@ class ListenerConfiguration:
     local_show_file_server_path: Path
     poll_interval_seconds: int
     render_timeout_seconds: float
+    dispatcher_client: DispatcherClient | None
 
 
 class RenderWorkerApp:
@@ -178,6 +183,15 @@ class RenderWorkerApp:
         self.farm_root_var = tk.StringVar(value=load_saved_render_farm_root())
         self.worker_name_var = tk.StringVar(value=default_worker_name())
         self.simulate_result_var = tk.StringVar(value="success")
+        try:
+            cloud_worker_configured = (
+                load_dispatcher_connection("worker") is not None
+            )
+        except Exception:
+            cloud_worker_configured = False
+        self.use_cloud_dispatcher_var = tk.BooleanVar(
+            value=cloud_worker_configured
+        )
         saved_poll_interval = load_saved_poll_interval_seconds()
         self.poll_interval_var = tk.StringVar(
             value=saved_poll_interval or str(DEFAULT_POLL_INTERVAL_SECONDS)
@@ -475,6 +489,29 @@ class RenderWorkerApp:
             text="Stops and requeues an overlong Unreal render; default is 2 hours.",
         ).grid(row=5, column=2, sticky="w", padx=(8, 0), pady=4)
 
+        ttk.Label(setup_frame, text="Job Coordination").grid(
+            row=7,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+            pady=4,
+        )
+        self.cloud_dispatcher_checkbutton = ttk.Checkbutton(
+            setup_frame,
+            text="Use Cloud Dispatcher",
+            variable=self.use_cloud_dispatcher_var,
+        )
+        self.cloud_dispatcher_checkbutton.grid(
+            row=7,
+            column=1,
+            sticky="w",
+            pady=4,
+        )
+        ttk.Label(
+            setup_frame,
+            text="D1 grants the lease; Dropbox continues carrying packages and outputs.",
+        ).grid(row=7, column=2, sticky="w", padx=(8, 0), pady=4)
+
         button_row = ttk.Frame(outer)
         button_row.pack(fill="x", pady=(12, 8))
 
@@ -736,6 +773,13 @@ class RenderWorkerApp:
         self.worker_name_var.set(worker_name)
         return worker_name
 
+    def _get_dispatcher_client(self) -> DispatcherClient | None:
+        if not self.use_cloud_dispatcher_var.get():
+            return None
+        connection = load_dispatcher_connection("worker", required=True)
+        assert connection is not None
+        return DispatcherClient(connection)
+
     def _get_unreal_editor_cmd(self) -> Path:
         raw_path = self.unreal_editor_cmd_var.get().strip()
         if not raw_path:
@@ -823,12 +867,18 @@ class RenderWorkerApp:
                 local_show_file_server_path=local_show_file_server_path,
                 poll_interval_seconds=self._get_poll_interval_seconds(),
                 render_timeout_seconds=self._get_render_timeout_seconds(),
+                dispatcher_client=self._get_dispatcher_client(),
             )
         except Exception as error:
             self._show_input_error(error)
             return
 
         local_project_message = str(configuration.local_uproject)
+        coordination_message = (
+            "Cloudflare D1 Dispatcher (atomic leases)"
+            if configuration.dispatcher_client is not None
+            else "Legacy filesystem queue"
+        )
         confirmed = messagebox.askyesno(
             "Start Automatic Render Worker",
             "The worker will continuously claim and render real Unreal jobs "
@@ -843,6 +893,7 @@ class RenderWorkerApp:
             f"Local Unreal project:\n{local_project_message}\n\n"
             "Show path derived from Render Farm folder:\n"
             f"{configuration.local_show_file_server_path}\n\n"
+            f"Job coordination: {coordination_message}\n\n"
             "Start the worker?",
             parent=self.root,
         )
@@ -922,6 +973,7 @@ class RenderWorkerApp:
             "Worker-local show root derived from Render Farm folder: "
             f"{configuration.local_show_file_server_path}"
         )
+        self._log(f"Job coordination: {coordination_message}")
         self._schedule_listener_check_now()
 
     def _stop_worker(self) -> None:
@@ -992,6 +1044,8 @@ class RenderWorkerApp:
                 should_stop_before_claim=stop_requested,
                 should_cancel_render=stop_requested,
                 job_callback=self._job_queue.put,
+                dispatcher_client=configuration.dispatcher_client,
+                dispatcher_app_version="render-worker-gui",
             ),
             on_success=self._listener_job_check_finished,
             on_error=self._listener_job_check_errored,
@@ -1004,6 +1058,9 @@ class RenderWorkerApp:
                 self._schedule_listener_wait()
 
     def _listener_job_check_finished(self, result: WorkerResult | None) -> None:
+        if result is not None and result.status == "stopped":
+            self._stop_requested_remotely = True
+            self._listener_state.request_stop()
         action = self._listener_state.finish_job_check(
             job_was_available=result is not None
         )
@@ -1160,6 +1217,7 @@ class RenderWorkerApp:
             local_show_file_server_path = (
                 self._get_derived_show_file_server_path(farm_root)
             )
+            dispatcher_client = self._get_dispatcher_client()
         except Exception as error:
             self._show_input_error(error)
             return
@@ -1175,7 +1233,13 @@ class RenderWorkerApp:
             f"Local Unreal project:\n{local_project_message}\n\n"
             "Show path derived from Render Farm folder:\n"
             f"{local_show_file_server_path}\n\n"
-            "Continue?",
+            "Job coordination: "
+            + (
+                "Cloudflare D1 Dispatcher (atomic leases)\n\n"
+                if dispatcher_client is not None
+                else "Legacy filesystem queue\n\n"
+            )
+            + "Continue?",
             parent=self.root,
         )
         if not confirmed:
@@ -1199,6 +1263,8 @@ class RenderWorkerApp:
                 local_uproject=local_uproject,
                 render_timeout_seconds=render_timeout_seconds,
                 job_callback=self._job_queue.put,
+                dispatcher_client=dispatcher_client,
+                dispatcher_app_version="render-worker-gui",
             ),
             on_success=self._job_processed,
         )
@@ -1206,6 +1272,10 @@ class RenderWorkerApp:
     def _job_processed(self, result: WorkerResult | None) -> None:
         if result is None:
             self._log("No queued job was available.")
+            self._clear_current_job()
+            return
+        if result.status == "stopped":
+            self._log(result.reason)
             self._clear_current_job()
             return
         self._log(f"Job finished with status: {result.status.upper()}")
@@ -1377,6 +1447,7 @@ class RenderWorkerApp:
         self.unreal_editor_cmd_browse_button.configure(state=button_state)
         self.local_uproject_entry.configure(state=entry_state)
         self.local_uproject_browse_button.configure(state=button_state)
+        self.cloud_dispatcher_checkbutton.configure(state=button_state)
 
     def _clear_log(self) -> None:
         self.log_text.configure(state="normal")

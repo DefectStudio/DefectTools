@@ -19,6 +19,8 @@ SCHEMA_VERSION = 1
 JOB_FILENAME = "job.json"
 RESULT_FILENAME = "result.json"
 BLACKLISTED_WORKERS_FIELD = "blacklisted_workers"
+DISPATCHER_COORDINATION_FIELD = "dispatcher_coordination"
+CLOUD_DISPATCHER_COORDINATION = "cloud"
 
 WINDOWS_LOCK_RETRY_TIMEOUT_SECONDS = 15.0
 WINDOWS_LOCK_RETRY_INITIAL_DELAY_SECONDS = 0.1
@@ -315,6 +317,13 @@ def list_job_candidates(
         try:
             job_path = folder / JOB_FILENAME
             job = read_json_object(job_path)
+            if (
+                worker_name is not None
+                and str(job.get(DISPATCHER_COORDINATION_FIELD) or "").casefold()
+                == CLOUD_DISPATCHER_COORDINATION
+            ):
+                # Cloud jobs may only be claimed after D1 grants the worker lease.
+                continue
             if worker_name is not None and is_worker_blacklisted(
                 job,
                 worker_name,
@@ -383,6 +392,40 @@ def claim_next_job(paths: QueuePaths, worker_name: str) -> Path | None:
     return None
 
 
+def claim_job_by_id(
+    paths: QueuePaths,
+    worker_name: str,
+    job_id: str,
+) -> Path | None:
+    """Move the exact package already leased by the Cloud Dispatcher."""
+    safe_worker_name = safe_name(worker_name, "WORKER")
+    if safe_name(job_id, "") != job_id:
+        raise ValueError(f"Cloud Dispatcher returned an unsafe job ID: {job_id!r}")
+
+    queued_folder = paths.needs_rendering / job_id
+    try:
+        queued_job = read_json_object(queued_folder / JOB_FILENAME)
+    except FileNotFoundError:
+        # Dropbox may have announced the directory before job.json arrived.
+        return None
+    if str(queued_job.get("job_id") or "").strip() != job_id:
+        raise ValueError(
+            f"Queued package job ID does not match its Cloud lease: {queued_folder}"
+        )
+
+    claimed_folder = paths.is_rendering / f"{job_id}__{safe_worker_name}"
+    if path_exists_with_retry(claimed_folder):
+        raise FileExistsError(
+            "Cloud-leased claim destination already exists; manual inspection "
+            f"is required: {claimed_folder}"
+        )
+    try:
+        rename_path_with_retry(queued_folder, claimed_folder)
+    except FileNotFoundError:
+        return None
+    return claimed_folder
+
+
 def validate_queued_job(job: dict[str, Any], job_path: Path) -> None:
     if job.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
@@ -422,6 +465,31 @@ def mark_job_rendering(claimed_folder: Path, worker_name: str) -> dict[str, Any]
     job["render_started_utc"] = now
     job["attempt"] = job.get("attempt", 0) + 1
     write_json_atomic(job_path, job)
+    return job
+
+
+def mark_cloud_job_rendering(
+    claimed_folder: Path,
+    worker_name: str,
+    cloud_job: dict[str, Any],
+) -> dict[str, Any]:
+    """Publish the D1-authoritative leased payload into the Dropbox package."""
+    job = dict(cloud_job)
+    job_id = str(job.get("job_id") or "").strip()
+    if not job_id or safe_name(job_id, "") != job_id:
+        raise ValueError("Cloud-leased job has an invalid job_id")
+    if job.get("status") != "rendering":
+        raise ValueError(f"Cloud-leased job {job_id} is not rendering")
+    expected_worker = safe_name(worker_name, "WORKER")
+    if str(job.get("worker") or "").casefold() != expected_worker.casefold():
+        raise ValueError(
+            f"Cloud-leased job {job_id} belongs to {job.get('worker')!r}, "
+            f"not {expected_worker!r}"
+        )
+    attempt = job.get("attempt")
+    if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+        raise ValueError(f"Cloud-leased job {job_id} has an invalid attempt")
+    write_json_atomic(claimed_folder / JOB_FILENAME, job)
     return job
 
 

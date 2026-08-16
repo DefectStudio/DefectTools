@@ -10,6 +10,17 @@ import sys
 import time
 from typing import Any, TypeVar
 
+from portable_pipe_tools.render_farm.cloud_dispatch import (
+    CloudJobLease,
+    DispatcherClient,
+    DispatcherConnectionError,
+    DispatcherError,
+)
+from portable_pipe_tools.render_farm.cloud_queue import (
+    finish_cloud_claimed_job,
+    finish_invalid_cloud_claim,
+    reconcile_pending_cloud_updates,
+)
 from portable_pipe_tools.render_farm.git_sync import (
     GIT_PULL_LOG_FILENAME,
     GitPullResult,
@@ -18,13 +29,16 @@ from portable_pipe_tools.render_farm.git_sync import (
 )
 from portable_pipe_tools.render_farm.queue import (
     JOB_FILENAME,
+    JobCandidate,
     QueuePaths,
+    claim_job_by_id,
     claim_next_job,
     create_queue_folders,
     default_worker_name,
     fail_unreadable_claimed_job,
     finish_claimed_job,
     list_job_candidates,
+    mark_cloud_job_rendering,
     mark_job_rendering,
     path_exists_with_retry,
     read_json_object,
@@ -83,6 +97,7 @@ class _ClaimedJob:
     folder: Path
     job: dict | None
     failure_reason: str | None = None
+    cloud_lease: CloudJobLease | None = None
 
 
 def _git_project_directory_for_candidate(
@@ -168,22 +183,87 @@ def run_once(
     job_callback: JobCallback | None = None,
     local_uproject: str | Path | None = None,
     git_sync: GitSyncCallback | None = None,
+    dispatcher_client: DispatcherClient | None = None,
+    dispatcher_app_version: str | None = None,
+    dispatcher_heartbeat_interval_seconds: float = 60.0,
 ) -> WorkerResult | None:
     if minimum_stage_seconds < 0:
         raise ValueError("minimum_stage_seconds cannot be negative")
+    if dispatcher_heartbeat_interval_seconds <= 0:
+        raise ValueError("dispatcher_heartbeat_interval_seconds must be positive")
 
     sleep_function = sleep or time.sleep
     monotonic_function = monotonic or time.monotonic
     paths = create_queue_folders(farm_root)
     worker = safe_name(worker_name, "WORKER")
+    cloud_lease: CloudJobLease | None = None
+    cloud_dispatcher_stop_requested = False
+
+    def release_cloud_lease(reason: str) -> None:
+        nonlocal cloud_lease
+        if dispatcher_client is None or cloud_lease is None:
+            return
+        dispatcher_client.release_job(
+            cloud_lease.job_id,
+            worker,
+            cloud_lease.lease_token,
+            reason=reason,
+        )
+        LOGGER.info("Released Cloud Dispatcher lease for %s: %s", cloud_lease.job_id, reason)
+        cloud_lease = None
 
     def reconcile_and_list_candidates():
+        nonlocal cloud_lease
+        nonlocal cloud_dispatcher_stop_requested
         reconciled_folders = reconcile_completed_jobs(paths)
         if reconciled_folders:
             LOGGER.info(
                 "Recovered %d completed job(s) before checking the render queue.",
                 len(reconciled_folders),
             )
+        if dispatcher_client is not None:
+            cloud_reconciled = reconcile_pending_cloud_updates(
+                paths,
+                dispatcher_client,
+            )
+            if cloud_reconciled:
+                LOGGER.info(
+                    "Delivered %d pending Cloud Dispatcher update(s).",
+                    len(cloud_reconciled),
+                )
+            claim = dispatcher_client.claim_job(
+                worker,
+                app_version=dispatcher_app_version,
+                capabilities={"unreal_mrq": True, "dropbox_packages": True},
+            )
+            if claim.stop_requested:
+                LOGGER.info("Cloud Dispatcher requested that worker %s stop.", worker)
+                if claim.lease is not None:
+                    cloud_lease = claim.lease
+                    release_cloud_lease("Worker stop was requested before package claim")
+                dispatcher_client.acknowledge_worker_stop(worker)
+                cloud_dispatcher_stop_requested = True
+                return []
+            if claim.lease is None:
+                return []
+            cloud_lease = claim.lease
+            priority = cloud_lease.job.get("priority", 50)
+            submitted_utc = cloud_lease.job.get("submitted_utc", "")
+            return [
+                JobCandidate(
+                    folder=paths.needs_rendering / cloud_lease.job_id,
+                    priority=(
+                        priority
+                        if isinstance(priority, int) and not isinstance(priority, bool)
+                        else 50
+                    ),
+                    submitted_utc=(
+                        submitted_utc
+                        if isinstance(submitted_utc, str)
+                        else ""
+                    ),
+                )
+            ]
         return list_job_candidates(paths, worker)
 
     queued_candidates = _run_stage(
@@ -195,6 +275,12 @@ def run_once(
         monotonic=monotonic_function,
     )
     if not queued_candidates:
+        if cloud_dispatcher_stop_requested:
+            return WorkerResult(
+                "stopped",
+                paths.root,
+                "Cloud Dispatcher requested that this worker stop",
+            )
         LOGGER.info(
             "No queued jobs are eligible for worker %s: %s",
             worker,
@@ -204,6 +290,7 @@ def run_once(
 
     if should_stop_before_claim is not None and should_stop_before_claim():
         LOGGER.info("Stop requested before claiming the next queued job.")
+        release_cloud_lease("Worker stop was requested before package claim")
         return None
 
     git_pull_result: GitPullResult | None = None
@@ -226,15 +313,31 @@ def run_once(
     def claim_and_prepare_job() -> _ClaimedJob | None:
         if should_stop_before_claim is not None and should_stop_before_claim():
             LOGGER.info("Stop requested before claiming the next queued job.")
+            release_cloud_lease("Worker stop was requested before package claim")
             return None
-        claimed_folder = claim_next_job(paths, worker)
+        claimed_folder = (
+            claim_job_by_id(paths, worker, cloud_lease.job_id)
+            if cloud_lease is not None
+            else claim_next_job(paths, worker)
+        )
         if claimed_folder is None:
+            release_cloud_lease(
+                "Dropbox job package has not synced to this worker yet"
+            )
             return None
 
         LOGGER.info("Claimed job: %s", claimed_folder)
         job: dict | None = None
         try:
-            job = mark_job_rendering(claimed_folder, worker)
+            job = (
+                mark_cloud_job_rendering(
+                    claimed_folder,
+                    worker,
+                    cloud_lease.job,
+                )
+                if cloud_lease is not None
+                else mark_job_rendering(claimed_folder, worker)
+            )
             if git_pull_result is not None:
                 _record_git_pull(claimed_folder, job, git_pull_result)
         except Exception as error:
@@ -253,13 +356,18 @@ def run_once(
                 folder=claimed_folder,
                 job=None,
                 failure_reason=reason,
+                cloud_lease=cloud_lease,
             )
         if job_callback is not None:
             try:
                 job_callback(dict(job))
             except Exception:
                 LOGGER.exception("Could not report the claimed job to the interface")
-        return _ClaimedJob(folder=claimed_folder, job=job)
+        return _ClaimedJob(
+            folder=claimed_folder,
+            job=job,
+            cloud_lease=cloud_lease,
+        )
 
     claimed_job = _run_stage(
         stage=WorkerStage.MOVING,
@@ -278,12 +386,22 @@ def run_once(
         failure_reason = claimed_job.failure_reason or "Claimed job is invalid"
 
         def finish_invalid_job() -> WorkerResult:
-            final_folder = fail_unreadable_claimed_job(
-                paths=paths,
-                claimed_folder=claimed_job.folder,
-                worker_name=worker,
-                reason=failure_reason,
-            )
+            if dispatcher_client is not None and claimed_job.cloud_lease is not None:
+                final_folder = finish_invalid_cloud_claim(
+                    dispatcher=dispatcher_client,
+                    paths=paths,
+                    claimed_folder=claimed_job.folder,
+                    worker_name=worker,
+                    lease=claimed_job.cloud_lease,
+                    reason=failure_reason,
+                )
+            else:
+                final_folder = fail_unreadable_claimed_job(
+                    paths=paths,
+                    claimed_folder=claimed_job.folder,
+                    worker_name=worker,
+                    reason=failure_reason,
+                )
             LOGGER.info("Job failed: %s", final_folder)
             return WorkerResult("failed", final_folder, failure_reason)
 
@@ -307,6 +425,54 @@ def run_once(
             return success, reason, None
 
         runner = unreal_runner or execute_unreal_job
+        last_heartbeat_success = monotonic_function()
+        last_heartbeat_attempt = last_heartbeat_success
+        cloud_cancel_reason: str | None = None
+
+        def should_cancel() -> bool:
+            nonlocal last_heartbeat_success
+            nonlocal last_heartbeat_attempt
+            nonlocal cloud_cancel_reason
+            if should_cancel_render is not None and should_cancel_render():
+                return True
+            if dispatcher_client is None or claimed_job.cloud_lease is None:
+                return False
+            current_time = monotonic_function()
+            retry_interval = (
+                dispatcher_heartbeat_interval_seconds
+                if last_heartbeat_attempt == last_heartbeat_success
+                else min(
+                    10.0,
+                    max(1.0, dispatcher_heartbeat_interval_seconds / 6.0),
+                )
+            )
+            if current_time - last_heartbeat_attempt < retry_interval:
+                return False
+            last_heartbeat_attempt = current_time
+            try:
+                heartbeat = dispatcher_client.heartbeat_job(
+                    claimed_job.cloud_lease.job_id,
+                    worker,
+                    claimed_job.cloud_lease.lease_token,
+                )
+            except DispatcherConnectionError as error:
+                LOGGER.warning("Cloud Dispatcher heartbeat unavailable: %s", error)
+                return False
+            except DispatcherError as error:
+                cloud_cancel_reason = (
+                    "Cloud Dispatcher lease was lost: "
+                    f"{error.code}: {error}"
+                )
+                LOGGER.error(cloud_cancel_reason)
+                return True
+            last_heartbeat_success = current_time
+            last_heartbeat_attempt = current_time
+            if heartbeat.get("stop_requested"):
+                cloud_cancel_reason = "Cloud Dispatcher requested that this worker stop"
+                LOGGER.warning(cloud_cancel_reason)
+                return True
+            return False
+
         runner_arguments: dict[str, Any] = {
             "claimed_folder": claimed_job.folder,
             "job": claimed_job.job,
@@ -314,7 +480,9 @@ def run_once(
             "timeout_seconds": render_timeout_seconds,
             "local_uproject": local_uproject,
         }
-        if should_cancel_render is not None:
+        if claimed_job.cloud_lease is not None:
+            runner_arguments["should_cancel"] = should_cancel
+        elif should_cancel_render is not None:
             runner_arguments["should_cancel"] = should_cancel_render
         try:
             execution_result = runner(**runner_arguments)
@@ -328,6 +496,8 @@ def run_once(
                 "simulated": False,
                 "exit_code": None,
             }
+        if cloud_cancel_reason:
+            return False, cloud_cancel_reason, execution_result.terminal_result_details()
         return (
             execution_result.success,
             execution_result.reason,
@@ -344,15 +514,28 @@ def run_once(
     )
 
     def finish_job() -> WorkerResult:
-        final_folder = finish_claimed_job(
-            paths=paths,
-            claimed_folder=claimed_job.folder,
-            job=claimed_job.job,
-            worker_name=worker,
-            success=success,
-            reason=reason,
-            result_details=result_details,
-        )
+        if dispatcher_client is not None and claimed_job.cloud_lease is not None:
+            final_folder = finish_cloud_claimed_job(
+                dispatcher=dispatcher_client,
+                paths=paths,
+                claimed_folder=claimed_job.folder,
+                job=claimed_job.job,
+                worker_name=worker,
+                lease=claimed_job.cloud_lease,
+                success=success,
+                reason=reason,
+                result_details=result_details,
+            )
+        else:
+            final_folder = finish_claimed_job(
+                paths=paths,
+                claimed_folder=claimed_job.folder,
+                job=claimed_job.job,
+                worker_name=worker,
+                success=success,
+                reason=reason,
+                result_details=result_details,
+            )
         status = "complete" if success else "requeued"
         LOGGER.info("Job %s: %s", status, final_folder)
         return WorkerResult(status, final_folder, reason)

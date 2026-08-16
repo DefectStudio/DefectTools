@@ -6,8 +6,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from portable_pipe_tools.render_farm.cloud_dispatch import (
+    DispatcherClient,
+    DispatcherError,
+)
 from portable_pipe_tools.render_farm.queue import (
     BLACKLISTED_WORKERS_FIELD,
+    CLOUD_DISPATCHER_COORDINATION,
+    DISPATCHER_COORDINATION_FIELD,
     IS_RENDERING_FOLDER,
     JOB_FILENAME,
     RENDER_FAILED_FOLDER,
@@ -40,9 +46,13 @@ _WORKER_RUNTIME_FIELDS = frozenset(
         "worker_uproject",
     }
 )
+DISPATCHER_SUBMISSION_RECEIPT_FILENAME = "dispatcher_submission.json"
 
 
-def clear_render_job_blacklist(job: RenderJob) -> bool:
+def clear_render_job_blacklist(
+    job: RenderJob,
+    dispatcher_client: DispatcherClient | None = None,
+) -> bool:
     """Clear a non-rendering job's live blacklist and report whether it changed."""
     if job.queue_name == IS_RENDERING_FOLDER:
         raise ValueError(f'Cannot clear the blacklist while "{job.job_name}" is rendering')
@@ -54,15 +64,28 @@ def clear_render_job_blacklist(job: RenderJob) -> bool:
             f"Invalid {BLACKLISTED_WORKERS_FIELD} in {job.job_json_path}; "
             "expected a list"
         )
-    if not blacklist:
-        return False
+    cloud_cleared = 0
+    if dispatcher_client is not None:
+        try:
+            response = dispatcher_client.clear_blacklist(job.job_id)
+        except DispatcherError as error:
+            if error.status != 404:
+                raise
+            # Legacy filesystem jobs created before D1 cutover have no cloud row.
+        else:
+            raw_cleared = response.get("cleared", 0)
+            cloud_cleared = raw_cleared if isinstance(raw_cleared, int) else 0
 
-    data[BLACKLISTED_WORKERS_FIELD] = []
-    write_json_atomic(job.job_json_path, data)
-    return True
+    if blacklist:
+        data[BLACKLISTED_WORKERS_FIELD] = []
+        write_json_atomic(job.job_json_path, data)
+    return bool(blacklist) or cloud_cleared > 0
 
 
-def resubmit_failed_render_job(job: RenderJob) -> Path:
+def resubmit_failed_render_job(
+    job: RenderJob,
+    dispatcher_client: DispatcherClient | None = None,
+) -> Path:
     """Publish a failed package as a fresh job in 01_NeedsRendering."""
     if job.queue_name != RENDER_FAILED_FOLDER:
         raise ValueError(
@@ -92,6 +115,8 @@ def resubmit_failed_render_job(job: RenderJob) -> Path:
         compact_timestamp=compact_timestamp,
         unique_suffix=unique_suffix,
     )
+    if dispatcher_client is not None:
+        data[DISPATCHER_COORDINATION_FIELD] = CLOUD_DISPATCHER_COORDINATION
 
     farm_root = job.job_folder.parent.parent
     paths = create_queue_folders(farm_root)
@@ -105,6 +130,18 @@ def resubmit_failed_render_job(job: RenderJob) -> Path:
     create_directory_with_retry(staging_folder)
     write_json_atomic(staging_folder / JOB_FILENAME, data)
     rename_path_with_retry(staging_folder, destination)
+    if dispatcher_client is not None:
+        response = dispatcher_client.submit_job(data)
+        write_json_atomic(
+            destination / DISPATCHER_SUBMISSION_RECEIPT_FILENAME,
+            {
+                "schema_version": 1,
+                "job_id": new_job_id,
+                "submitted_utc": utc_now(),
+                "created": response.get("created") is True,
+                "idempotent_replay": response.get("idempotent_replay") is True,
+            },
+        )
     return destination
 
 

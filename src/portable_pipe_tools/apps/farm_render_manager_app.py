@@ -20,6 +20,10 @@ from portable_pipe_tools.render_farm.auto_refresh_interval import (
     parse_auto_refresh_interval,
 )
 from portable_pipe_tools.render_farm.delete_render_jobs import delete_render_jobs
+from portable_pipe_tools.render_farm.cloud_dispatch import (
+    DispatcherClient,
+    load_dispatcher_connection,
+)
 from portable_pipe_tools.render_farm.get_all_render_jobs import (
     get_all_render_jobs,
 )
@@ -179,6 +183,15 @@ class FarmRenderManagerApp:
         self._app_icon_image = apply_farm_render_manager_icon(self.root)
 
         self.settings_path = settings_path or get_default_manager_settings_path()
+        try:
+            dispatcher_connection = load_dispatcher_connection("manager")
+        except Exception:
+            dispatcher_connection = None
+        self.dispatcher_client = (
+            DispatcherClient(dispatcher_connection)
+            if dispatcher_connection is not None
+            else None
+        )
         self.project_var = tk.StringVar(value=PROJECT_CHOICES[0])
         self.auto_refresh_var = tk.BooleanVar(
             value=load_saved_auto_refresh_enabled(self.settings_path)
@@ -1675,7 +1688,7 @@ class FarmRenderManagerApp:
             )
         confirmed = messagebox.askyesno(
             "STOP Render Worker",
-            f'Create an empty STOP marker for "{worker.worker_name}"?'
+            f'Request that "{worker.worker_name}" stop?'
             f"{active_job_note}",
             icon="warning",
             default="no",
@@ -1683,6 +1696,14 @@ class FarmRenderManagerApp:
         )
         if not confirmed:
             return
+
+        cloud_error: Exception | None = None
+        dispatcher_client = getattr(self, "dispatcher_client", None)
+        if dispatcher_client is not None:
+            try:
+                dispatcher_client.request_worker_stop(worker.worker_name)
+            except Exception as error:
+                cloud_error = error
 
         try:
             stop_file = create_worker_stop_request(
@@ -1698,9 +1719,16 @@ class FarmRenderManagerApp:
             self.status_var.set(f"Could not stop {worker.worker_name}: {error}")
             return
 
-        self.status_var.set(
-            f"STOP requested for {worker.worker_name}: {stop_file.name}"
-        )
+        if cloud_error is None:
+            self.status_var.set(
+                f"STOP requested for {worker.worker_name}: Cloud Dispatcher + "
+                f"{stop_file.name}"
+            )
+        else:
+            self.status_var.set(
+                f"STOP marker created for {worker.worker_name}; Cloud request "
+                f"will retry when available: {cloud_error}"
+            )
         self._refresh_jobs()
 
     def _select_all_jobs(
@@ -1790,7 +1818,12 @@ class FarmRenderManagerApp:
         errors: list[str] = []
         for job in selected_jobs:
             try:
-                changed_count += int(clear_render_job_blacklist(job))
+                changed_count += int(
+                    clear_render_job_blacklist(
+                        job,
+                        getattr(self, "dispatcher_client", None),
+                    )
+                )
             except Exception as error:
                 errors.append(f"{job.job_name}: {error}")
 
@@ -1862,7 +1895,12 @@ class FarmRenderManagerApp:
         errors: list[str] = []
         for job in selected_jobs:
             try:
-                destinations.append(resubmit_failed_render_job(job))
+                destinations.append(
+                    resubmit_failed_render_job(
+                        job,
+                        getattr(self, "dispatcher_client", None),
+                    )
+                )
             except Exception as error:
                 errors.append(f"{job.job_name}: {error}")
 
