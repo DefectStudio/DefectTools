@@ -10,6 +10,7 @@ from portable_pipe_tools.render_farm.cloud_dispatch import (
     DispatcherClient,
     DispatcherError,
 )
+from portable_pipe_tools.render_farm.delete_render_jobs import delete_render_jobs
 from portable_pipe_tools.render_farm.queue import (
     BLACKLISTED_WORKERS_FIELD,
     CLOUD_DISPATCHER_COORDINATION,
@@ -86,7 +87,7 @@ def resubmit_failed_render_job(
     job: RenderJob,
     dispatcher_client: DispatcherClient | None = None,
 ) -> Path:
-    """Publish a failed package as a fresh job in 01_NeedsRendering."""
+    """Replace a failed package with a fresh job in 01_NeedsRendering."""
     if job.queue_name != RENDER_FAILED_FOLDER:
         raise ValueError(
             f'Only jobs in {RENDER_FAILED_FOLDER} can be resubmitted; '
@@ -131,16 +132,32 @@ def resubmit_failed_render_job(
     write_json_atomic(staging_folder / JOB_FILENAME, data)
     rename_path_with_retry(staging_folder, destination)
     if dispatcher_client is not None:
-        response = dispatcher_client.submit_job(data)
+        response = dispatcher_client.replace_job(old_job_id, data)
+        if response.get("source_deleted") is not True:
+            raise DispatcherError(
+                "The Cloud Dispatcher did not confirm deletion of the old failed "
+                "job, so its Dropbox package was preserved.",
+                code="replacement_not_confirmed",
+                response=response,
+            )
         write_json_atomic(
             destination / DISPATCHER_SUBMISSION_RECEIPT_FILENAME,
             {
                 "schema_version": 1,
                 "job_id": new_job_id,
+                "replaced_job_id": old_job_id,
                 "submitted_utc": utc_now(),
                 "created": response.get("created") is True,
                 "idempotent_replay": response.get("idempotent_replay") is True,
+                "source_deleted": response.get("source_deleted") is True,
             },
+        )
+
+    deletion = delete_render_jobs([job])
+    if deletion.errors:
+        raise OSError(
+            "The replacement job was queued, but its old failed package could "
+            f"not be deleted: {'; '.join(deletion.errors)}"
         )
     return destination
 

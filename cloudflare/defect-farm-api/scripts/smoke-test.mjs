@@ -210,6 +210,25 @@ const releaseClaim = await request("/api/v1/jobs/claim", {
 });
 assert.equal(releaseClaim.job_available, true);
 assert.equal(releaseClaim.job.job_id, resubmitted.job.job_id);
+const replacementJobId = `smoke_replacement_${suffix}`;
+const replacementJob = {
+  ...resubmitted.job,
+  job_id: replacementJobId,
+  batch_id: `smoke_replacement_batch_${suffix}`,
+  status: "queued",
+  submitted_utc: new Date().toISOString(),
+  resubmitted_from_job_id: resubmitted.job.job_id,
+};
+const renderingReplacementRejected = await request(
+  `/api/v1/jobs/${resubmitted.job.job_id}/replace`,
+  {
+    role: "manager",
+    method: "POST",
+    body: replacementJob,
+    expected: 409,
+  },
+);
+assert.equal(renderingReplacementRejected.error.code, "job_rendering");
 const released = await request(
   `/api/v1/jobs/${resubmitted.job.job_id}/release`,
   {
@@ -236,11 +255,52 @@ const releasedReplay = await request(
 );
 assert.equal(releasedReplay.job.status, "queued");
 
+await request(`/api/v1/jobs/${resubmitted.job.job_id}/replace`, {
+  role: "submit",
+  method: "POST",
+  body: replacementJob,
+  expected: 403,
+});
+const replaced = await request(
+  `/api/v1/jobs/${resubmitted.job.job_id}/replace`,
+  {
+    role: "manager",
+    method: "POST",
+    body: replacementJob,
+    expected: 201,
+  },
+);
+assert.equal(replaced.created, true);
+assert.equal(replaced.source_deleted, true);
+assert.equal(replaced.deleted_job_id, resubmitted.job.job_id);
+assert.equal(replaced.job.job_id, replacementJobId);
+const replaceReplay = await request(
+  `/api/v1/jobs/${resubmitted.job.job_id}/replace`,
+  {
+    role: "manager",
+    method: "POST",
+    body: replacementJob,
+  },
+);
+assert.equal(replaceReplay.idempotent_replay, true);
+assert.equal(replaceReplay.source_deleted, true);
+assert.equal(replaceReplay.job.job_id, replacementJobId);
+await request(`/api/v1/jobs/${resubmitted.job.job_id}`, {
+  role: "manager",
+  expected: 404,
+});
+const replacementDetail = await request(
+  `/api/v1/jobs/${replacementJobId}`,
+  { role: "manager" },
+);
+assert.equal(replacementDetail.job.status, "queued");
+
 console.log(
   JSON.stringify({
     ok: true,
     tested_job_id: jobId,
     resubmitted_job_id: resubmitted.job.job_id,
+    replacement_job_id: replacementJobId,
     atomic_claim_winner: firstWorker,
     retry_claim_winner: secondWorker,
   }),

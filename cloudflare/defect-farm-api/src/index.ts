@@ -17,6 +17,7 @@ import {
   listJobs,
   listWorkers,
   releaseJob,
+  replaceJob,
   requestWorkerStop,
   resubmitJob,
   submitJob,
@@ -25,7 +26,7 @@ import {
 import type { JsonRecord } from "./types";
 
 const SERVICE_NAME = "defect-farm-api";
-const SERVICE_VERSION = "0.1.0";
+const SERVICE_VERSION = "0.2.0";
 const API_ROOT = "/api/v1";
 
 function requestId(request: Request): string {
@@ -160,7 +161,7 @@ async function handleRequest(
   }
 
   const jobAction = new RegExp(
-    `^${API_ROOT}/jobs/([^/]+)/(heartbeat|release|complete|fail|clear-blacklist|resubmit)$`,
+    `^${API_ROOT}/jobs/([^/]+)/(heartbeat|release|complete|fail|clear-blacklist|resubmit|replace)$`,
   ).exec(path);
   if (request.method === "POST" && jobAction) {
     const jobId = safeIdentifier(
@@ -190,6 +191,23 @@ async function handleRequest(
           ok: true,
           created: result.created,
           idempotent_replay: !result.created,
+          job: result.payload,
+        },
+        result.created ? 201 : 200,
+        id,
+      );
+    }
+    if (action === "replace") {
+      requireRole(request, env, ["manager"]);
+      const body = await readJsonObject(request);
+      const result = await replaceJob(env, jobId, body);
+      return jsonResponse(
+        {
+          ok: true,
+          created: result.created,
+          idempotent_replay: !result.created,
+          source_deleted: result.sourceDeleted,
+          deleted_job_id: jobId,
           job: result.payload,
         },
         result.created ? 201 : 200,

@@ -1130,6 +1130,177 @@ export async function resubmitJob(
   return { created: true, row, payload: runtimePayload(row, []) };
 }
 
+function storedResubmissionSource(row: JobRow): string | null {
+  const payload = parseStoredRecord(row.payload_json);
+  const value = payload?.resubmitted_from_job_id;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export async function replaceJob(
+  env: Env,
+  sourceJobId: string,
+  replacementPayload: JsonRecord,
+): Promise<{
+  created: boolean;
+  sourceDeleted: boolean;
+  row: JobRow;
+  payload: JsonRecord;
+}> {
+  const normalized = normalizeJobPayload(replacementPayload);
+  if (normalized.id === sourceJobId) {
+    throw new HttpError(
+      400,
+      "invalid_replacement",
+      "The replacement job_id must differ from the source job_id.",
+    );
+  }
+  if (normalized.resubmittedFromJobId !== sourceJobId) {
+    throw new HttpError(
+      400,
+      "invalid_replacement",
+      "resubmitted_from_job_id must match the source job_id in the URL.",
+    );
+  }
+
+  const existing = await env.DB.prepare("SELECT * FROM jobs WHERE id = ?1")
+    .bind(normalized.id)
+    .first<JobRow>();
+  if (existing && storedResubmissionSource(existing) !== sourceJobId) {
+    throw new HttpError(
+      409,
+      "replacement_conflict",
+      `Job ${normalized.id} already exists and is not a replacement for ${sourceJobId}.`,
+    );
+  }
+
+  const source = await env.DB.prepare("SELECT * FROM jobs WHERE id = ?1")
+    .bind(sourceJobId)
+    .first<JobRow>();
+  if (!source) {
+    if (existing) {
+      return {
+        created: false,
+        sourceDeleted: true,
+        row: existing,
+        payload: runtimePayload(
+          existing,
+          await blacklistForJob(env, existing.id),
+        ),
+      };
+    }
+    throw new HttpError(
+      404,
+      "job_not_found",
+      `Job ${sourceJobId} was not found.`,
+    );
+  }
+  if (source.status === "rendering") {
+    throw new HttpError(
+      409,
+      "job_rendering",
+      "A rendering job cannot be replaced or deleted.",
+    );
+  }
+
+  if (existing) {
+    const deleted = await env.DB.prepare(
+      `DELETE FROM jobs
+       WHERE id = ?1 AND status != 'rendering'
+         AND EXISTS (
+           SELECT 1 FROM jobs AS replacement
+           WHERE replacement.id = ?2
+             AND json_extract(
+               replacement.payload_json,
+               '$.resubmitted_from_job_id'
+             ) = ?1
+         )`,
+    )
+      .bind(sourceJobId, existing.id)
+      .run();
+    if ((deleted.meta.changes ?? 0) === 0) {
+      throw new HttpError(
+        409,
+        "replace_race",
+        "The source job changed before it could be deleted.",
+      );
+    }
+    const row = await getJobRow(env, existing.id);
+    return {
+      created: false,
+      sourceDeleted: true,
+      row,
+      payload: runtimePayload(row, await blacklistForJob(env, row.id)),
+    };
+  }
+
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO jobs (
+         id, batch_id, project, job_type, shot_name, render_version,
+         status, priority, submitted_at, submitted_by, submitted_user,
+         updated_at, payload_json, resubmitted_from_job_id
+       )
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6,
+              'queued', ?7, ?8, ?9, ?10,
+              ${NOW_SQL}, ?11, ?12
+       FROM jobs AS source
+       WHERE source.id = ?12 AND source.status != 'rendering'`,
+    ).bind(
+      normalized.id,
+      normalized.batchId,
+      normalized.project,
+      normalized.jobType,
+      normalized.shotName,
+      normalized.renderVersion,
+      normalized.priority,
+      normalized.submittedAt,
+      normalized.submittedBy,
+      normalized.submittedUser,
+      normalized.payloadJson,
+      sourceJobId,
+    ),
+    env.DB.prepare(
+      `INSERT INTO job_events (
+         job_id, event_type, created_at, details_json
+       )
+       SELECT ?1, 'resubmitted_replacement', ${NOW_SQL},
+              json_object('replaced_job_id', ?2)
+       WHERE EXISTS (SELECT 1 FROM jobs WHERE id = ?1)`,
+    ).bind(normalized.id, sourceJobId),
+    env.DB.prepare(
+      `DELETE FROM jobs
+       WHERE id = ?1 AND status != 'rendering'
+         AND EXISTS (
+           SELECT 1 FROM jobs AS replacement
+           WHERE replacement.id = ?2
+             AND json_extract(
+               replacement.payload_json,
+               '$.resubmitted_from_job_id'
+             ) = ?1
+         )`,
+    ).bind(sourceJobId, normalized.id),
+  ]);
+  if ((results[0]?.meta.changes ?? 0) === 0) {
+    throw new HttpError(
+      409,
+      "replace_race",
+      "The source job began rendering before it could be replaced.",
+    );
+  }
+  if ((results[results.length - 1]?.meta.changes ?? 0) === 0) {
+    throw new Error(
+      `Replacement ${normalized.id} was created but source ${sourceJobId} was not deleted`,
+    );
+  }
+  const row = await getJobRow(env, normalized.id);
+  return {
+    created: true,
+    sourceDeleted: true,
+    row,
+    payload: runtimePayload(row, []),
+  };
+}
+
 export async function workerStopRequested(
   env: Env,
   workerId: string,

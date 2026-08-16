@@ -73,13 +73,13 @@ class ManageRenderJobsTests(unittest.TestCase):
         )
         self.assertFalse(clear_render_job_blacklist(job))
 
-    def test_resubmit_creates_a_fresh_queued_package(self) -> None:
+    def test_resubmit_replaces_failed_package_with_fresh_queued_package(self) -> None:
         job = self._failed_job()
 
         destination = resubmit_failed_render_job(job)
         new_data = read_json_object(destination / "job.json")
 
-        self.assertTrue(self.source_folder.is_dir())
+        self.assertFalse(self.source_folder.exists())
         self.assertEqual(self.paths.needs_rendering, destination.parent)
         self.assertNotEqual(self.source_data["job_id"], new_data["job_id"])
         self.assertEqual("queued", new_data["status"])

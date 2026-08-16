@@ -486,6 +486,17 @@ class DispatcherClient:
             },
         )
 
+    def replace_job(
+        self,
+        source_job_id: str,
+        replacement_job: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/api/v1/jobs/{quote(source_job_id, safe='')}/replace",
+            body=replacement_job,
+        )
+
     def list_workers(self) -> list[dict[str, Any]]:
         response = self._request("GET", "/api/v1/workers")
         workers = response.get("workers")

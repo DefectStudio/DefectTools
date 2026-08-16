@@ -1868,9 +1868,10 @@ class FarmRenderManagerApp:
                 "queued jobs?"
             )
         prompt += (
-            "\n\nEach original failed package will be preserved. The new package "
-            "will receive a new job ID, a fresh submission time, zero attempts, "
-            "and an empty black list."
+            "\n\nEach replacement will receive a new job ID, a fresh submission "
+            "time, zero attempts, and an empty black list. After the replacement "
+            "is safely queued, the original failed job will be permanently deleted "
+            "from both the Cloud Dispatcher and Dropbox."
             "\n\nThe shot, render version, and output paths do not change. If output "
             "already exists for that version, the worker will replace the matching "
             "MP4 and EXR version folder before rendering."
@@ -1923,7 +1924,7 @@ class FarmRenderManagerApp:
         suffix = "job" if len(destinations) == 1 else "jobs"
         self.status_var.set(
             f"Resubmitted {len(destinations)} render {suffix} to "
-            f"01_NeedsRendering"
+            f"01_NeedsRendering and deleted the old failed {suffix}"
         )
 
     def _delete_selected_jobs(self) -> None:
