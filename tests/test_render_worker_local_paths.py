@@ -5,6 +5,8 @@ import tempfile
 import unittest
 
 from portable_pipe_tools.render_farm.local_paths import (
+    OVERWRITE_EXISTING_EXR_FIELD,
+    OVERWRITE_EXISTING_MP4_FIELD,
     derive_show_file_server_path,
     find_existing_output_targets,
     prepare_worker_output_mapping,
@@ -113,6 +115,57 @@ class RenderWorkerLocalPathTests(unittest.TestCase):
         self.assertEqual(find_existing_output_targets(job, output), [mp4])
         with self.assertRaisesRegex(FileExistsError, "Choose a new render version"):
             prepare_worker_output_mapping(job, self.farm_root)
+
+    def test_explicit_mp4_overwrite_removes_only_the_existing_mp4(self) -> None:
+        job = self._job()
+        job[OVERWRITE_EXISTING_MP4_FIELD] = True
+        output, _ = resolve_worker_output_directory(job, self.show_root)
+        output.mkdir(parents=True)
+        mp4 = output / "BSH_000_0030_beauty_v017.mp4"
+        mp4.write_bytes(b"old render")
+
+        mapping = prepare_worker_output_mapping(job, self.farm_root)
+
+        self.assertEqual(output, mapping.worker_output_directory)
+        self.assertFalse(mp4.exists())
+
+    def test_mp4_is_not_removed_when_an_existing_exr_folder_blocks_job(self) -> None:
+        job = self._job()
+        job[OVERWRITE_EXISTING_MP4_FIELD] = True
+        output, _ = resolve_worker_output_directory(job, self.show_root)
+        output.mkdir(parents=True)
+        mp4 = output / "BSH_000_0030_beauty_v017.mp4"
+        mp4.write_bytes(b"old render")
+        exr_folder = output / "BSH_000_0030_beauty_v017"
+        exr_folder.mkdir()
+        (exr_folder / "BSH_000_0030_beauty_v017.1001.exr").write_bytes(
+            b"render"
+        )
+
+        with self.assertRaisesRegex(FileExistsError, "Existing target"):
+            prepare_worker_output_mapping(job, self.farm_root)
+
+        self.assertTrue(mp4.exists())
+
+    def test_explicit_output_overwrite_removes_mp4_and_exr_version_folder(self) -> None:
+        job = self._job()
+        job[OVERWRITE_EXISTING_MP4_FIELD] = True
+        job[OVERWRITE_EXISTING_EXR_FIELD] = True
+        output, _ = resolve_worker_output_directory(job, self.show_root)
+        output.mkdir(parents=True)
+        mp4 = output / "BSH_000_0030_beauty_v017.mp4"
+        mp4.write_bytes(b"old render")
+        exr_folder = output / "BSH_000_0030_beauty_v017"
+        exr_folder.mkdir()
+        (exr_folder / "BSH_000_0030_beauty_v017.1001.exr").write_bytes(
+            b"render"
+        )
+
+        mapping = prepare_worker_output_mapping(job, self.farm_root)
+
+        self.assertEqual(output, mapping.worker_output_directory)
+        self.assertFalse(mp4.exists())
+        self.assertFalse(exr_folder.exists())
 
     def test_existing_exr_version_folder_is_reported_as_collision(self) -> None:
         job = self._job()

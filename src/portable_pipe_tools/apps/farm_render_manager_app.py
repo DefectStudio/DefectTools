@@ -39,6 +39,11 @@ from portable_pipe_tools.render_farm.manager_settings import (
 from portable_pipe_tools.render_farm.manage_render_jobs import (
     clear_render_job_blacklist,
     resubmit_failed_render_job,
+    set_render_job_output_overwrite,
+)
+from portable_pipe_tools.render_farm.local_paths import (
+    OVERWRITE_EXISTING_EXR_FIELD,
+    OVERWRITE_EXISTING_MP4_FIELD,
 )
 from portable_pipe_tools.render_farm.queue import (
     BLACKLISTED_WORKERS_FIELD,
@@ -693,6 +698,13 @@ class FarmRenderManagerApp:
             command=self._resubmit_selected_jobs,
         )
         self._resubmit_job_menu_index = int(self.job_context_menu.index("end"))
+        self.overwrite_existing_outputs_menu_var = tk.BooleanVar(value=False)
+        self.job_context_menu.add_checkbutton(
+            label="Overwrite Existing MP4 + EXRs",
+            variable=self.overwrite_existing_outputs_menu_var,
+            command=self._set_selected_jobs_output_overwrite,
+        )
+        self._overwrite_outputs_menu_index = int(self.job_context_menu.index("end"))
         self.job_context_menu.add_command(
             label="Clear Black List",
             command=self._clear_selected_job_blacklists,
@@ -1599,9 +1611,34 @@ class FarmRenderManagerApp:
                 for job in selected_jobs
             )
         )
+        can_set_output_overwrite = bool(selected_jobs) and all(
+            job.queue_name != IS_RENDERING_FOLDER
+            and isinstance(job.job_data.get("outputs"), dict)
+            and (
+                job.job_data["outputs"].get("mp4") is True
+                or job.job_data["outputs"].get("exr") is True
+            )
+            for job in selected_jobs
+        )
+        all_overwrite_outputs = bool(selected_jobs) and all(
+            (
+                (job.job_data.get("outputs") or {}).get("mp4") is not True
+                or job.job_data.get(OVERWRITE_EXISTING_MP4_FIELD) is True
+            )
+            and (
+                (job.job_data.get("outputs") or {}).get("exr") is not True
+                or job.job_data.get(OVERWRITE_EXISTING_EXR_FIELD) is True
+            )
+            for job in selected_jobs
+        )
+        self.overwrite_existing_outputs_menu_var.set(all_overwrite_outputs)
         self.job_context_menu.entryconfigure(
             self._resubmit_job_menu_index,
             state="normal" if can_resubmit else "disabled",
+        )
+        self.job_context_menu.entryconfigure(
+            self._overwrite_outputs_menu_index,
+            state="normal" if can_set_output_overwrite else "disabled",
         )
         self.job_context_menu.entryconfigure(
             self._clear_blacklist_menu_index,
@@ -1741,6 +1778,96 @@ class FarmRenderManagerApp:
             for item_id in self.job_tree.selection()
             if (job := self._jobs_by_item.get(item_id)) is not None
         ]
+
+    def _set_selected_jobs_output_overwrite(self) -> None:
+        selected_jobs = self._selected_jobs()
+        previous_enabled = bool(selected_jobs) and all(
+            (
+                (job.job_data.get("outputs") or {}).get("mp4") is not True
+                or job.job_data.get(OVERWRITE_EXISTING_MP4_FIELD) is True
+            )
+            and (
+                (job.job_data.get("outputs") or {}).get("exr") is not True
+                or job.job_data.get(OVERWRITE_EXISTING_EXR_FIELD) is True
+            )
+            for job in selected_jobs
+        )
+        enabled = bool(self.overwrite_existing_outputs_menu_var.get())
+        eligible_jobs = [
+            job
+            for job in selected_jobs
+            if job.queue_name != IS_RENDERING_FOLDER
+            and isinstance(job.job_data.get("outputs"), dict)
+            and (
+                job.job_data["outputs"].get("mp4") is True
+                or job.job_data["outputs"].get("exr") is True
+            )
+        ]
+        if not eligible_jobs or len(eligible_jobs) != len(selected_jobs):
+            self.overwrite_existing_outputs_menu_var.set(previous_enabled)
+            return
+
+        if enabled:
+            if len(eligible_jobs) == 1:
+                subject = f'"{eligible_jobs[0].job_name}"'
+            else:
+                subject = f"the {len(eligible_jobs)} selected jobs"
+            confirmed = messagebox.askyesno(
+                "Overwrite Existing MP4 + EXRs",
+                (
+                    f"Allow {subject} to replace existing MP4 and EXR output for "
+                    "the exact shot and render version?\n\n"
+                    "When a worker claims the job, the matching MP4 and the entire "
+                    "matching EXR version folder will be permanently removed "
+                    "immediately before rendering. Neighboring versions and shot "
+                    "folders are not touched.\n\n"
+                    "This does not clear the worker black list. Use 'Clear Black "
+                    "List' when you are ready for the job to run again."
+                ),
+                icon="warning",
+                default="no",
+                parent=self.root,
+            )
+            if not confirmed:
+                self.overwrite_existing_outputs_menu_var.set(previous_enabled)
+                return
+
+        auto_refresh_was_running = self.auto_refresh_worker.running
+        if auto_refresh_was_running:
+            self.auto_refresh_worker.stop()
+        action = "Allowing" if enabled else "Disabling"
+        self.status_var.set(f"{action} existing-output overwrite...")
+        self.root.update_idletasks()
+
+        changed_count = 0
+        errors: list[str] = []
+        for job in eligible_jobs:
+            try:
+                changed_count += int(set_render_job_output_overwrite(job, enabled))
+            except Exception as error:
+                errors.append(f"{job.job_name}: {error}")
+
+        self._refresh_jobs()
+        if auto_refresh_was_running and self.auto_refresh_var.get():
+            self.auto_refresh_worker.start()
+
+        if errors:
+            messagebox.showerror(
+                "Overwrite Existing MP4 + EXRs",
+                "\n".join(errors),
+                parent=self.root,
+            )
+            self.status_var.set(
+                f"Updated {changed_count} jobs with {len(errors)} errors"
+            )
+            return
+
+        state = "enabled" if enabled else "disabled"
+        suffix = "job" if len(eligible_jobs) == 1 else "jobs"
+        self.status_var.set(
+            f"Existing-output overwrite {state} for "
+            f"{len(eligible_jobs)} render {suffix}"
+        )
 
     def _clear_selected_job_blacklists(self) -> None:
         selected_jobs = [
