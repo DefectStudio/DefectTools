@@ -250,10 +250,10 @@ def prepare_worker_output_mapping(
     mp4_enabled = isinstance(outputs, dict) and outputs.get("mp4") is True
     exr_enabled = isinstance(outputs, dict) and outputs.get("exr") is True
     overwrite_mp4 = (
-        job.get(OVERWRITE_EXISTING_MP4_FIELD) is True and mp4_enabled
+        job.get(OVERWRITE_EXISTING_MP4_FIELD, True) is True and mp4_enabled
     )
     overwrite_exr = (
-        job.get(OVERWRITE_EXISTING_EXR_FIELD) is True and exr_enabled
+        job.get(OVERWRITE_EXISTING_EXR_FIELD, True) is True and exr_enabled
     )
     replaceable_targets = set()
     if overwrite_mp4 and mp4_path is not None:

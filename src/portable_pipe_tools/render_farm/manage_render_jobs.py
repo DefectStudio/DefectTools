@@ -6,10 +6,6 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from portable_pipe_tools.render_farm.local_paths import (
-    OVERWRITE_EXISTING_EXR_FIELD,
-    OVERWRITE_EXISTING_MP4_FIELD,
-)
 from portable_pipe_tools.render_farm.queue import (
     BLACKLISTED_WORKERS_FIELD,
     IS_RENDERING_FOLDER,
@@ -62,37 +58,6 @@ def clear_render_job_blacklist(job: RenderJob) -> bool:
         return False
 
     data[BLACKLISTED_WORKERS_FIELD] = []
-    write_json_atomic(job.job_json_path, data)
-    return True
-
-
-def set_render_job_output_overwrite(job: RenderJob, enabled: bool) -> bool:
-    """Set a non-rendering job's explicit MP4/EXR overwrite permissions."""
-    if job.queue_name == IS_RENDERING_FOLDER:
-        raise ValueError(
-            f'Cannot change output overwrite permission while "{job.job_name}" '
-            "is rendering"
-        )
-
-    data = read_json_object(job.job_json_path)
-    outputs = data.get("outputs")
-    mp4_enabled = isinstance(outputs, dict) and outputs.get("mp4") is True
-    exr_enabled = isinstance(outputs, dict) and outputs.get("exr") is True
-    if enabled and not mp4_enabled and not exr_enabled:
-        raise ValueError(f'"{job.job_name}" has no MP4 or EXR output enabled')
-
-    new_mp4_value = enabled and mp4_enabled
-    new_exr_value = enabled and exr_enabled
-    current_mp4_value = data.get(OVERWRITE_EXISTING_MP4_FIELD) is True
-    current_exr_value = data.get(OVERWRITE_EXISTING_EXR_FIELD) is True
-    if (
-        current_mp4_value == new_mp4_value
-        and current_exr_value == new_exr_value
-    ):
-        return False
-
-    data[OVERWRITE_EXISTING_MP4_FIELD] = new_mp4_value
-    data[OVERWRITE_EXISTING_EXR_FIELD] = new_exr_value
     write_json_atomic(job.job_json_path, data)
     return True
 

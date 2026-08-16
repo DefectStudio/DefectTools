@@ -108,6 +108,7 @@ class RenderWorkerLocalPathTests(unittest.TestCase):
 
     def test_existing_mp4_is_reported_as_collision(self) -> None:
         job = self._job()
+        job[OVERWRITE_EXISTING_MP4_FIELD] = False
         output, _ = resolve_worker_output_directory(job, self.show_root)
         output.mkdir(parents=True)
         mp4 = output / "BSH_000_0030_beauty_v017.mp4"
@@ -132,6 +133,7 @@ class RenderWorkerLocalPathTests(unittest.TestCase):
     def test_mp4_is_not_removed_when_an_existing_exr_folder_blocks_job(self) -> None:
         job = self._job()
         job[OVERWRITE_EXISTING_MP4_FIELD] = True
+        job[OVERWRITE_EXISTING_EXR_FIELD] = False
         output, _ = resolve_worker_output_directory(job, self.show_root)
         output.mkdir(parents=True)
         mp4 = output / "BSH_000_0030_beauty_v017.mp4"
@@ -147,10 +149,8 @@ class RenderWorkerLocalPathTests(unittest.TestCase):
 
         self.assertTrue(mp4.exists())
 
-    def test_explicit_output_overwrite_removes_mp4_and_exr_version_folder(self) -> None:
+    def test_legacy_job_defaults_to_overwriting_mp4_and_exr_folder(self) -> None:
         job = self._job()
-        job[OVERWRITE_EXISTING_MP4_FIELD] = True
-        job[OVERWRITE_EXISTING_EXR_FIELD] = True
         output, _ = resolve_worker_output_directory(job, self.show_root)
         output.mkdir(parents=True)
         mp4 = output / "BSH_000_0030_beauty_v017.mp4"

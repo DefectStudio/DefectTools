@@ -109,12 +109,22 @@ def get_render_job_details(job: RenderJob) -> tuple[JobDetailSection, ...]:
             JobDetail("MP4 Enabled", _format_bool(outputs.get("mp4"))),
             JobDetail(
                 "Overwrite Existing MP4",
-                _format_bool(data.get("overwrite_existing_mp4")),
+                _format_bool(
+                    data.get(
+                        "overwrite_existing_mp4",
+                        outputs.get("mp4") is True,
+                    )
+                ),
             ),
             JobDetail("EXR Enabled", _format_bool(outputs.get("exr"))),
             JobDetail(
                 "Overwrite Existing EXRs",
-                _format_bool(data.get("overwrite_existing_exr")),
+                _format_bool(
+                    data.get(
+                        "overwrite_existing_exr",
+                        outputs.get("exr") is True,
+                    )
+                ),
             ),
             JobDetail("Hero Enabled", _format_bool(outputs.get("hero"))),
             JobDetail(

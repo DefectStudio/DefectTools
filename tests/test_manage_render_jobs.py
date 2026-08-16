@@ -8,11 +8,6 @@ from portable_pipe_tools.render_farm.get_all_render_jobs import get_all_render_j
 from portable_pipe_tools.render_farm.manage_render_jobs import (
     clear_render_job_blacklist,
     resubmit_failed_render_job,
-    set_render_job_output_overwrite,
-)
-from portable_pipe_tools.render_farm.local_paths import (
-    OVERWRITE_EXISTING_EXR_FIELD,
-    OVERWRITE_EXISTING_MP4_FIELD,
 )
 from portable_pipe_tools.render_farm.queue import (
     create_queue_folders,
@@ -77,25 +72,6 @@ class ManageRenderJobsTests(unittest.TestCase):
             read_json_object(job.job_json_path)["blacklisted_workers"],
         )
         self.assertFalse(clear_render_job_blacklist(job))
-
-    def test_sets_and_clears_output_overwrite_permissions(self) -> None:
-        job = self._failed_job()
-
-        self.assertTrue(set_render_job_output_overwrite(job, True))
-        updated_data = read_json_object(job.job_json_path)
-        self.assertIs(
-            updated_data[OVERWRITE_EXISTING_MP4_FIELD],
-            True,
-        )
-        self.assertIs(updated_data[OVERWRITE_EXISTING_EXR_FIELD], True)
-        self.assertFalse(set_render_job_output_overwrite(job, True))
-        self.assertTrue(set_render_job_output_overwrite(job, False))
-        updated_data = read_json_object(job.job_json_path)
-        self.assertIs(
-            updated_data[OVERWRITE_EXISTING_MP4_FIELD],
-            False,
-        )
-        self.assertIs(updated_data[OVERWRITE_EXISTING_EXR_FIELD], False)
 
     def test_resubmit_creates_a_fresh_queued_package(self) -> None:
         job = self._failed_job()
