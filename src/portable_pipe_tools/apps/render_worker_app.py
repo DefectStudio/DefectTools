@@ -82,6 +82,7 @@ SECONDS_PER_HOUR = 60.0 * 60.0
 DEFAULT_RENDER_TIMEOUT_HOURS = DEFAULT_RENDER_TIMEOUT_SECONDS / SECONDS_PER_HOUR
 MINIMUM_RENDER_TIMEOUT_HOURS = 0.25
 MAXIMUM_RENDER_TIMEOUT_HOURS = 24.0
+AUTOMATIC_START_DELAY_MS = 250
 
 HEARTBEAT_STATUS_BY_STAGE = {
     WorkerStage.STOPPED: "stopped",
@@ -252,6 +253,7 @@ class RenderWorkerApp:
         self._completion_queue: Queue[BackgroundCompletion] = Queue()
         self._poll_after_id: str | None = None
         self._startup_update_after_id: str | None = None
+        self._automatic_start_after_id: str | None = None
         self._restart_after_id: str | None = None
         self._animation_after_id: str | None = None
         self._animation_frame_index = 0
@@ -689,6 +691,7 @@ class RenderWorkerApp:
             f"branch={git_pull.branch}, commit={git_pull.commit_after[:12]}"
         )
         self._refresh_control_states()
+        self._schedule_automatic_start()
 
     def _startup_update_failed(self, error: Exception) -> None:
         self.status_var.set("Update check failed — worker controls are disabled")
@@ -710,6 +713,25 @@ class RenderWorkerApp:
     def _restart_after_update(self) -> None:
         self._restart_after_id = None
         self._shutdown_application(RENDER_WORKER_RESTART_EXIT_CODE)
+
+    def _schedule_automatic_start(self) -> None:
+        if self._closing or self._automatic_start_after_id is not None:
+            return
+        self.status_var.set("Ready — starting worker automatically")
+        self._log(
+            "Startup checks passed. The automatic worker will start without "
+            "waiting for Start Worker."
+        )
+        self._automatic_start_after_id = self.root.after(
+            AUTOMATIC_START_DELAY_MS,
+            self._automatic_start_worker,
+        )
+
+    def _automatic_start_worker(self) -> None:
+        self._automatic_start_after_id = None
+        if self._closing:
+            return
+        self._start_worker(require_confirmation=False)
 
     def _browse_farm_root(self) -> None:
         current_value = self.farm_root_var.get().strip()
@@ -839,7 +861,7 @@ class RenderWorkerApp:
         self.render_timeout_hours_var.set(f"{hours:g}")
         return hours * SECONDS_PER_HOUR
 
-    def _start_worker(self) -> None:
+    def _start_worker(self, *, require_confirmation: bool = True) -> None:
         if not self._startup_update_complete or self._restart_pending:
             self._log(
                 "Start Worker ignored: the Render Worker update check has not "
@@ -879,27 +901,28 @@ class RenderWorkerApp:
             if configuration.dispatcher_client is not None
             else "Legacy filesystem queue"
         )
-        confirmed = messagebox.askyesno(
-            "Start Automatic Render Worker",
-            "The worker will continuously claim and render real Unreal jobs "
-            f"until stopped.\n\nWhen the queue is empty it will check every "
-            f"{configuration.poll_interval_seconds} seconds. Stop Worker will "
-            "interrupt an already-claimed render, requeue it, and then stop.\n\n"
-            "Each Unreal render will automatically stop and requeue after "
-            f"{format_render_timeout_hours(configuration.render_timeout_seconds / SECONDS_PER_HOUR)}.\n\n"
-            "Before every job, "
-            "the worker requires a clean Git checkout and pulls the latest "
-            "upstream branch using git pull --ff-only.\n\n"
-            f"Local Unreal project:\n{local_project_message}\n\n"
-            "Show path derived from Render Farm folder:\n"
-            f"{configuration.local_show_file_server_path}\n\n"
-            f"Job coordination: {coordination_message}\n\n"
-            "Start the worker?",
-            parent=self.root,
-        )
-        if not confirmed:
-            self._log("Automatic worker start cancelled.")
-            return
+        if require_confirmation:
+            confirmed = messagebox.askyesno(
+                "Start Automatic Render Worker",
+                "The worker will continuously claim and render real Unreal jobs "
+                f"until stopped.\n\nWhen the queue is empty it will check every "
+                f"{configuration.poll_interval_seconds} seconds. Stop Worker will "
+                "interrupt an already-claimed render, requeue it, and then stop.\n\n"
+                "Each Unreal render will automatically stop and requeue after "
+                f"{format_render_timeout_hours(configuration.render_timeout_seconds / SECONDS_PER_HOUR)}.\n\n"
+                "Before every job, "
+                "the worker requires a clean Git checkout and pulls the latest "
+                "upstream branch using git pull --ff-only.\n\n"
+                f"Local Unreal project:\n{local_project_message}\n\n"
+                "Show path derived from Render Farm folder:\n"
+                f"{configuration.local_show_file_server_path}\n\n"
+                f"Job coordination: {coordination_message}\n\n"
+                "Start the worker?",
+                parent=self.root,
+            )
+            if not confirmed:
+                self._log("Automatic worker start cancelled.")
+                return
 
         heartbeat = WorkerHeartbeat(
             configuration.farm_root,
@@ -1659,6 +1682,9 @@ class RenderWorkerApp:
         if self._startup_update_after_id is not None:
             self.root.after_cancel(self._startup_update_after_id)
             self._startup_update_after_id = None
+        if self._automatic_start_after_id is not None:
+            self.root.after_cancel(self._automatic_start_after_id)
+            self._automatic_start_after_id = None
         if self._restart_after_id is not None:
             self.root.after_cancel(self._restart_after_id)
             self._restart_after_id = None

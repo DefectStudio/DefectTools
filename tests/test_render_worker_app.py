@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import logging
 from queue import Queue
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 
 from portable_pipe_tools.apps.render_worker_app import (
+    AUTOMATIC_START_DELAY_MS,
     DEFAULT_RENDER_TIMEOUT_HOURS,
     QueueLogHandler,
+    RenderWorkerApp,
     format_render_timeout_hours,
     format_job_activity,
     parse_render_timeout_hours,
@@ -34,6 +38,58 @@ class QueueLogHandlerTests(unittest.TestCase):
 
 
 class RenderWorkerAppTests(unittest.TestCase):
+    def test_successful_startup_update_schedules_automatic_worker_start(self) -> None:
+        app = RenderWorkerApp.__new__(RenderWorkerApp)
+        app._startup_update_complete = False
+        app._closing = False
+        app._automatic_start_after_id = None
+        app._worker_git_branch = ""
+        app._worker_git_commit = ""
+        app.root = Mock()
+        app.root.after.return_value = "after-auto-start"
+        app.status_var = Mock()
+        app._log = Mock()
+        app._refresh_control_states = Mock()
+        result = SimpleNamespace(
+            update_installed=False,
+            git_pull=SimpleNamespace(
+                branch="main",
+                commit_before="a" * 40,
+                commit_after="a" * 40,
+            ),
+        )
+
+        app._startup_update_succeeded(result)
+
+        self.assertTrue(app._startup_update_complete)
+        self.assertEqual("after-auto-start", app._automatic_start_after_id)
+        app.root.after.assert_called_once_with(
+            AUTOMATIC_START_DELAY_MS,
+            app._automatic_start_worker,
+        )
+
+    def test_automatic_start_skips_the_manual_confirmation(self) -> None:
+        app = RenderWorkerApp.__new__(RenderWorkerApp)
+        app._automatic_start_after_id = "after-auto-start"
+        app._closing = False
+        app._start_worker = Mock()
+
+        app._automatic_start_worker()
+
+        self.assertIsNone(app._automatic_start_after_id)
+        app._start_worker.assert_called_once_with(require_confirmation=False)
+
+    def test_automatic_start_does_not_run_while_closing(self) -> None:
+        app = RenderWorkerApp.__new__(RenderWorkerApp)
+        app._automatic_start_after_id = "after-auto-start"
+        app._closing = True
+        app._start_worker = Mock()
+
+        app._automatic_start_worker()
+
+        self.assertIsNone(app._automatic_start_after_id)
+        app._start_worker.assert_not_called()
+
     def test_render_timeout_defaults_to_two_hours(self) -> None:
         self.assertEqual(2.0, DEFAULT_RENDER_TIMEOUT_HOURS)
         self.assertEqual(2.0, parse_render_timeout_hours("2"))

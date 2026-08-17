@@ -59,6 +59,9 @@ Updated filesystem-mode workers deliberately skip jobs marked
 
 - D1 grants a job to exactly one worker with an atomic conditional update.
 - A worker cannot hold two active leases.
+- After its startup Git/update check succeeds, the Render Worker automatically
+  starts listening for jobs. An installed self-update restarts the app, which
+  performs the same check and resumes listening without a manual button press.
 - Claim retries use stable request IDs and return the original lease.
 - Missing Dropbox packages cause a clean release, not a blacklist.
 - Render failures requeue the job and blacklist only the failing worker.
@@ -96,7 +99,7 @@ job to filesystem coordination mid-render.
 - Local API smoke tests covered authentication, atomic two-worker claims,
   heartbeats, retry blacklists, completion, release, clear blacklist,
   atomic replacement/deletion, rendering-job protection, and idempotent retries.
-- 78 Render Worker and Farm Manager regression/integration tests passed.
+- 81 Render Worker and Farm Manager regression/integration tests passed.
 - Production read-only checks confirmed the Worker, D1 binding, manager query,
   and all three role keys. Production contained zero jobs and zero workers at
   that checkpoint.
