@@ -27,9 +27,11 @@ from portable_pipe_tools.render_farm.queue import (
     safe_name,
 )
 from portable_pipe_tools.render_farm.listener import (
+    DEFAULT_MAXIMUM_IDLE_POLL_INTERVAL_SECONDS,
     DEFAULT_POLL_INTERVAL_SECONDS,
     ContinuousWorkerState,
     ListenerAction,
+    adaptive_poll_interval_seconds,
     parse_poll_interval_seconds,
     waiting_status,
 )
@@ -247,6 +249,7 @@ class RenderWorkerApp:
         self._listener_configuration: ListenerConfiguration | None = None
         self._listener_after_id: str | None = None
         self._listener_seconds_remaining = 0
+        self._listener_empty_checks = 0
         self._active_stage = WorkerStage.STOPPED
         self._log_queue: Queue[str] = Queue()
         self._stage_queue: Queue[WorkerStage] = Queue()
@@ -452,7 +455,7 @@ class RenderWorkerApp:
             pady=4,
         )
 
-        ttk.Label(setup_frame, text="Polling Interval (seconds)").grid(
+        ttk.Label(setup_frame, text="Initial Idle Poll (seconds)").grid(
             row=4,
             column=0,
             sticky="w",
@@ -469,7 +472,10 @@ class RenderWorkerApp:
         self.poll_interval_spinbox.grid(row=4, column=1, sticky="w", pady=4)
         ttk.Label(
             setup_frame,
-            text="Used by Start Worker; default is 15 seconds.",
+            text=(
+                "Doubles while idle to 120 seconds, with timing jitter; "
+                "default is 15."
+            ),
         ).grid(row=4, column=2, sticky="w", padx=(8, 0), pady=4)
 
         ttk.Label(setup_frame, text="Give Up On Render Timer (hours)").grid(
@@ -1005,12 +1011,18 @@ class RenderWorkerApp:
             if configuration.dispatcher_client is not None
             else "Legacy filesystem queue"
         )
+        maximum_idle_poll_interval = max(
+            configuration.poll_interval_seconds,
+            DEFAULT_MAXIMUM_IDLE_POLL_INTERVAL_SECONDS,
+        )
         if require_confirmation:
             confirmed = messagebox.askyesno(
                 "Start Automatic Render Worker",
                 "The worker will continuously claim and render real Unreal jobs "
-                f"until stopped.\n\nWhen the queue is empty it will check every "
-                f"{configuration.poll_interval_seconds} seconds. Stop Worker will "
+                f"until stopped.\n\nWhen the queue is empty it starts by checking "
+                f"after {configuration.poll_interval_seconds} seconds, then doubles "
+                f"the delay up to {maximum_idle_poll_interval} seconds with slight "
+                "timing jitter. Finding a job resets it immediately. Stop Worker will "
                 "interrupt an already-claimed render, requeue it, and then stop.\n\n"
                 "Each Unreal render will automatically stop and requeue after "
                 f"{format_render_timeout_hours(configuration.render_timeout_seconds / SECONDS_PER_HOUR)}.\n\n"
@@ -1076,6 +1088,7 @@ class RenderWorkerApp:
         self._worker_heartbeat = heartbeat
         self._stop_requested_remotely = False
         self._listener_configuration = configuration
+        self._listener_empty_checks = 0
         self._remember_farm_root(configuration.farm_root)
         self._remember_unreal_editor_cmd(configuration.unreal_editor_cmd)
         self._remember_local_uproject(configuration.local_uproject)
@@ -1088,8 +1101,9 @@ class RenderWorkerApp:
         self._set_worker_stage(WorkerStage.WAITING)
         self.status_var.set("Automatic worker started — checking for jobs")
         self._log(
-            "Automatic worker started. Polling interval: "
-            f"{configuration.poll_interval_seconds} seconds."
+            "Automatic worker started. Adaptive idle polling: "
+            f"{configuration.poll_interval_seconds} seconds initially, doubling "
+            f"to {maximum_idle_poll_interval} seconds with timing jitter."
         )
         self._log(
             "Give Up On Render Timer: "
@@ -1189,6 +1203,8 @@ class RenderWorkerApp:
         if result is not None and result.status == "stopped":
             self._stop_requested_remotely = True
             self._listener_state.request_stop()
+        if result is not None:
+            self._listener_empty_checks = 0
         action = self._listener_state.finish_job_check(
             job_was_available=result is not None
         )
@@ -1216,7 +1232,11 @@ class RenderWorkerApp:
         if configuration is None or not self._listener_state.active:
             return
         self._cancel_listener_countdown()
-        self._listener_seconds_remaining = configuration.poll_interval_seconds
+        self._listener_seconds_remaining = adaptive_poll_interval_seconds(
+            configuration.poll_interval_seconds,
+            self._listener_empty_checks,
+        )
+        self._listener_empty_checks += 1
         self._set_worker_stage(WorkerStage.WAITING)
         self._listener_countdown_tick()
 
@@ -1248,6 +1268,7 @@ class RenderWorkerApp:
         self._cancel_listener_countdown()
         self._cancel_periodic_update_check()
         self._listener_configuration = None
+        self._listener_empty_checks = 0
         self._listener_state.active = False
         self._listener_state.stop_requested = False
         self._listener_state.job_running = False

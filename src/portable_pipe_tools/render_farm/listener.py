@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from enum import Enum
 
 
 DEFAULT_POLL_INTERVAL_SECONDS = 15
+DEFAULT_MAXIMUM_IDLE_POLL_INTERVAL_SECONDS = 120
+POLL_INTERVAL_JITTER_FRACTION = 0.10
 MINIMUM_POLL_INTERVAL_SECONDS = 1
 MAXIMUM_POLL_INTERVAL_SECONDS = 3_600
 
@@ -30,6 +33,43 @@ def parse_poll_interval_seconds(value: str | int) -> int:
             f"{MAXIMUM_POLL_INTERVAL_SECONDS} seconds."
         )
     return seconds
+
+
+def adaptive_poll_interval_seconds(
+    initial_interval_seconds: int,
+    consecutive_empty_checks: int,
+    *,
+    maximum_interval_seconds: int = DEFAULT_MAXIMUM_IDLE_POLL_INTERVAL_SECONDS,
+    jitter_fraction: float = POLL_INTERVAL_JITTER_FRACTION,
+    random_value: float | None = None,
+) -> int:
+    """Return an exponentially backed-off, slightly jittered idle poll delay."""
+    initial_interval_seconds = parse_poll_interval_seconds(
+        initial_interval_seconds
+    )
+    maximum_interval_seconds = parse_poll_interval_seconds(
+        maximum_interval_seconds
+    )
+    if consecutive_empty_checks < 0:
+        raise ValueError("Consecutive empty checks cannot be negative.")
+    if not 0 <= jitter_fraction <= 1:
+        raise ValueError("Polling jitter fraction must be between 0 and 1.")
+
+    random_sample = random.random() if random_value is None else random_value
+    if not 0 <= random_sample <= 1:
+        raise ValueError("Polling jitter random value must be between 0 and 1.")
+
+    target_maximum = max(initial_interval_seconds, maximum_interval_seconds)
+    target_interval = initial_interval_seconds
+    for _empty_check in range(consecutive_empty_checks):
+        if target_interval >= target_maximum:
+            break
+        target_interval = min(target_maximum, target_interval * 2)
+    jitter_multiplier = 1 + ((random_sample * 2 - 1) * jitter_fraction)
+    return max(
+        MINIMUM_POLL_INTERVAL_SECONDS,
+        int(round(target_interval * jitter_multiplier)),
+    )
 
 
 def waiting_status(seconds_remaining: int) -> str:

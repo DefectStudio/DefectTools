@@ -25,6 +25,16 @@ interface CreatedJob {
   row: JobRow;
 }
 
+interface ClaimedJob {
+  row: JobRow;
+  payload: JsonRecord;
+}
+
+interface ClaimJobResult {
+  claimed: ClaimedJob | null;
+  stopRequested: boolean;
+}
+
 interface NormalizedJob {
   payload: JsonRecord;
   payloadJson: string;
@@ -253,8 +263,8 @@ async function upsertWorker(
   worker: WorkerRequest,
   status: "waiting" | "rendering" | "stopped",
   currentJobId: string | null,
-): Promise<void> {
-  await env.DB.prepare(
+): Promise<boolean> {
+  const row = await env.DB.prepare(
     `INSERT INTO workers (
        id, display_name, first_seen_at, last_seen_at, status,
        current_job_id, app_version, capabilities_json
@@ -265,7 +275,8 @@ async function upsertWorker(
        status = excluded.status,
        current_job_id = excluded.current_job_id,
        app_version = excluded.app_version,
-       capabilities_json = excluded.capabilities_json`,
+       capabilities_json = excluded.capabilities_json
+     RETURNING stop_requested`,
   )
     .bind(
       worker.workerId,
@@ -274,7 +285,8 @@ async function upsertWorker(
       worker.appVersion,
       worker.capabilities ? JSON.stringify(worker.capabilities) : null,
     )
-    .run();
+    .first<{ stop_requested: number }>();
+  return row?.stop_requested === 1;
 }
 
 export function parseWorkerRequest(data: JsonRecord): WorkerRequest {
@@ -305,6 +317,18 @@ export function parseLeaseRequest(data: JsonRecord): LeaseRequest {
 }
 
 export async function expireStaleLeases(env: Env): Promise<number> {
+  const expiredLease = await env.DB.prepare(
+    `SELECT 1 AS expired
+     FROM jobs
+     WHERE status = 'rendering'
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at <= unixepoch()
+     LIMIT 1`,
+  ).first<{ expired: number }>();
+  if (!expiredLease) {
+    return 0;
+  }
+
   const results = await env.DB.batch([
     env.DB.prepare(
       `UPDATE job_attempts
@@ -379,7 +403,7 @@ export async function expireStaleLeases(env: Env): Promise<number> {
 export async function claimJob(
   env: Env,
   data: JsonRecord,
-): Promise<{ row: JobRow; payload: JsonRecord } | null> {
+): Promise<ClaimJobResult> {
   const worker = parseWorkerRequest(data);
   const claimRequestId = safeIdentifier(
     requiredString(data, "claim_request_id", 128),
@@ -397,11 +421,14 @@ export async function claimJob(
     .first<JobRow>();
   if (priorClaim) {
     return {
-      row: priorClaim,
-      payload: runtimePayload(
-        priorClaim,
-        await blacklistForJob(env, priorClaim.id),
-      ),
+      claimed: {
+        row: priorClaim,
+        payload: runtimePayload(
+          priorClaim,
+          await blacklistForJob(env, priorClaim.id),
+        ),
+      },
+      stopRequested: await workerStopRequested(env, worker.workerId),
     };
   }
 
@@ -415,17 +442,20 @@ export async function claimJob(
     .first<JobRow>();
   if (activeWorkerClaim) {
     return {
-      row: activeWorkerClaim,
-      payload: runtimePayload(
-        activeWorkerClaim,
-        await blacklistForJob(env, activeWorkerClaim.id),
-      ),
+      claimed: {
+        row: activeWorkerClaim,
+        payload: runtimePayload(
+          activeWorkerClaim,
+          await blacklistForJob(env, activeWorkerClaim.id),
+        ),
+      },
+      stopRequested: await workerStopRequested(env, worker.workerId),
     };
   }
 
-  await upsertWorker(env, worker, "waiting", null);
-  if (await workerStopRequested(env, worker.workerId)) {
-    return null;
+  const stopRequested = await upsertWorker(env, worker, "waiting", null);
+  if (stopRequested) {
+    return { claimed: null, stopRequested };
   }
 
   const row = await env.DB.prepare(
@@ -461,7 +491,7 @@ export async function claimJob(
     .first<JobRow>();
 
   if (!row) {
-    return null;
+    return { claimed: null, stopRequested };
   }
 
   await env.DB.batch([
@@ -493,8 +523,11 @@ export async function claimJob(
   ]);
 
   return {
-    row,
-    payload: runtimePayload(row, await blacklistForJob(env, row.id)),
+    claimed: {
+      row,
+      payload: runtimePayload(row, await blacklistForJob(env, row.id)),
+    },
+    stopRequested,
   };
 }
 

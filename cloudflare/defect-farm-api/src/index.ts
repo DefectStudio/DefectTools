@@ -27,7 +27,7 @@ import {
 import type { JsonRecord } from "./types";
 
 const SERVICE_NAME = "defect-farm-api";
-const SERVICE_VERSION = "0.4.0";
+const SERVICE_VERSION = "0.4.1";
 const API_ROOT = "/api/v1";
 
 function requestId(request: Request): string {
@@ -105,12 +105,9 @@ async function handleRequest(
   if (request.method === "POST" && path === `${API_ROOT}/jobs/claim`) {
     requireRole(request, env, ["worker"]);
     const body = await readJsonObject(request);
-    const workerId = safeIdentifier(
-      requiredString(body, "worker_id", 128),
-      "worker_id",
-    );
-    const claimed = await claimJob(env, body);
-    const stopRequested = await workerStopRequested(env, workerId);
+    const claimResult = await claimJob(env, body);
+    const claimed = claimResult.claimed;
+    const stopRequested = claimResult.stopRequested;
     return jsonResponse(
       claimed
         ? {

@@ -171,6 +171,30 @@ assert.equal(detail.job.status, "complete");
 assert.equal(detail.attempts.length, 2);
 assert.equal(detail.events.some((event) => event.event_type === "failed_requeued"), true);
 
+const stopWorker = `smoke-stop-worker-${suffix}`;
+const idleStopWorker = await request("/api/v1/jobs/claim", {
+  role: "worker",
+  method: "POST",
+  body: workerBody(stopWorker, { claim_request_id: randomUUID() }),
+});
+assert.equal(idleStopWorker.job_available, false);
+assert.equal(idleStopWorker.stop_requested, false);
+await request(`/api/v1/workers/${stopWorker}/stop`, {
+  role: "manager",
+  method: "POST",
+});
+const stoppedWorkerClaim = await request("/api/v1/jobs/claim", {
+  role: "worker",
+  method: "POST",
+  body: workerBody(stopWorker, { claim_request_id: randomUUID() }),
+});
+assert.equal(stoppedWorkerClaim.job_available, false);
+assert.equal(stoppedWorkerClaim.stop_requested, true);
+await request(`/api/v1/workers/${stopWorker}/stop-ack`, {
+  role: "worker",
+  method: "POST",
+});
+
 const cleared = await request(`/api/v1/jobs/${jobId}/clear-blacklist`, {
   role: "manager",
   method: "POST",

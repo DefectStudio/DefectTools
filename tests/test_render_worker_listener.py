@@ -5,6 +5,7 @@ import unittest
 from portable_pipe_tools.render_farm.listener import (
     ContinuousWorkerState,
     ListenerAction,
+    adaptive_poll_interval_seconds,
     parse_poll_interval_seconds,
     waiting_status,
 )
@@ -74,6 +75,30 @@ class PollIntervalTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     parse_poll_interval_seconds(value)
+
+    def test_adaptive_polling_doubles_and_caps_at_two_minutes(self) -> None:
+        intervals = [
+            adaptive_poll_interval_seconds(15, empty_checks, random_value=0.5)
+            for empty_checks in range(6)
+        ]
+
+        self.assertEqual([15, 30, 60, 120, 120, 120], intervals)
+
+    def test_adaptive_polling_adds_ten_percent_jitter(self) -> None:
+        self.assertEqual(
+            108,
+            adaptive_poll_interval_seconds(15, 3, random_value=0.0),
+        )
+        self.assertEqual(
+            132,
+            adaptive_poll_interval_seconds(15, 3, random_value=1.0),
+        )
+
+    def test_adaptive_polling_respects_a_slower_operator_setting(self) -> None:
+        self.assertEqual(
+            300,
+            adaptive_poll_interval_seconds(300, 5, random_value=0.5),
+        )
 
 
 if __name__ == "__main__":
