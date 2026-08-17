@@ -114,6 +114,11 @@ class RenderWorkerSelfUpdateTests(unittest.TestCase):
             launcher_text,
         )
         self.assertIn("goto launch_render_worker", launcher_text)
+        self.assertIn(
+            r'%ProgramFiles%\Git\cmd\git.exe',
+            launcher_text,
+        )
+        self.assertIn("where git.exe >nul 2>&1", launcher_text)
 
 
 if __name__ == "__main__":
