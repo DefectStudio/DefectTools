@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from portable_pipe_tools.apps.farm_render_manager_app import (
     FarmRenderManagerApp,
@@ -41,6 +42,15 @@ def _click_tree_heading(
 
 
 class FarmRenderManagerAppTests(unittest.TestCase):
+    def setUp(self) -> None:
+        dispatcher_connection_patcher = patch(
+            "portable_pipe_tools.apps.farm_render_manager_app."
+            "load_dispatcher_connection",
+            return_value=None,
+        )
+        dispatcher_connection_patcher.start()
+        self.addCleanup(dispatcher_connection_patcher.stop)
+
     def test_submitted_time_is_formatted_in_pacific_daylight_time(self) -> None:
         self.assertEqual(
             "2026-08-10  |  22:36",
@@ -352,6 +362,87 @@ class FarmRenderManagerAppTests(unittest.TestCase):
                 self.assertEqual("Jobs", app.list_title_var.get())
             finally:
                 app._on_close()
+
+    def test_cloud_stop_does_not_also_create_a_dropbox_stop_marker(self) -> None:
+        dispatcher = Mock()
+        app = FarmRenderManagerApp.__new__(FarmRenderManagerApp)
+        app.worker_tree = Mock()
+        app.worker_tree.selection.return_value = ("worker-row",)
+        app._workers_by_item = {
+            "worker-row": SimpleNamespace(
+                worker_name="VENGEANCE",
+                current_job_id="",
+                status="waiting",
+                stale=False,
+                farm_root=Path("show/renderFarm"),
+            )
+        }
+        app.dispatcher_client = dispatcher
+        app.status_var = Mock()
+        app.root = Mock()
+        app._refresh_jobs = Mock()
+
+        with (
+            patch(
+                "portable_pipe_tools.apps.farm_render_manager_app."
+                "messagebox.askyesno",
+                return_value=True,
+            ),
+            patch(
+                "portable_pipe_tools.apps.farm_render_manager_app."
+                "create_worker_stop_request"
+            ) as create_stop_marker,
+        ):
+            app._stop_selected_worker()
+
+        dispatcher.request_worker_stop.assert_called_once_with("VENGEANCE")
+        create_stop_marker.assert_not_called()
+        app._refresh_jobs.assert_called_once_with()
+        self.assertIn("Cloud Dispatcher", app.status_var.set.call_args.args[0])
+
+    def test_cloud_stop_failure_creates_one_dropbox_fallback_marker(self) -> None:
+        dispatcher = Mock()
+        dispatcher.request_worker_stop.side_effect = ConnectionError(
+            "Cloud Dispatcher unavailable"
+        )
+        app = FarmRenderManagerApp.__new__(FarmRenderManagerApp)
+        app.worker_tree = Mock()
+        app.worker_tree.selection.return_value = ("worker-row",)
+        app._workers_by_item = {
+            "worker-row": SimpleNamespace(
+                worker_name="VENGEANCE",
+                current_job_id="",
+                status="waiting",
+                stale=False,
+                farm_root=Path("show/renderFarm"),
+            )
+        }
+        app.dispatcher_client = dispatcher
+        app.status_var = Mock()
+        app.root = Mock()
+        app._refresh_jobs = Mock()
+
+        with (
+            patch(
+                "portable_pipe_tools.apps.farm_render_manager_app."
+                "messagebox.askyesno",
+                return_value=True,
+            ),
+            patch(
+                "portable_pipe_tools.apps.farm_render_manager_app."
+                "create_worker_stop_request",
+                return_value=Path("VENGEANCE_STOP.json"),
+            ) as create_stop_marker,
+        ):
+            app._stop_selected_worker()
+
+        dispatcher.request_worker_stop.assert_called_once_with("VENGEANCE")
+        create_stop_marker.assert_called_once_with(
+            Path("show/renderFarm"),
+            "VENGEANCE",
+        )
+        app._refresh_jobs.assert_called_once_with()
+        self.assertIn("fallback marker", app.status_var.set.call_args.args[0])
 
     def test_delete_prompt_cancels_or_bulk_deletes_selected_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

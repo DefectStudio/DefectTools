@@ -72,6 +72,9 @@ Updated filesystem-mode workers deliberately skip jobs marked
   retry after a lost HTTP response.
 - Manager deletion is idempotent and refuses to delete a job while it is
   rendering. The Dropbox package is removed only after D1 confirms deletion.
+- Manager STOP uses only D1 for cloud-connected workers, preventing a second
+  shutdown from a duplicate Dropbox marker. The Dropbox STOP marker remains the
+  legacy path and the fallback when the Cloud Dispatcher cannot be reached.
 - Manager resubmission atomically inserts the fresh D1 job and deletes the old
   non-rendering D1 job. The old Dropbox package is removed only after D1
   explicitly confirms that replacement.
@@ -102,7 +105,7 @@ job to filesystem coordination mid-render.
 - Local API smoke tests covered authentication, atomic two-worker claims,
   heartbeats, retry blacklists, completion, release, clear blacklist,
   atomic replacement/deletion, rendering-job protection, and idempotent retries.
-- 87 Render Worker and Farm Manager regression/integration tests passed.
+- 95 Render Worker and Farm Manager regression/integration tests passed.
 - Production read-only checks confirmed the Worker, D1 binding, manager query,
   and all three role keys. Production contained zero jobs and zero workers at
   that checkpoint.

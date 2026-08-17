@@ -1685,7 +1685,7 @@ class FarmRenderManagerApp:
         )
         if worker.stale:
             active_job_note = (
-                "\n\nThis worker is stale. The STOP marker will remain pending "
+                "\n\nThis worker is stale. The STOP request will remain pending "
                 "and will be honored if that worker returns."
             )
         confirmed = messagebox.askyesno(
@@ -1700,12 +1700,22 @@ class FarmRenderManagerApp:
             return
 
         cloud_error: Exception | None = None
+        cloud_stop_confirmed = False
         dispatcher_client = getattr(self, "dispatcher_client", None)
         if dispatcher_client is not None:
             try:
                 dispatcher_client.request_worker_stop(worker.worker_name)
+                cloud_stop_confirmed = True
             except Exception as error:
                 cloud_error = error
+
+        if cloud_stop_confirmed:
+            self.status_var.set(
+                f"STOP requested for {worker.worker_name} through the Cloud "
+                "Dispatcher"
+            )
+            self._refresh_jobs()
+            return
 
         try:
             stop_file = create_worker_stop_request(
@@ -1721,15 +1731,15 @@ class FarmRenderManagerApp:
             self.status_var.set(f"Could not stop {worker.worker_name}: {error}")
             return
 
-        if cloud_error is None:
+        if dispatcher_client is None:
             self.status_var.set(
-                f"STOP requested for {worker.worker_name}: Cloud Dispatcher + "
+                f"STOP marker created for legacy worker {worker.worker_name}: "
                 f"{stop_file.name}"
             )
         else:
             self.status_var.set(
-                f"STOP marker created for {worker.worker_name}; Cloud request "
-                f"will retry when available: {cloud_error}"
+                f"Cloud STOP failed for {worker.worker_name}; fallback marker "
+                f"created: {stop_file.name}. Cloud error: {cloud_error}"
             )
         self._refresh_jobs()
 
