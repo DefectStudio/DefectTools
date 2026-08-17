@@ -461,6 +461,12 @@ class DispatcherClient:
     def get_job(self, job_id: str) -> dict[str, Any]:
         return self._request("GET", f"/api/v1/jobs/{quote(job_id, safe='')}")
 
+    def delete_job(self, job_id: str) -> dict[str, Any]:
+        return self._request(
+            "DELETE",
+            f"/api/v1/jobs/{quote(job_id, safe='')}",
+        )
+
     def clear_blacklist(self, job_id: str) -> dict[str, Any]:
         return self._request(
             "POST",

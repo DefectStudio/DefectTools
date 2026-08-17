@@ -19,7 +19,9 @@ from portable_pipe_tools.render_farm.auto_refresh_interval import (
     format_auto_refresh_interval,
     parse_auto_refresh_interval,
 )
-from portable_pipe_tools.render_farm.delete_render_jobs import delete_render_jobs
+from portable_pipe_tools.render_farm.delete_render_jobs import (
+    delete_render_jobs_with_dispatcher,
+)
 from portable_pipe_tools.render_farm.cloud_dispatch import (
     DispatcherClient,
     load_dispatcher_connection,
@@ -1945,7 +1947,11 @@ class FarmRenderManagerApp:
                 "\n\nWARNING: A selected job is currently rendering. "
                 "Deleting it may interrupt active work."
             )
-        prompt += "\n\nThis cannot be undone."
+        prompt += (
+            "\n\nThis removes the job from the Cloud Dispatcher and Dropbox. "
+            "Rendered MP4 and EXR outputs are preserved."
+            "\n\nThis cannot be undone."
+        )
 
         confirmed = messagebox.askyesno(
             "Delete Render Job",
@@ -1962,7 +1968,10 @@ class FarmRenderManagerApp:
             self.auto_refresh_worker.stop()
         self.status_var.set("Deleting selected render jobs...")
         self.root.update_idletasks()
-        result = delete_render_jobs(selected_jobs)
+        result = delete_render_jobs_with_dispatcher(
+            selected_jobs,
+            getattr(self, "dispatcher_client", None),
+        )
         self._refresh_jobs()
         if auto_refresh_was_running and self.auto_refresh_var.get():
             self.auto_refresh_worker.start()

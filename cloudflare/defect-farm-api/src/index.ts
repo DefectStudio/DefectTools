@@ -11,6 +11,7 @@ import {
   claimJob,
   clearBlacklist,
   completeJob,
+  deleteJob,
   failJob,
   getJob,
   heartbeatJob,
@@ -26,7 +27,7 @@ import {
 import type { JsonRecord } from "./types";
 
 const SERVICE_NAME = "defect-farm-api";
-const SERVICE_VERSION = "0.2.0";
+const SERVICE_VERSION = "0.3.0";
 const API_ROOT = "/api/v1";
 
 function requestId(request: Request): string {
@@ -247,12 +248,26 @@ async function handleRequest(
   }
 
   const jobDetail = new RegExp(`^${API_ROOT}/jobs/([^/]+)$`).exec(path);
-  if (request.method === "GET" && jobDetail) {
+  if (jobDetail && (request.method === "GET" || request.method === "DELETE")) {
     requireRole(request, env, ["manager"]);
     const jobId = safeIdentifier(
       decodedPathSegment(jobDetail[1] ?? ""),
       "job_id",
     );
+    if (request.method === "DELETE") {
+      const result = await deleteJob(env, jobId);
+      return jsonResponse(
+        {
+          ok: true,
+          deleted: result.deleted,
+          idempotent_replay: !result.deleted,
+          deletion_confirmed: true,
+          deleted_job_id: jobId,
+        },
+        200,
+        id,
+      );
+    }
     return jsonResponse({ ok: true, ...(await getJob(env, jobId)) }, 200, id);
   }
 

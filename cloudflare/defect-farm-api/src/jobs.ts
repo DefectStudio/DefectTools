@@ -897,6 +897,57 @@ export async function getJob(
   };
 }
 
+export async function deleteJob(
+  env: Env,
+  jobId: string,
+): Promise<{ deleted: boolean }> {
+  const existing = await env.DB.prepare(
+    "SELECT status FROM jobs WHERE id = ?1",
+  )
+    .bind(jobId)
+    .first<{ status: JobStatus }>();
+  if (!existing) {
+    return { deleted: false };
+  }
+  if (existing.status === "rendering") {
+    throw new HttpError(
+      409,
+      "job_rendering",
+      "A rendering job cannot be deleted.",
+    );
+  }
+
+  const result = await env.DB.prepare(
+    "DELETE FROM jobs WHERE id = ?1 AND status != 'rendering'",
+  )
+    .bind(jobId)
+    .run();
+  if ((result.meta.changes ?? 0) > 0) {
+    return { deleted: true };
+  }
+
+  const remaining = await env.DB.prepare(
+    "SELECT status FROM jobs WHERE id = ?1",
+  )
+    .bind(jobId)
+    .first<{ status: JobStatus }>();
+  if (!remaining) {
+    return { deleted: false };
+  }
+  if (remaining.status === "rendering") {
+    throw new HttpError(
+      409,
+      "job_rendering",
+      "The job began rendering before it could be deleted.",
+    );
+  }
+  throw new HttpError(
+    409,
+    "delete_race",
+    "The job changed before it could be deleted.",
+  );
+}
+
 const VALID_STATUSES = new Set<JobStatus>([
   "queued",
   "rendering",

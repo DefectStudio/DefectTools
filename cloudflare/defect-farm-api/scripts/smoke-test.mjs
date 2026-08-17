@@ -295,12 +295,76 @@ const replacementDetail = await request(
 );
 assert.equal(replacementDetail.job.status, "queued");
 
+const deletionClaim = await request("/api/v1/jobs/claim", {
+  role: "worker",
+  method: "POST",
+  body: workerBody("smoke-delete-worker", { claim_request_id: randomUUID() }),
+});
+assert.equal(deletionClaim.job_available, true);
+assert.equal(deletionClaim.job.job_id, replacementJobId);
+const renderingDeleteRejected = await request(
+  `/api/v1/jobs/${replacementJobId}`,
+  {
+    role: "manager",
+    method: "DELETE",
+    expected: 409,
+  },
+);
+assert.equal(renderingDeleteRejected.error.code, "job_rendering");
+await request(`/api/v1/jobs/${replacementJobId}/release`, {
+  role: "worker",
+  method: "POST",
+  body: workerBody("smoke-delete-worker", {
+    lease_token: deletionClaim.lease_token,
+    reason: "Preparing deletion smoke test",
+  }),
+});
+await request(`/api/v1/jobs/${replacementJobId}`, {
+  role: "submit",
+  method: "DELETE",
+  expected: 403,
+});
+const replacementDeleted = await request(
+  `/api/v1/jobs/${replacementJobId}`,
+  {
+    role: "manager",
+    method: "DELETE",
+  },
+);
+assert.equal(replacementDeleted.deleted, true);
+assert.equal(replacementDeleted.deletion_confirmed, true);
+await request(`/api/v1/jobs/${replacementJobId}`, {
+  role: "manager",
+  expected: 404,
+});
+const replacementDeleteReplay = await request(
+  `/api/v1/jobs/${replacementJobId}`,
+  {
+    role: "manager",
+    method: "DELETE",
+  },
+);
+assert.equal(replacementDeleteReplay.deleted, false);
+assert.equal(replacementDeleteReplay.idempotent_replay, true);
+assert.equal(replacementDeleteReplay.deletion_confirmed, true);
+
+const historyDeleted = await request(`/api/v1/jobs/${jobId}`, {
+  role: "manager",
+  method: "DELETE",
+});
+assert.equal(historyDeleted.deleted, true);
+await request(`/api/v1/jobs/${jobId}`, {
+  role: "manager",
+  expected: 404,
+});
+
 console.log(
   JSON.stringify({
     ok: true,
     tested_job_id: jobId,
     resubmitted_job_id: resubmitted.job.job_id,
     replacement_job_id: replacementJobId,
+    deleted_history_job_id: jobId,
     atomic_claim_winner: firstWorker,
     retry_claim_winner: secondWorker,
   }),

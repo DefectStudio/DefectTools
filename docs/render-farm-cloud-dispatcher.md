@@ -19,8 +19,8 @@ Three independent bearer keys are used:
 
 - `submit`: may add jobs from Unreal.
 - `worker`: may claim, heartbeat, complete, fail, or release jobs.
-- `manager`: may list jobs/workers, clear blacklists, replace failed jobs, and
-  request stops.
+- `manager`: may list or delete jobs, clear blacklists, replace failed jobs,
+  and request stops.
 
 Keys are encrypted at rest by Cloudflare and are never committed to Git. On a
 Windows computer, the matching local keys are stored in:
@@ -64,6 +64,8 @@ Updated filesystem-mode workers deliberately skip jobs marked
 - Render failures requeue the job and blacklist only the failing worker.
 - Completion, failure, release, submission, and manager resubmission are safe to
   retry after a lost HTTP response.
+- Manager deletion is idempotent and refuses to delete a job while it is
+  rendering. The Dropbox package is removed only after D1 confirms deletion.
 - Manager resubmission atomically inserts the fresh D1 job and deletes the old
   non-rendering D1 job. The old Dropbox package is removed only after D1
   explicitly confirms that replacement.
@@ -75,11 +77,12 @@ Updated filesystem-mode workers deliberately skip jobs marked
 ## Current manager transition
 
 Farm Render Manager still reads job packages and logs from Dropbox so the
-existing interface remains intact. When its manager key is configured, Clear
-Blacklist, Resubmit, and STOP update the Cloud Dispatcher as well as the local
-Dropbox representation. Resubmit creates the replacement first, then removes
-the old failed job from both D1 and `04_RenderFailed`. Legacy pre-D1 jobs
-continue to work.
+existing interface remains intact. When its manager key is configured, Delete,
+Clear Blacklist, Resubmit, and STOP update the Cloud Dispatcher as well as the
+local Dropbox representation. Delete removes D1 first and removes the Dropbox
+job package only after cloud confirmation; rendered MP4 and EXR outputs are not
+deleted. Resubmit creates the replacement first, then removes the old failed job
+from both D1 and `04_RenderFailed`. Legacy pre-D1 jobs continue to work.
 
 ## Rollback
 
@@ -93,7 +96,7 @@ job to filesystem coordination mid-render.
 - Local API smoke tests covered authentication, atomic two-worker claims,
   heartbeats, retry blacklists, completion, release, clear blacklist,
   atomic replacement/deletion, rendering-job protection, and idempotent retries.
-- 68 Render Worker and Farm Manager regression/integration tests passed.
+- 78 Render Worker and Farm Manager regression/integration tests passed.
 - Production read-only checks confirmed the Worker, D1 binding, manager query,
   and all three role keys. Production contained zero jobs and zero workers at
   that checkpoint.
