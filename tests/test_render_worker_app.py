@@ -4,17 +4,19 @@ import logging
 from queue import Queue
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from portable_pipe_tools.apps.render_worker_app import (
     AUTOMATIC_START_DELAY_MS,
     DEFAULT_RENDER_TIMEOUT_HOURS,
+    PERIODIC_UPDATE_INTERVAL_MS,
     QueueLogHandler,
     RenderWorkerApp,
     format_render_timeout_hours,
     format_job_activity,
     parse_render_timeout_hours,
 )
+from portable_pipe_tools.render_farm.worker import WorkerStage
 
 
 class QueueLogHandlerTests(unittest.TestCase):
@@ -89,6 +91,144 @@ class RenderWorkerAppTests(unittest.TestCase):
 
         self.assertIsNone(app._automatic_start_after_id)
         app._start_worker.assert_not_called()
+
+    def test_active_worker_schedules_update_check_for_ten_minutes(self) -> None:
+        app = RenderWorkerApp.__new__(RenderWorkerApp)
+        app._closing = False
+        app._restart_pending = False
+        app._periodic_update_after_id = None
+        app._listener_state = SimpleNamespace(active=True)
+        app.root = Mock()
+        app.root.after.return_value = "after-periodic-update"
+
+        app._schedule_periodic_update_check()
+
+        self.assertEqual("after-periodic-update", app._periodic_update_after_id)
+        app.root.after.assert_called_once_with(
+            PERIODIC_UPDATE_INTERVAL_MS,
+            app._run_periodic_update_check,
+        )
+
+    def test_periodic_update_check_is_skipped_while_rendering(self) -> None:
+        app = RenderWorkerApp.__new__(RenderWorkerApp)
+        app._periodic_update_after_id = "after-periodic-update"
+        app._closing = False
+        app._restart_pending = False
+        app._busy = False
+        app._active_stage = WorkerStage.RENDERING
+        app._listener_state = SimpleNamespace(
+            active=True,
+            stop_requested=False,
+            job_running=True,
+        )
+        app._schedule_periodic_update_check = Mock()
+        app._run_background = Mock()
+
+        app._run_periodic_update_check()
+
+        self.assertIsNone(app._periodic_update_after_id)
+        app._run_background.assert_not_called()
+        app._schedule_periodic_update_check.assert_called_once_with()
+
+    @patch(
+        "portable_pipe_tools.apps.render_worker_app."
+        "resolve_render_worker_repository_root"
+    )
+    def test_periodic_update_check_runs_only_after_pausing_wait_countdown(
+        self,
+        resolve_repository_root: Mock,
+    ) -> None:
+        app = RenderWorkerApp.__new__(RenderWorkerApp)
+        app._periodic_update_after_id = "after-periodic-update"
+        app._closing = False
+        app._restart_pending = False
+        app._busy = False
+        app._active_stage = WorkerStage.WAITING
+        app._listener_state = SimpleNamespace(
+            active=True,
+            stop_requested=False,
+            job_running=False,
+        )
+        app._cancel_listener_countdown = Mock()
+        app._run_background = Mock(return_value=True)
+        resolve_repository_root.return_value = "D:/DefectTools"
+
+        app._run_periodic_update_check()
+
+        app._cancel_listener_countdown.assert_called_once_with()
+        app._run_background.assert_called_once()
+        call = app._run_background.call_args
+        self.assertEqual("Periodic Render Worker update check", call.kwargs["label"])
+        self.assertEqual(app._periodic_update_succeeded, call.kwargs["on_success"])
+        self.assertEqual(app._periodic_update_failed, call.kwargs["on_error"])
+
+    def test_periodic_update_installs_and_restarts_only_while_active(self) -> None:
+        app = RenderWorkerApp.__new__(RenderWorkerApp)
+        app._listener_state = SimpleNamespace(active=True, stop_requested=False)
+        app._restart_pending = False
+        app._worker_git_branch = ""
+        app._worker_git_commit = ""
+        app._restart_after_id = None
+        app.status_var = Mock()
+        app._log = Mock()
+        app._refresh_control_states = Mock()
+        app.root = Mock()
+        app.root.after.return_value = "after-restart"
+        result = SimpleNamespace(
+            update_installed=True,
+            git_pull=SimpleNamespace(
+                branch="main",
+                commit_before="a" * 40,
+                commit_after="b" * 40,
+            ),
+        )
+
+        app._periodic_update_succeeded(result)
+
+        self.assertTrue(app._restart_pending)
+        self.assertEqual("after-restart", app._restart_after_id)
+        app.root.after.assert_called_once_with(750, app._restart_after_update)
+
+    def test_stop_request_wins_if_periodic_update_finishes_at_the_same_time(
+        self,
+    ) -> None:
+        app = RenderWorkerApp.__new__(RenderWorkerApp)
+        app._listener_state = SimpleNamespace(active=False, stop_requested=False)
+        app._restart_pending = False
+        app._worker_git_branch = ""
+        app._worker_git_commit = ""
+        app.status_var = Mock()
+        app._log = Mock()
+        app._refresh_control_states = Mock()
+        app.root = Mock()
+        result = SimpleNamespace(
+            update_installed=True,
+            git_pull=SimpleNamespace(
+                branch="main",
+                commit_before="a" * 40,
+                commit_after="b" * 40,
+            ),
+        )
+
+        app._periodic_update_succeeded(result)
+
+        self.assertFalse(app._restart_pending)
+        app.root.after.assert_not_called()
+        app.status_var.set.assert_called_once_with(
+            "Update installed — reopen worker to load it"
+        )
+
+    def test_periodic_update_failure_keeps_worker_listening(self) -> None:
+        app = RenderWorkerApp.__new__(RenderWorkerApp)
+        app._log = Mock()
+        app._resume_listener_after_periodic_update = Mock()
+        app._schedule_periodic_update_check = Mock()
+
+        app._periodic_update_failed(ConnectionError("Git is unavailable"))
+
+        app._resume_listener_after_periodic_update.assert_called_once_with()
+        app._schedule_periodic_update_check.assert_called_once_with()
+        self.assertIn("retry later", app._log.call_args.args[0])
 
     def test_render_timeout_defaults_to_two_hours(self) -> None:
         self.assertEqual(2.0, DEFAULT_RENDER_TIMEOUT_HOURS)

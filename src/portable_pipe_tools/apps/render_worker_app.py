@@ -83,6 +83,7 @@ DEFAULT_RENDER_TIMEOUT_HOURS = DEFAULT_RENDER_TIMEOUT_SECONDS / SECONDS_PER_HOUR
 MINIMUM_RENDER_TIMEOUT_HOURS = 0.25
 MAXIMUM_RENDER_TIMEOUT_HOURS = 24.0
 AUTOMATIC_START_DELAY_MS = 250
+PERIODIC_UPDATE_INTERVAL_MS = 10 * 60 * 1_000
 
 HEARTBEAT_STATUS_BY_STAGE = {
     WorkerStage.STOPPED: "stopped",
@@ -254,6 +255,7 @@ class RenderWorkerApp:
         self._poll_after_id: str | None = None
         self._startup_update_after_id: str | None = None
         self._automatic_start_after_id: str | None = None
+        self._periodic_update_after_id: str | None = None
         self._restart_after_id: str | None = None
         self._animation_after_id: str | None = None
         self._animation_frame_index = 0
@@ -733,6 +735,108 @@ class RenderWorkerApp:
             return
         self._start_worker(require_confirmation=False)
 
+    def _schedule_periodic_update_check(self) -> None:
+        if (
+            self._closing
+            or self._restart_pending
+            or not self._listener_state.active
+            or self._periodic_update_after_id is not None
+        ):
+            return
+        self._periodic_update_after_id = self.root.after(
+            PERIODIC_UPDATE_INTERVAL_MS,
+            self._run_periodic_update_check,
+        )
+
+    def _run_periodic_update_check(self) -> None:
+        self._periodic_update_after_id = None
+        if self._closing or self._restart_pending or not self._listener_state.active:
+            return
+        if (
+            self._busy
+            or self._active_stage is not WorkerStage.WAITING
+            or self._listener_state.stop_requested
+            or self._listener_state.job_running
+        ):
+            self._schedule_periodic_update_check()
+            return
+
+        self._cancel_listener_countdown()
+        repository_root = resolve_render_worker_repository_root()
+        started = self._run_background(
+            label="Periodic Render Worker update check",
+            work=lambda: update_render_worker_checkout(repository_root),
+            on_success=self._periodic_update_succeeded,
+            on_error=self._periodic_update_failed,
+        )
+        if not started:
+            self._resume_listener_after_periodic_update()
+            self._schedule_periodic_update_check()
+
+    def _periodic_update_succeeded(
+        self,
+        result: RenderWorkerUpdateResult,
+    ) -> None:
+        git_pull = result.git_pull
+        self._worker_git_branch = git_pull.branch
+        self._worker_git_commit = git_pull.commit_after
+        if result.update_installed:
+            self._log(
+                "Periodic update installed: "
+                f"branch={git_pull.branch}, "
+                f"commit={git_pull.commit_before[:12]} -> "
+                f"{git_pull.commit_after[:12]}"
+            )
+            if not self._listener_state.active or self._listener_state.stop_requested:
+                self.status_var.set("Update installed — reopen worker to load it")
+                self._log(
+                    "The worker was stopped while the update was being checked, "
+                    "so its stop request was preserved instead of restarting it."
+                )
+                self._refresh_control_states()
+                return
+
+            self._restart_pending = True
+            self.status_var.set("Render Worker updated while waiting — restarting")
+            self._log(
+                "Restarting while idle so the newly pulled worker code is loaded."
+            )
+            self._refresh_control_states()
+            self._restart_after_id = self.root.after(
+                750,
+                self._restart_after_update,
+            )
+            return
+
+        self._log(
+            "Periodic update check found no changes: "
+            f"branch={git_pull.branch}, commit={git_pull.commit_after[:12]}"
+        )
+        self._resume_listener_after_periodic_update()
+        self._schedule_periodic_update_check()
+
+    def _periodic_update_failed(self, error: Exception) -> None:
+        self._log(
+            "Periodic update check warning: "
+            f"{type(error).__name__}: {error}. The worker will keep listening "
+            "and retry later."
+        )
+        self._resume_listener_after_periodic_update()
+        self._schedule_periodic_update_check()
+
+    def _resume_listener_after_periodic_update(self) -> None:
+        if (
+            self._listener_state.active
+            and not self._listener_state.stop_requested
+            and self._listener_configuration is not None
+        ):
+            self._schedule_listener_check_now()
+
+    def _cancel_periodic_update_check(self) -> None:
+        if self._periodic_update_after_id is not None:
+            self.root.after_cancel(self._periodic_update_after_id)
+            self._periodic_update_after_id = None
+
     def _browse_farm_root(self) -> None:
         current_value = self.farm_root_var.get().strip()
         selected = filedialog.askdirectory(
@@ -997,6 +1101,7 @@ class RenderWorkerApp:
             f"{configuration.local_show_file_server_path}"
         )
         self._log(f"Job coordination: {coordination_message}")
+        self._schedule_periodic_update_check()
         self._schedule_listener_check_now()
 
     def _stop_worker(self) -> None:
@@ -1141,6 +1246,7 @@ class RenderWorkerApp:
     def _finish_listener_stopped(self) -> None:
         stopped_remotely = self._stop_requested_remotely
         self._cancel_listener_countdown()
+        self._cancel_periodic_update_check()
         self._listener_configuration = None
         self._listener_state.active = False
         self._listener_state.stop_requested = False
@@ -1685,6 +1791,7 @@ class RenderWorkerApp:
         if self._automatic_start_after_id is not None:
             self.root.after_cancel(self._automatic_start_after_id)
             self._automatic_start_after_id = None
+        self._cancel_periodic_update_check()
         if self._restart_after_id is not None:
             self.root.after_cancel(self._restart_after_id)
             self._restart_after_id = None
