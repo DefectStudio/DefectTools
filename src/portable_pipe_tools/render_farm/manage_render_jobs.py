@@ -83,6 +83,76 @@ def clear_render_job_blacklist(
     return bool(blacklist) or cloud_cleared > 0
 
 
+def recover_stalled_render_job(
+    job: RenderJob,
+    dispatcher_client: DispatcherClient | None,
+) -> Path:
+    """Return a D1-queued package stranded in 02_IsRendering to 01."""
+    if job.queue_name != IS_RENDERING_FOLDER:
+        raise ValueError(
+            f'Only jobs in {IS_RENDERING_FOLDER} can be recovered; '
+            f'"{job.job_name}" is in {job.queue_name}'
+        )
+    if dispatcher_client is None:
+        raise DispatcherError(
+            "Recover Stalled Job requires the Manager Cloud Dispatcher key.",
+            code="dispatcher_not_configured",
+        )
+
+    source_data = read_json_object(job.job_json_path)
+    job_id = str(source_data.get("job_id") or job.job_id).strip()
+    if (
+        str(source_data.get(DISPATCHER_COORDINATION_FIELD) or "").casefold()
+        != CLOUD_DISPATCHER_COORDINATION
+    ):
+        raise ValueError(
+            f'"{job.job_name}" is not coordinated by the Cloud Dispatcher.'
+        )
+
+    response = dispatcher_client.get_job(job_id)
+    summary = response.get("summary")
+    cloud_job = response.get("job")
+    if not isinstance(summary, dict) or not isinstance(cloud_job, dict):
+        raise DispatcherError(
+            f"Cloud Dispatcher returned incomplete state for {job_id}.",
+            code="invalid_dispatcher_response",
+            response=response,
+        )
+    if (
+        summary.get("status") != "queued"
+        or summary.get("worker") is not None
+        or summary.get("lease_expires_at") is not None
+    ):
+        owner = summary.get("worker") or "another worker"
+        raise DispatcherError(
+            f"{job_id} is not recoverable because D1 currently reports "
+            f"status={summary.get('status')!r}, owner={owner!r}.",
+            status=409,
+            code="job_has_active_lease",
+            response=response,
+        )
+    if cloud_job.get("job_id") != job_id or cloud_job.get("status") != "queued":
+        raise DispatcherError(
+            f"Cloud Dispatcher payload does not describe queued job {job_id}.",
+            code="invalid_dispatcher_response",
+            response=response,
+        )
+
+    paths = create_queue_folders(job.job_folder.parent.parent)
+    destination = paths.needs_rendering / job_id
+    if path_exists_with_retry(destination):
+        raise FileExistsError(
+            f"A queued package already exists for {job_id}: {destination}"
+        )
+
+    # Publish the D1-authoritative queued state before the atomic directory move.
+    # If Dropbox briefly locks the rename, the package remains visibly recoverable
+    # in 02 and the same action can be retried without creating a second job.
+    write_json_atomic(job.job_json_path, dict(cloud_job))
+    rename_path_with_retry(job.job_folder, destination)
+    return destination
+
+
 def resubmit_failed_render_job(
     job: RenderJob,
     dispatcher_client: DispatcherClient | None = None,

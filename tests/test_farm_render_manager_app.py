@@ -79,6 +79,26 @@ class FarmRenderManagerAppTests(unittest.TestCase):
         self.assertEqual("job_name", JOB_COLUMNS[0].key)
         self.assertEqual("Job Name", JOB_COLUMNS[0].heading)
 
+    def test_job_context_menu_includes_stalled_job_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "manager.json"
+            save_auto_refresh_enabled(False, settings_path)
+            app = FarmRenderManagerApp(
+                settings_path=settings_path,
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            try:
+                self.assertEqual(
+                    "Recover Stalled Job",
+                    app.job_context_menu.entrycget(
+                        app._recover_stalled_job_menu_index,
+                        "label",
+                    ),
+                )
+            finally:
+                app._on_close()
+
     def test_job_name_column_is_compact_and_does_not_expand(self) -> None:
         self.assertEqual(125, JOB_COLUMNS[0].width)
         self.assertFalse(JOB_COLUMNS[0].stretch)

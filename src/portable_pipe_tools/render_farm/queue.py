@@ -426,6 +426,77 @@ def claim_job_by_id(
     return claimed_folder
 
 
+def recover_stranded_cloud_job_to_queue(
+    paths: QueuePaths,
+    job_id: str,
+) -> Path | None:
+    """Return one D1-coordinated package stranded in 02 to the queue.
+
+    Callers must hold the active Cloud Dispatcher lease for ``job_id``.  The
+    directory rename is deliberately exact and refuses ambiguous matches so a
+    recovery can never guess which package is authoritative.
+    """
+    if safe_name(job_id, "") != job_id:
+        raise ValueError(f"Cloud Dispatcher returned an unsafe job ID: {job_id!r}")
+
+    queued_folder = paths.needs_rendering / job_id
+    if path_exists_with_retry(queued_folder):
+        return queued_folder
+
+    prefix = f"{job_id}__"
+    rendering_entries = retry_transient_windows_lock(
+        operation=lambda: list(paths.is_rendering.iterdir()),
+        description=f"Scan for stranded Cloud package {job_id}",
+        transient_winerrors=TRANSIENT_WINDOWS_PUBLISH_ERRORS,
+    )
+    stranded_folders: list[Path] = []
+    for entry in rendering_entries:
+        try:
+            entry_status = retry_transient_windows_lock(
+                operation=entry.stat,
+                description=f"Inspect possible stranded package {entry}",
+            )
+        except FileNotFoundError:
+            continue
+        if (
+            stat_module.S_ISDIR(entry_status.st_mode)
+            and entry.name.startswith(prefix)
+        ):
+            stranded_folders.append(entry)
+
+    if not stranded_folders:
+        return None
+    if len(stranded_folders) > 1:
+        matches = ", ".join(folder.name for folder in stranded_folders)
+        raise FileExistsError(
+            f"Multiple stranded packages match Cloud job {job_id}; manual "
+            f"inspection is required: {matches}"
+        )
+
+    stranded_folder = stranded_folders[0]
+    job_path = stranded_folder / JOB_FILENAME
+    stranded_job = read_json_object(job_path)
+    if str(stranded_job.get("job_id") or "").strip() != job_id:
+        raise ValueError(
+            f"Stranded package job ID does not match its Cloud lease: {job_path}"
+        )
+    if (
+        str(stranded_job.get(DISPATCHER_COORDINATION_FIELD) or "").casefold()
+        != CLOUD_DISPATCHER_COORDINATION
+    ):
+        raise ValueError(
+            f"Refusing to recover a non-Cloud package as Cloud job {job_id}: "
+            f"{job_path}"
+        )
+    if path_exists_with_retry(queued_folder):
+        raise FileExistsError(
+            f"Queued Cloud package appeared during recovery: {queued_folder}"
+        )
+
+    rename_path_with_retry(stranded_folder, queued_folder)
+    return queued_folder
+
+
 def validate_queued_job(job: dict[str, Any], job_path: Path) -> None:
     if job.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(

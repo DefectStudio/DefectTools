@@ -33,6 +33,7 @@ class FakeDispatcher:
         self.completed: list[tuple[str, str]] = []
         self.failed: list[tuple[str, str, bool]] = []
         self.heartbeat_count = 0
+        self.heartbeat_error = False
         self.fail_completion_once = False
         self.stop_requested = False
         self.stop_acknowledged: list[str] = []
@@ -62,6 +63,8 @@ class FakeDispatcher:
 
     def heartbeat_job(self, *_args, **_kwargs) -> dict:
         self.heartbeat_count += 1
+        if self.heartbeat_error:
+            raise DispatcherConnectionError("intentional heartbeat outage")
         return {"ok": True, "stop_requested": False}
 
     def complete_job(
@@ -100,6 +103,8 @@ class CloudWorkerTests(unittest.TestCase):
     def _lease_for_queued_job(self, worker: str = "CLOUD-WORKER") -> CloudJobLease:
         queued_folder = create_test_job(self.farm_root)
         job = read_json_object(queued_folder / JOB_FILENAME)
+        job[DISPATCHER_COORDINATION_FIELD] = "cloud"
+        write_json_atomic(queued_folder / JOB_FILENAME, job)
         job["status"] = "rendering"
         job["worker"] = worker
         job["attempt"] = 1
@@ -157,6 +162,38 @@ class CloudWorkerTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(1, len(dispatcher.released))
         self.assertEqual("NOT_SYNCED_YET", dispatcher.released[0][0])
+
+    def test_cloud_claim_recovers_package_stranded_by_expired_worker(self) -> None:
+        lease = self._lease_for_queued_job(worker="RECOVERY-WORKER")
+        queued_folder = self.paths.needs_rendering / lease.job_id
+        stranded_job = read_json_object(queued_folder / JOB_FILENAME)
+        stranded_job.update(
+            {
+                "status": "rendering",
+                "worker": "CRASHED-WORKER",
+                "attempt": 1,
+            }
+        )
+        write_json_atomic(queued_folder / JOB_FILENAME, stranded_job)
+        stranded_folder = (
+            self.paths.is_rendering / f"{lease.job_id}__CRASHED-WORKER"
+        )
+        queued_folder.rename(stranded_folder)
+        dispatcher = FakeDispatcher(lease)
+
+        result = run_once(
+            self.farm_root,
+            "RECOVERY-WORKER",
+            simulate_success=True,
+            minimum_stage_seconds=0,
+            dispatcher_client=dispatcher,
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("complete", result.status)
+        self.assertFalse(stranded_folder.exists())
+        self.assertEqual([(lease.job_id, "RECOVERY-WORKER")], dispatcher.completed)
 
     def test_filesystem_worker_skips_cloud_coordinated_package(self) -> None:
         queued_folder = create_test_job(self.farm_root)
@@ -266,6 +303,43 @@ class CloudWorkerTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(1, dispatcher.heartbeat_count)
+
+    def test_heartbeat_outage_cancels_before_cloud_lease_can_expire(self) -> None:
+        initial_lease = self._lease_for_queued_job()
+        lease = CloudJobLease(
+            job=initial_lease.job,
+            lease_token=initial_lease.lease_token,
+            lease_expires_at=int(time.time()) + 1,
+            stop_requested=False,
+        )
+        dispatcher = FakeDispatcher(lease)
+        dispatcher.heartbeat_error = True
+
+        def fake_unreal_runner(**kwargs) -> UnrealExecutionResult:
+            time.sleep(0.02)
+            self.assertTrue(kwargs["should_cancel"]())
+            return UnrealExecutionResult(
+                success=False,
+                reason="Canceled by lease safety test",
+                exit_code=-1,
+            )
+
+        result = run_once(
+            self.farm_root,
+            "CLOUD-WORKER",
+            simulate_success=False,
+            minimum_stage_seconds=0,
+            render_with_unreal=True,
+            unreal_runner=fake_unreal_runner,
+            dispatcher_client=dispatcher,
+            dispatcher_heartbeat_interval_seconds=0.01,
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("requeued", result.status)
+        self.assertEqual(1, dispatcher.heartbeat_count)
+        self.assertEqual([(lease.job_id, "CLOUD-WORKER", True)], dispatcher.failed)
 
 
 if __name__ == "__main__":

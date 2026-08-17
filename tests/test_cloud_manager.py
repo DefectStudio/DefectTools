@@ -9,6 +9,7 @@ from portable_pipe_tools.render_farm.cloud_dispatch import DispatcherError
 from portable_pipe_tools.render_farm.manage_render_jobs import (
     DISPATCHER_SUBMISSION_RECEIPT_FILENAME,
     clear_render_job_blacklist,
+    recover_stalled_render_job,
     resubmit_failed_render_job,
 )
 from portable_pipe_tools.render_farm.queue import (
@@ -65,6 +66,39 @@ class LegacyAwareDispatcher(FakeManagerDispatcher):
             status=404,
             code="job_not_found",
         )
+
+
+class RecoveryDispatcher(FakeManagerDispatcher):
+    def __init__(
+        self,
+        cloud_job: dict,
+        *,
+        status: str = "queued",
+        worker: str | None = None,
+        lease_expires_at: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.cloud_job = dict(cloud_job)
+        self.status = status
+        self.worker = worker
+        self.lease_expires_at = lease_expires_at
+
+    def get_job(self, job_id: str) -> dict:
+        return {
+            "ok": True,
+            "summary": {
+                "job_id": job_id,
+                "status": self.status,
+                "worker": self.worker,
+                "lease_expires_at": self.lease_expires_at,
+            },
+            "job": {
+                **self.cloud_job,
+                "job_id": job_id,
+                "status": self.status,
+                "worker": self.worker,
+            },
+        }
 
 
 class CloudManagerTests(unittest.TestCase):
@@ -156,6 +190,65 @@ class CloudManagerTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertEqual([], read_json_object(job.job_json_path)["blacklisted_workers"])
+
+    def _stalled_cloud_job(self):
+        source_data = read_json_object(self.source_folder / "job.json")
+        source_data.update(
+            {
+                DISPATCHER_COORDINATION_FIELD: CLOUD_DISPATCHER_COORDINATION,
+                "status": "rendering",
+                "worker": "CRASHED-WORKER",
+                "attempt": 2,
+            }
+        )
+        write_json_atomic(self.source_folder / "job.json", source_data)
+        stalled_folder = (
+            self.paths.is_rendering
+            / f"{source_data['job_id']}__CRASHED-WORKER"
+        )
+        self.source_folder.rename(stalled_folder)
+        job = self._job()
+        cloud_job = {
+            **source_data,
+            "status": "queued",
+            "worker": None,
+            "attempt": 3,
+            "blacklisted_workers": ["CRASHED-WORKER"],
+        }
+        return job, stalled_folder, cloud_job
+
+    def test_recover_stalled_job_preserves_id_and_returns_package_to_queue(self) -> None:
+        job, stalled_folder, cloud_job = self._stalled_cloud_job()
+
+        destination = recover_stalled_render_job(
+            job,
+            RecoveryDispatcher(cloud_job),
+        )
+
+        self.assertEqual(self.paths.needs_rendering / job.job_id, destination)
+        self.assertFalse(stalled_folder.exists())
+        recovered = read_json_object(destination / "job.json")
+        self.assertEqual(job.job_id, recovered["job_id"])
+        self.assertEqual("queued", recovered["status"])
+        self.assertEqual(3, recovered["attempt"])
+        self.assertEqual(["CRASHED-WORKER"], recovered["blacklisted_workers"])
+
+    def test_recover_stalled_job_refuses_an_active_cloud_lease(self) -> None:
+        job, stalled_folder, cloud_job = self._stalled_cloud_job()
+
+        with self.assertRaises(DispatcherError) as caught:
+            recover_stalled_render_job(
+                job,
+                RecoveryDispatcher(
+                    cloud_job,
+                    status="rendering",
+                    worker="LIVE-WORKER",
+                    lease_expires_at=1_786_000_000,
+                ),
+            )
+
+        self.assertEqual("job_has_active_lease", caught.exception.code)
+        self.assertTrue(stalled_folder.is_dir())
 
 
 if __name__ == "__main__":

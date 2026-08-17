@@ -43,6 +43,7 @@ from portable_pipe_tools.render_farm.queue import (
     path_exists_with_retry,
     read_json_object,
     reconcile_completed_jobs,
+    recover_stranded_cloud_job_to_queue,
     safe_name,
     utc_now,
     write_json_atomic,
@@ -61,6 +62,7 @@ from portable_pipe_tools.render_farm.workers import (
 
 LOGGER = logging.getLogger("render_worker")
 DEFAULT_MINIMUM_STAGE_SECONDS = 5.0
+CLOUD_LEASE_SAFETY_MARGIN_SECONDS = 30.0
 _StageResult = TypeVar("_StageResult")
 
 
@@ -247,11 +249,30 @@ def run_once(
             if claim.lease is None:
                 return []
             cloud_lease = claim.lease
+            queued_folder = paths.needs_rendering / cloud_lease.job_id
+            if not path_exists_with_retry(queued_folder):
+                try:
+                    recovered_folder = recover_stranded_cloud_job_to_queue(
+                        paths,
+                        cloud_lease.job_id,
+                    )
+                except Exception as error:
+                    release_cloud_lease(
+                        "Automatic recovery of the stranded Dropbox package "
+                        f"failed: {type(error).__name__}: {error}"
+                    )
+                    raise
+                if recovered_folder is not None:
+                    queued_folder = recovered_folder
+                    LOGGER.warning(
+                        "Recovered stranded Cloud job package to the queue: %s",
+                        recovered_folder,
+                    )
             priority = cloud_lease.job.get("priority", 50)
             submitted_utc = cloud_lease.job.get("submitted_utc", "")
             return [
                 JobCandidate(
-                    folder=paths.needs_rendering / cloud_lease.job_id,
+                    folder=queued_folder,
                     priority=(
                         priority
                         if isinstance(priority, int) and not isinstance(priority, bool)
@@ -428,11 +449,18 @@ def run_once(
         last_heartbeat_success = monotonic_function()
         last_heartbeat_attempt = last_heartbeat_success
         cloud_cancel_reason: str | None = None
+        cloud_lease_deadline = (
+            last_heartbeat_success
+            + max(0.0, claimed_job.cloud_lease.lease_expires_at - time.time())
+            if claimed_job.cloud_lease is not None
+            else None
+        )
 
         def should_cancel() -> bool:
             nonlocal last_heartbeat_success
             nonlocal last_heartbeat_attempt
             nonlocal cloud_cancel_reason
+            nonlocal cloud_lease_deadline
             if should_cancel_render is not None and should_cancel_render():
                 return True
             if dispatcher_client is None or claimed_job.cloud_lease is None:
@@ -457,6 +485,18 @@ def run_once(
                 )
             except DispatcherConnectionError as error:
                 LOGGER.warning("Cloud Dispatcher heartbeat unavailable: %s", error)
+                if (
+                    cloud_lease_deadline is not None
+                    and current_time
+                    >= cloud_lease_deadline - CLOUD_LEASE_SAFETY_MARGIN_SECONDS
+                ):
+                    cloud_cancel_reason = (
+                        "Cloud Dispatcher heartbeat remained unavailable too "
+                        "close to lease expiry; canceling before the job can be "
+                        "assigned to another worker"
+                    )
+                    LOGGER.error(cloud_cancel_reason)
+                    return True
                 return False
             except DispatcherError as error:
                 cloud_cancel_reason = (
@@ -467,6 +507,15 @@ def run_once(
                 return True
             last_heartbeat_success = current_time
             last_heartbeat_attempt = current_time
+            lease_expires_at = heartbeat.get("lease_expires_at")
+            if isinstance(lease_expires_at, (int, float)) and not isinstance(
+                lease_expires_at,
+                bool,
+            ):
+                cloud_lease_deadline = current_time + max(
+                    0.0,
+                    float(lease_expires_at) - time.time(),
+                )
             if heartbeat.get("stop_requested"):
                 cloud_cancel_reason = "Cloud Dispatcher requested that this worker stop"
                 LOGGER.warning(cloud_cancel_reason)

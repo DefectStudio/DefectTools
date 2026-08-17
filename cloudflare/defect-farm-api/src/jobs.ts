@@ -349,7 +349,7 @@ export async function expireStaleLeases(env: Env): Promise<number> {
     ),
     env.DB.prepare(
       `UPDATE workers
-       SET status = 'waiting', current_job_id = NULL, last_seen_at = ${NOW_SQL}
+       SET status = 'offline', current_job_id = NULL
        WHERE current_job_id IN (
          SELECT id FROM jobs
          WHERE status = 'rendering'

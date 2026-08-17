@@ -44,10 +44,13 @@ from portable_pipe_tools.render_farm.manager_settings import (
 )
 from portable_pipe_tools.render_farm.manage_render_jobs import (
     clear_render_job_blacklist,
+    recover_stalled_render_job,
     resubmit_failed_render_job,
 )
 from portable_pipe_tools.render_farm.queue import (
     BLACKLISTED_WORKERS_FIELD,
+    CLOUD_DISPATCHER_COORDINATION,
+    DISPATCHER_COORDINATION_FIELD,
     IS_RENDERING_FOLDER,
     RENDER_FAILED_FOLDER,
 )
@@ -702,6 +705,13 @@ class FarmRenderManagerApp:
             activebackground="#8a3e3e",
             activeforeground="#ffffff",
             borderwidth=0,
+        )
+        self.job_context_menu.add_command(
+            label="Recover Stalled Job",
+            command=self._recover_selected_stalled_jobs,
+        )
+        self._recover_stalled_job_menu_index = int(
+            self.job_context_menu.index("end")
         )
         self.job_context_menu.add_command(
             label="Resubmit",
@@ -1603,6 +1613,18 @@ class FarmRenderManagerApp:
             self.job_tree.selection_set(row_id)
         self.job_tree.focus(row_id)
         selected_jobs = self._selected_jobs()
+        can_recover_stalled = (
+            bool(selected_jobs)
+            and getattr(self, "dispatcher_client", None) is not None
+            and all(
+                job.queue_name == IS_RENDERING_FOLDER
+                and str(
+                    job.job_data.get(DISPATCHER_COORDINATION_FIELD) or ""
+                ).casefold()
+                == CLOUD_DISPATCHER_COORDINATION
+                for job in selected_jobs
+            )
+        )
         can_resubmit = bool(selected_jobs) and all(
             job.queue_name == RENDER_FAILED_FOLDER for job in selected_jobs
         )
@@ -1613,6 +1635,10 @@ class FarmRenderManagerApp:
                 bool(job.job_data.get(BLACKLISTED_WORKERS_FIELD))
                 for job in selected_jobs
             )
+        )
+        self.job_context_menu.entryconfigure(
+            self._recover_stalled_job_menu_index,
+            state="normal" if can_recover_stalled else "disabled",
         )
         self.job_context_menu.entryconfigure(
             self._resubmit_job_menu_index,
@@ -1774,6 +1800,92 @@ class FarmRenderManagerApp:
     def _on_delete_key(self, _event: tk.Event[tk.Misc]) -> str:
         self._delete_selected_jobs()
         return "break"
+
+    def _recover_selected_stalled_jobs(self) -> None:
+        selected_jobs = self._selected_jobs()
+        if not selected_jobs:
+            return
+        if any(
+            job.queue_name != IS_RENDERING_FOLDER
+            or str(
+                job.job_data.get(DISPATCHER_COORDINATION_FIELD) or ""
+            ).casefold()
+            != CLOUD_DISPATCHER_COORDINATION
+            for job in selected_jobs
+        ):
+            messagebox.showerror(
+                "Recover Stalled Render Job",
+                "Only Cloud-coordinated jobs in 02_IsRendering can be recovered.",
+                parent=self.root,
+            )
+            return
+        if getattr(self, "dispatcher_client", None) is None:
+            messagebox.showerror(
+                "Recover Stalled Render Job",
+                "The Manager Cloud Dispatcher key is not configured.",
+                parent=self.root,
+            )
+            return
+
+        if len(selected_jobs) == 1:
+            prompt = (
+                f'Recover stalled render job "{selected_jobs[0].job_name}"?'
+            )
+        else:
+            prompt = f"Recover {len(selected_jobs)} stalled render jobs?"
+        prompt += (
+            "\n\nRecovery is allowed only when D1 confirms that the old worker "
+            "lease has expired and no worker currently owns the job. The original "
+            "job ID, version, blacklist, logs, and render outputs are preserved."
+            "\n\nOnce returned to 01_NeedsRendering, an eligible worker may claim "
+            "the job immediately."
+        )
+        if not messagebox.askyesno(
+            "Recover Stalled Render Job",
+            prompt,
+            icon="warning",
+            default="no",
+            parent=self.root,
+        ):
+            return
+
+        auto_refresh_was_running = self.auto_refresh_worker.running
+        if auto_refresh_was_running:
+            self.auto_refresh_worker.stop()
+        self.status_var.set("Recovering selected stalled render jobs...")
+        self.root.update_idletasks()
+
+        destinations: list[Path] = []
+        errors: list[str] = []
+        for job in selected_jobs:
+            try:
+                destinations.append(
+                    recover_stalled_render_job(job, self.dispatcher_client)
+                )
+            except Exception as error:
+                errors.append(f"{job.job_name}: {error}")
+
+        self._refresh_jobs()
+        if auto_refresh_was_running and self.auto_refresh_var.get():
+            self.auto_refresh_worker.start()
+
+        if errors:
+            messagebox.showerror(
+                "Recover Stalled Render Job",
+                "\n".join(errors),
+                parent=self.root,
+            )
+            self.status_var.set(
+                f"Recovered {len(destinations)} stalled jobs with "
+                f"{len(errors)} errors"
+            )
+            return
+
+        suffix = "job" if len(destinations) == 1 else "jobs"
+        self.status_var.set(
+            f"Recovered {len(destinations)} stalled render {suffix} to "
+            "01_NeedsRendering"
+        )
 
     def _selected_jobs(self) -> list[RenderJob]:
         return [
