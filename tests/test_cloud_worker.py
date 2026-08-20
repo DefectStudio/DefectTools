@@ -9,9 +9,11 @@ from portable_pipe_tools.render_farm.cloud_dispatch import (
     CloudClaimResult,
     CloudJobLease,
     DispatcherConnectionError,
+    DispatcherError,
 )
 from portable_pipe_tools.render_farm.cloud_queue import (
     PENDING_DISPATCHER_UPDATE_FILENAME,
+    STALE_DISPATCHER_UPDATE_PREFIX,
     reconcile_pending_cloud_updates,
 )
 from portable_pipe_tools.render_farm.queue import (
@@ -35,10 +37,13 @@ class FakeDispatcher:
         self.heartbeat_count = 0
         self.heartbeat_error = False
         self.fail_completion_once = False
+        self.stale_failure_job_ids: set[str] = set()
         self.stop_requested = False
         self.stop_acknowledged: list[str] = []
+        self.claim_count = 0
 
     def claim_job(self, worker_id: str, **_kwargs) -> CloudClaimResult:
+        self.claim_count += 1
         lease = self.lease
         self.lease = None
         return CloudClaimResult(
@@ -89,6 +94,12 @@ class FakeDispatcher:
         retryable: bool,
         **_kwargs,
     ) -> dict:
+        if job_id in self.stale_failure_job_ids:
+            raise DispatcherError(
+                "The job is no longer owned by this worker lease.",
+                status=409,
+                code="lease_lost",
+            )
         self.failed.append((job_id, worker_id, retryable))
         return {"ok": True}
 
@@ -276,6 +287,52 @@ class CloudWorkerTests(unittest.TestCase):
         self.assertEqual(completed_folders, reconciled)
         self.assertFalse(pending_path.exists())
         self.assertEqual([(lease.job_id, "CLOUD-WORKER")], dispatcher.completed)
+
+    def test_stale_terminal_receipt_is_quarantined_without_blocking_claim(self) -> None:
+        lease = self._lease_for_queued_job()
+        dispatcher = FakeDispatcher(lease)
+        stale_job_id = "STALE-RELEASED-JOB"
+        dispatcher.stale_failure_job_ids.add(stale_job_id)
+        stale_folder = self.paths.render_complete / "STALE-RELEASED-JOB__OLD-WORKER"
+        stale_folder.mkdir()
+        pending_path = stale_folder / PENDING_DISPATCHER_UPDATE_FILENAME
+        write_json_atomic(
+            pending_path,
+            {
+                "schema_version": 1,
+                "created_utc": "2026-08-20T09:05:00.000Z",
+                "action": "fail",
+                "job_id": stale_job_id,
+                "worker_id": "OLD-WORKER",
+                "lease_token": "released-lease-token",
+                "reason": "Dropbox finalization failed after the lease was released",
+                "retryable": True,
+                "result": {},
+                "invalid_package": False,
+            },
+        )
+
+        result = run_once(
+            self.farm_root,
+            "CLOUD-WORKER",
+            simulate_success=True,
+            minimum_stage_seconds=0,
+            dispatcher_client=dispatcher,
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("complete", result.status)
+        self.assertEqual(1, dispatcher.claim_count)
+        self.assertFalse(pending_path.exists())
+        quarantined = list(
+            stale_folder.glob(f"{STALE_DISPATCHER_UPDATE_PREFIX}_*.json")
+        )
+        self.assertEqual(1, len(quarantined))
+        self.assertEqual(
+            stale_job_id,
+            read_json_object(quarantined[0])["job_id"],
+        )
 
     def test_real_render_renews_cloud_lease(self) -> None:
         lease = self._lease_for_queued_job()

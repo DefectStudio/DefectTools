@@ -8,6 +8,7 @@ from typing import Any
 from portable_pipe_tools.render_farm.cloud_dispatch import (
     CloudJobLease,
     DispatcherClient,
+    DispatcherError,
 )
 from portable_pipe_tools.render_farm.queue import (
     JOB_FILENAME,
@@ -22,6 +23,7 @@ from portable_pipe_tools.render_farm.queue import (
 
 
 PENDING_DISPATCHER_UPDATE_FILENAME = "dispatcher_update_pending.json"
+STALE_DISPATCHER_UPDATE_PREFIX = "dispatcher_update_stale"
 PENDING_UPDATE_RECONCILIATION_GRACE_SECONDS = 60.0
 LOGGER = logging.getLogger("render_worker.cloud_queue")
 
@@ -35,6 +37,22 @@ def _remove_pending_update(path: Path) -> None:
         operation=lambda: path.unlink(missing_ok=True),
         description=f"Remove completed Dispatcher update {path}",
     )
+
+
+def _quarantine_stale_update(path: Path) -> Path | None:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    destination = path.with_name(
+        f"{STALE_DISPATCHER_UPDATE_PREFIX}_{timestamp}.json"
+    )
+    try:
+        retry_transient_windows_lock(
+            operation=lambda: path.rename(destination),
+            description=f"Quarantine stale Dispatcher update {path}",
+        )
+    except FileNotFoundError:
+        # Another worker may have quarantined the shared receipt first.
+        return None
+    return destination
 
 
 def _send_pending_update(
@@ -213,7 +231,21 @@ def reconcile_pending_cloud_updates(
                         result_details=result if isinstance(result, dict) else {},
                     )
 
-            _send_pending_update(dispatcher, pending)
+            try:
+                _send_pending_update(dispatcher, pending)
+            except DispatcherError as error:
+                if error.status != 409 or error.code != "lease_lost":
+                    raise
+                quarantined_path = _quarantine_stale_update(
+                    _pending_path(final_folder)
+                )
+                LOGGER.warning(
+                    "Cloud Dispatcher rejected stale update for %s because its "
+                    "lease is no longer authoritative; quarantined receipt: %s",
+                    pending.get("job_id"),
+                    quarantined_path or "already quarantined by another worker",
+                )
+                continue
             _remove_pending_update(_pending_path(final_folder))
             LOGGER.info("Reconciled pending Cloud Dispatcher update: %s", final_folder)
             reconciled.append(final_folder)
