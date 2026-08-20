@@ -15,6 +15,13 @@ def get_render_log(job: RenderJob) -> str:
     result = job.result_data or job.job_data.get("result", {})
     result_data = result if isinstance(result, dict) else {}
 
+    cloud_log_tail = result_data.get("render_log_tail")
+    if isinstance(cloud_log_tail, str) and cloud_log_tail:
+        heading = "Cloud-saved render log tail"
+        if result_data.get("render_log_tail_truncated") is True:
+            heading += " (last 64 KiB)"
+        return f"{heading}:\n\n{cloud_log_tail}"
+
     requested_names = (
         result_data.get("unreal_log_file"),
         UNREAL_LOG_FILENAME,
@@ -48,8 +55,14 @@ def get_render_log(job: RenderJob) -> str:
     lines = [
         f"No Unreal render log is available for {job.job_name}.",
         f"Status: {job.status}",
-        f"Job folder: {job.job_folder}",
     ]
+    if job.control_source == "cloud":
+        lines.append(
+            "This job is controlled by Cloudflare D1; its full log remains in "
+            "the rendering computer's local spool."
+        )
+    else:
+        lines.append(f"Job folder: {job.job_folder}")
     if reason:
         lines.extend(("", f"Result: {reason}"))
     if job.load_error:

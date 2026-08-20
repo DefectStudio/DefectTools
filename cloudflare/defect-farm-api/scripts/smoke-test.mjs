@@ -18,9 +18,9 @@ async function request(path, { role, method = "GET", body, expected = 200 } = {}
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await response.json();
-  assert.equal(
-    response.status,
-    expected,
+  const expectedStatuses = Array.isArray(expected) ? expected : [expected];
+  assert.ok(
+    expectedStatuses.includes(response.status),
     `${method} ${path} returned ${response.status}: ${JSON.stringify(data)}`,
   );
   return data;
@@ -39,6 +39,7 @@ const suffix = randomUUID().replaceAll("-", "").slice(0, 10);
 const jobId = `smoke_job_${suffix}`;
 const job = {
   schema_version: 1,
+  publisher_schema_version: 4,
   job_id: jobId,
   batch_id: `smoke_batch_${suffix}`,
   project: "s3bishop",
@@ -50,6 +51,9 @@ const job = {
   submitted_by: "SMOKE-TEST",
   submitted_user: "smoke-test",
   output_directory: "F:/smoke-test",
+  output_relative_directory: "SHOTS/smoke/lite/unreal/_output/smoke/v001",
+  output_file_name_format: "smoke.{frame_number}",
+  submission_fingerprint: `smoke-fingerprint-${suffix}`,
 };
 
 const health = await request("/health");
@@ -77,6 +81,35 @@ const replay = await request("/api/v1/jobs", {
   body: job,
 });
 assert.equal(replay.idempotent_replay, true);
+
+const fingerprintReplay = await request("/api/v1/jobs", {
+  role: "submit",
+  method: "POST",
+  body: { ...job, job_id: `${jobId}_retry` },
+});
+assert.equal(fingerprintReplay.idempotent_replay, true);
+assert.equal(fingerprintReplay.job.job_id, jobId);
+
+const outputConflict = await request("/api/v1/jobs", {
+  role: "submit",
+  method: "POST",
+  body: {
+    ...job,
+    job_id: `${jobId}_conflict`,
+    submission_fingerprint: `different-fingerprint-${suffix}`,
+  },
+  expected: 409,
+});
+assert.equal(outputConflict.error.code, "active_output_conflict");
+assert.equal(outputConflict.error.details.conflicting_job_id, jobId);
+
+const initialListing = await request("/api/v1/jobs?limit=100&offset=0", {
+  role: "manager",
+});
+assert.equal(
+  initialListing.jobs.some((listedJob) => listedJob.job_id === jobId),
+  true,
+);
 
 const workers = ["smoke-worker-a", "smoke-worker-b"];
 const claims = await Promise.all(
@@ -380,6 +413,64 @@ assert.equal(historyDeleted.deleted, true);
 await request(`/api/v1/jobs/${jobId}`, {
   role: "manager",
   expected: 404,
+});
+
+const fingerprintRaceJob = {
+  ...job,
+  batch_id: `fingerprint_race_batch_${suffix}`,
+  output_relative_directory: `smoke/fingerprint-race/${suffix}`,
+  output_file_name_format: "race.{frame_number}",
+  submission_fingerprint: `fingerprint-race-${suffix}`,
+};
+const fingerprintRace = await Promise.all(
+  ["a", "b"].map((label) =>
+    request("/api/v1/jobs", {
+      role: "submit",
+      method: "POST",
+      body: { ...fingerprintRaceJob, job_id: `fingerprint_race_${label}_${suffix}` },
+      expected: [200, 201],
+    }),
+  ),
+);
+assert.equal(fingerprintRace.filter((response) => response.created).length, 1);
+assert.equal(fingerprintRace[0].job.job_id, fingerprintRace[1].job.job_id);
+await request(`/api/v1/jobs/${fingerprintRace[0].job.job_id}`, {
+  role: "manager",
+  method: "DELETE",
+});
+
+const outputRaceBase = {
+  ...job,
+  batch_id: `output_race_batch_${suffix}`,
+  output_relative_directory: `smoke/output-race/${suffix}`,
+  output_file_name_format: "race.{frame_number}",
+};
+const outputRace = await Promise.all(
+  ["a", "b"].map((label) =>
+    request("/api/v1/jobs", {
+      role: "submit",
+      method: "POST",
+      body: {
+        ...outputRaceBase,
+        job_id: `output_race_${label}_${suffix}`,
+        submission_fingerprint: `output-race-${label}-${suffix}`,
+      },
+      expected: [201, 409],
+    }),
+  ),
+);
+assert.equal(outputRace.filter((response) => response.created).length, 1);
+assert.equal(
+  outputRace.filter(
+    (response) => response.error?.code === "active_output_conflict",
+  ).length,
+  1,
+);
+const outputRaceWinner = outputRace.find((response) => response.created);
+assert.ok(outputRaceWinner);
+await request(`/api/v1/jobs/${outputRaceWinner.job.job_id}`, {
+  role: "manager",
+  method: "DELETE",
 });
 
 console.log(

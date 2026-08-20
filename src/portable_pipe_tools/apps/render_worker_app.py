@@ -42,6 +42,9 @@ from portable_pipe_tools.render_farm.cloud_dispatch import (
     DispatcherClient,
     load_dispatcher_connection,
 )
+from portable_pipe_tools.render_farm.cloud_queue import (
+    get_default_cloud_spool_root,
+)
 from portable_pipe_tools.render_farm.test_job import create_test_job
 from portable_pipe_tools.render_farm.settings import (
     load_saved_local_uproject,
@@ -288,8 +291,9 @@ class RenderWorkerApp:
 
         self._log("Render Worker starting.")
         self._log(
-            "Choose the show RenderFarm base folder. This is the folder that owns "
-            "00_Submitting through 04_RenderFailed."
+            "Choose this computer's Dropbox show RenderFarm folder. Cloud jobs "
+            "come from D1; this folder is used to derive the existing Dropbox "
+            "render-output location."
         )
         if self.farm_root_var.get():
             self._log(f"Loaded saved RenderFarm folder: {self.farm_root_var.get()}")
@@ -1040,8 +1044,13 @@ class RenderWorkerApp:
                 self._log("Automatic worker start cancelled.")
                 return
 
+        heartbeat_root = (
+            get_default_cloud_spool_root(configuration.worker_name)
+            if configuration.dispatcher_client is not None
+            else configuration.farm_root
+        )
         heartbeat = WorkerHeartbeat(
-            configuration.farm_root,
+            heartbeat_root,
             configuration.worker_name,
             worker_git_branch=self._worker_git_branch,
             worker_git_commit=self._worker_git_commit,
@@ -1115,6 +1124,8 @@ class RenderWorkerApp:
             f"{configuration.local_show_file_server_path}"
         )
         self._log(f"Job coordination: {coordination_message}")
+        if configuration.dispatcher_client is not None:
+            self._log(f"Worker-local D1 job spool: {heartbeat_root}")
         self._schedule_periodic_update_check()
         self._schedule_listener_check_now()
 
@@ -1188,6 +1199,10 @@ class RenderWorkerApp:
                 job_callback=self._job_queue.put,
                 dispatcher_client=configuration.dispatcher_client,
                 dispatcher_app_version="render-worker-gui",
+                dispatcher_capabilities={
+                    "git_branch": self._worker_git_branch,
+                    "git_commit": self._worker_git_commit,
+                },
             ),
             on_success=self._listener_job_check_finished,
             on_error=self._listener_job_check_errored,
@@ -1415,6 +1430,10 @@ class RenderWorkerApp:
                 job_callback=self._job_queue.put,
                 dispatcher_client=dispatcher_client,
                 dispatcher_app_version="render-worker-gui",
+                dispatcher_capabilities={
+                    "git_branch": self._worker_git_branch,
+                    "git_commit": self._worker_git_commit,
+                },
             ),
             on_success=self._job_processed,
         )

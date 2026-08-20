@@ -22,12 +22,12 @@ from portable_pipe_tools.render_farm.queue import (
 
 
 class RecordingDeleteDispatcher:
-    def __init__(self, expected_folder: Path) -> None:
+    def __init__(self, expected_folder: Path | None = None) -> None:
         self.expected_folder = expected_folder
         self.deleted: list[str] = []
 
     def delete_job(self, job_id: str) -> dict:
-        if not self.expected_folder.is_dir():
+        if self.expected_folder is not None and not self.expected_folder.is_dir():
             raise AssertionError("Dropbox package was deleted before D1 confirmation")
         self.deleted.append(job_id)
         return {
@@ -101,6 +101,32 @@ class DeleteRenderJobsTests(unittest.TestCase):
             self.assertEqual([job.job_id], dispatcher.deleted)
             self.assertFalse(job_folder.exists())
             self.assertEqual((job_folder.absolute(),), result.deleted_folders)
+            self.assertEqual((job.job_id,), result.deleted_job_ids)
+            self.assertEqual((), result.errors)
+
+    def test_d1_authoritative_delete_needs_no_dropbox_package(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            paths = create_queue_folders(repository / "show" / "renderFarm")
+            legacy_folder = paths.render_complete / "cloud-job"
+            legacy_folder.mkdir()
+            write_json_atomic(legacy_folder / "job.json", {"job_id": "cloud-job"})
+            legacy_job = get_all_render_jobs(repository)[0]
+            missing_folder = paths.render_complete / "not-on-dropbox"
+            cloud_job = replace(
+                legacy_job,
+                job_folder=missing_folder,
+                job_json_path=missing_folder / "job.json",
+                result_json_path=missing_folder / "result.json",
+                control_source="cloud",
+            )
+            dispatcher = RecordingDeleteDispatcher()
+
+            result = delete_render_jobs_with_dispatcher([cloud_job], dispatcher)
+
+            self.assertEqual(["cloud-job"], dispatcher.deleted)
+            self.assertEqual((), result.deleted_folders)
+            self.assertEqual(("cloud-job",), result.deleted_job_ids)
             self.assertEqual((), result.errors)
 
     def test_cloud_delete_failure_preserves_dropbox_package(self) -> None:

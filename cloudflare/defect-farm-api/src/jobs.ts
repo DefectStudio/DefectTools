@@ -20,6 +20,31 @@ import type {
 const NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 const MAX_LIST_LIMIT = 100;
 
+type JobSummaryRow = Pick<
+  JobRow,
+  | "id"
+  | "batch_id"
+  | "project"
+  | "job_type"
+  | "shot_name"
+  | "render_version"
+  | "status"
+  | "priority"
+  | "submitted_at"
+  | "submitted_by"
+  | "submitted_user"
+  | "updated_at"
+  | "attempt_count"
+  | "worker_id"
+  | "lease_expires_at"
+  | "claimed_at"
+  | "render_started_at"
+  | "render_finished_at"
+  | "progress"
+  | "resubmitted_from_job_id"
+  | "revision"
+>;
+
 interface CreatedJob {
   created: boolean;
   row: JobRow;
@@ -133,16 +158,107 @@ function normalizeJobPayload(input: JsonRecord): NormalizedJob {
 }
 
 async function insertNormalizedJob(env: Env, job: NormalizedJob): Promise<CreatedJob> {
+  const existingId = await env.DB.prepare("SELECT * FROM jobs WHERE id = ?1")
+    .bind(job.id)
+    .first<JobRow>();
+  if (existingId) {
+    return { created: false, row: existingId };
+  }
+
+  const fingerprint =
+    typeof job.payload.submission_fingerprint === "string"
+      ? job.payload.submission_fingerprint.trim()
+      : "";
+  if (fingerprint) {
+    const duplicate = await env.DB.prepare(
+      `SELECT * FROM jobs
+       WHERE status IN ('queued', 'rendering')
+         AND json_extract(payload_json, '$.submission_fingerprint') = ?1
+       ORDER BY submitted_at, id
+       LIMIT 1`,
+    )
+      .bind(fingerprint)
+      .first<JobRow>();
+    if (duplicate) {
+      // A retry may generate a new job_id after Unreal restarted. Treat the
+      // identical active render payload as an idempotent replay so the editor
+      // can safely remove its already-submitted MRQ row.
+      return { created: false, row: duplicate };
+    }
+  }
+
+  const relativeOutput =
+    typeof job.payload.output_relative_directory === "string"
+      ? job.payload.output_relative_directory.trim()
+      : "";
+  const outputFormat =
+    typeof job.payload.output_file_name_format === "string"
+      ? job.payload.output_file_name_format.trim()
+      : "";
+  const publisherSchemaVersion = Number(job.payload.publisher_schema_version ?? 0);
+  const outputConflictEnabled =
+    publisherSchemaVersion >= 4 && Boolean(relativeOutput || outputFormat);
+  if (outputConflictEnabled) {
+    const outputConflict = await env.DB.prepare(
+      `SELECT id FROM jobs
+       WHERE status IN ('queued', 'rendering')
+         AND project = ?1 COLLATE NOCASE
+         AND COALESCE(
+           json_extract(payload_json, '$.output_relative_directory'), ''
+         ) = ?2 COLLATE NOCASE
+         AND COALESCE(
+           json_extract(payload_json, '$.output_file_name_format'), ''
+         ) = ?3 COLLATE NOCASE
+       ORDER BY submitted_at, id
+       LIMIT 1`,
+    )
+      .bind(job.project, relativeOutput, outputFormat)
+      .first<{ id: string }>();
+    if (outputConflict) {
+      throw new HttpError(
+        409,
+        "active_output_conflict",
+        `Active job ${outputConflict.id} already owns this render output target.`,
+        { conflicting_job_id: outputConflict.id },
+      );
+    }
+  }
+
   const insert = await env.DB.prepare(
     `INSERT INTO jobs (
        id, batch_id, project, job_type, shot_name, render_version,
        status, priority, submitted_at, submitted_by, submitted_user,
        updated_at, payload_json, resubmitted_from_job_id
-     ) VALUES (
+     ) SELECT
        ?1, ?2, ?3, ?4, ?5, ?6,
        'queued', ?7, ?8, ?9, ?10,
        ${NOW_SQL}, ?11, ?12
+     WHERE (
+       ?13 = '' OR NOT EXISTS (
+         SELECT 1 FROM jobs AS duplicate
+         WHERE duplicate.status IN ('queued', 'rendering')
+           AND json_extract(
+             duplicate.payload_json, '$.submission_fingerprint'
+           ) = ?13
+       )
      )
+       AND (
+         ?14 = 0 OR NOT EXISTS (
+           SELECT 1 FROM jobs AS output_owner
+           WHERE output_owner.status IN ('queued', 'rendering')
+             AND output_owner.project = ?3 COLLATE NOCASE
+             AND COALESCE(
+               json_extract(
+                 output_owner.payload_json, '$.output_relative_directory'
+               ), ''
+             ) = ?15 COLLATE NOCASE
+             AND COALESCE(
+               json_extract(
+                 output_owner.payload_json, '$.output_file_name_format'
+               ), ''
+             ) = ?16 COLLATE NOCASE
+         )
+       )
      ON CONFLICT(id) DO NOTHING`,
   )
     .bind(
@@ -158,6 +274,10 @@ async function insertNormalizedJob(env: Env, job: NormalizedJob): Promise<Create
       job.submittedUser,
       job.payloadJson,
       job.resubmittedFromJobId,
+      fingerprint,
+      outputConflictEnabled ? 1 : 0,
+      relativeOutput,
+      outputFormat,
     )
     .run();
 
@@ -165,6 +285,45 @@ async function insertNormalizedJob(env: Env, job: NormalizedJob): Promise<Create
     .bind(job.id)
     .first<JobRow>();
   if (!row) {
+    if (fingerprint) {
+      const duplicate = await env.DB.prepare(
+        `SELECT * FROM jobs
+         WHERE status IN ('queued', 'rendering')
+           AND json_extract(payload_json, '$.submission_fingerprint') = ?1
+         ORDER BY submitted_at, id
+         LIMIT 1`,
+      )
+        .bind(fingerprint)
+        .first<JobRow>();
+      if (duplicate) {
+        return { created: false, row: duplicate };
+      }
+    }
+    if (outputConflictEnabled) {
+      const outputConflict = await env.DB.prepare(
+        `SELECT id FROM jobs
+         WHERE status IN ('queued', 'rendering')
+           AND project = ?1 COLLATE NOCASE
+           AND COALESCE(
+             json_extract(payload_json, '$.output_relative_directory'), ''
+           ) = ?2 COLLATE NOCASE
+           AND COALESCE(
+             json_extract(payload_json, '$.output_file_name_format'), ''
+           ) = ?3 COLLATE NOCASE
+         ORDER BY submitted_at, id
+         LIMIT 1`,
+      )
+        .bind(job.project, relativeOutput, outputFormat)
+        .first<{ id: string }>();
+      if (outputConflict) {
+        throw new HttpError(
+          409,
+          "active_output_conflict",
+          `Active job ${outputConflict.id} already owns this render output target.`,
+          { conflicting_job_id: outputConflict.id },
+        );
+      }
+    }
     throw new Error(`Job ${job.id} was not readable after submission`);
   }
 
@@ -231,7 +390,7 @@ function runtimePayload(
   };
 }
 
-function summaryFromRow(row: JobRow, blacklist: string[]): JobSummary {
+function summaryFromRow(row: JobSummaryRow, blacklist: string[]): JobSummary {
   return {
     job_id: row.id,
     batch_id: row.batch_id,
@@ -1019,13 +1178,18 @@ export async function listJobs(
   bindings.push(limit, offset);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const rows = await env.DB.prepare(
-    `SELECT * FROM jobs
+    `SELECT id, batch_id, project, job_type, shot_name, render_version,
+            status, priority, submitted_at, submitted_by, submitted_user,
+            updated_at, attempt_count, worker_id, lease_expires_at,
+            claimed_at, render_started_at, render_finished_at, progress,
+            resubmitted_from_job_id, revision
+     FROM jobs
      ${where}
      ORDER BY submitted_at DESC, id DESC
      LIMIT ?${bindings.length - 1} OFFSET ?${bindings.length}`,
   )
     .bind(...bindings)
-    .all<JobRow>();
+    .all<JobSummaryRow>();
 
   const blacklistByJob = new Map<string, string[]>();
   if (rows.results.length > 0) {

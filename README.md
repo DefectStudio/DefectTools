@@ -110,18 +110,20 @@ Click any Jobs column heading to sort by that field; click it again to reverse
 the order. The active heading shows the current direction.
 
 On first launch, the manager asks for this computer's Dropbox folder and saves
-the choice to `LocalSaveFiles\farm_render_manager_local_save.json`. This file is
+the choice to `LocalSaveFiles\farm_render_manager_local_save.json`. The folder
+still identifies the show repository and render-output locations, but Cloudflare
+D1 is the authoritative source for job and worker state. This file is
 machine-local and ignored by Git. Use **File > Change Dropbox Folder...** to
 change the connection later.
 
-When connected, the manager scans each project's `renderFarm` folder and all
-five queue-state folders. Each job folder becomes a `RenderJob` object, and the
-resulting list populates the Jobs panel. Refresh performs the same scan again.
-Selecting a job loads its Unreal log into the bottom panel, with captured stdout
-and recorded failure details used as fallbacks when the primary log is absent.
+When a Manager Cloud Dispatcher connection is configured, refresh loads jobs,
+workers, statuses, leases, blacklists, and controls directly from D1 without
+scanning Dropbox queue folders. Selecting a job fetches its full D1 payload and
+the bounded final Unreal log tail saved by the worker. Legacy filesystem queue
+scanning remains available only when no Dispatcher connection is configured.
 The right panel groups the first selected job's metadata into General,
 Submission, Render, Worker & Timing, Output, Result, and Advanced sections.
-Auto-refresh is enabled by default and scans the connected repository on a
+Auto-refresh is enabled by default and loads the current D1 snapshot on a
 background worker at a selectable 1, 2, 5, or 10 minute interval. The toolbar
 checkbox can pause or resume it, and both its state and selected interval are
 remembered in the machine-local manager configuration.
@@ -137,8 +139,9 @@ The toolbar **Workers** button switches the Jobs panel to a live worker list;
 the same button becomes **Jobs** to switch back. Worker rows show their project,
 state, current job, last heartbeat, and PortablePipeTools commit. Selecting a
 worker displays its heartbeat details and raw status JSON. Right-clicking a
-worker and choosing **STOP Worker** creates an empty `WORKERNAME_STOP.json`
-marker in that show's `renderFarm\Workers` folder.
+worker and choosing **STOP Worker** records the stop request in D1. Cloud workers
+observe and acknowledge that request over HTTPS; no Dropbox STOP marker is
+created.
 
 The Jobs table displays submitted UTC timestamps in Pacific time using
 `YYYY-MM-DD  |  HH:MM`, with PST/PDT selected automatically for the job date.
@@ -147,9 +150,10 @@ keeps the final duration visible for completed jobs.
 
 ## Render farm worker
 
-The filesystem worker can publish a fake test job, atomically claim one queued
-job, simulate completion/failure, or launch UnrealEditor-Cmd for a real Movie
-Render Graph job published by the Unreal rendering tool.
+The Render Worker claims complete job payloads from Cloudflare D1, atomically
+materializes each claim into a private machine-local spool, and launches
+UnrealEditor-Cmd for real Movie Render Graph jobs. Dropbox carries the resulting
+EXRs and MP4s, not queue control files.
 
 Launch the Render Worker interface:
 
@@ -164,9 +168,10 @@ checked-out commit, the GUI exits and the BAT launcher immediately restarts it
 using the newly pulled code. An update failure leaves job processing disabled,
 so an outdated worker cannot claim a farm job.
 
-Choose the show-specific `RenderFarm` base folder in the interface. The window
-can initialize the five queue folders, create a fake job, simulate one job, or
-render one real job with Unreal while displaying activity in its output log.
+Choose the show-specific Dropbox `renderFarm` base folder in the interface. It
+is used to derive that machine's local Dropbox show root and existing render
+output paths. D1 supplies the job JSON and lease; the worker stores its transient
+control package under `%LOCALAPPDATA%\DefectStudio\RenderFarm\CloudJobSpool`.
 **Start Worker** keeps listening for real jobs at a configurable interval
 (15 seconds by default); **Stop Worker** interrupts an already-claimed Unreal
 render, requeues it as a failed attempt, and stops before claiming another.
@@ -174,19 +179,17 @@ render, requeues it as a failed attempt, and stops before claiming another.
 When the timer expires, the worker stops Unreal, requeues the timed-out attempt,
 and remains available to process another eligible job.
 
-While automatic listening is active, the worker publishes
-`Workers\WORKERNAME_STATUS.json` every 10 seconds. It includes the worker state,
-session, current shot/version/render setting, and tools Git commit. A heartbeat
-older than 45 seconds is shown as stale. Empty `WORKERNAME_STOP.json` files are
-existence-only stop commands: waiting workers stop immediately, while active
-Unreal renders check every half-second, interrupt the process, requeue the job,
-and stop. Both files are removed after a clean stop.
+While automatic listening is active, the worker checks in through the Cloudflare
+API. D1 records its state, current job, app version, capabilities, and last-seen
+time. Active renders renew their lease; waiting workers use adaptive polling to
+limit Cloudflare traffic. D1 STOP requests interrupt active Unreal renders,
+return retryable work to the queue, and stop the worker after acknowledgement.
 
 Before every real job, the worker verifies that the selected Unreal checkout is
 clean and runs `git pull --ff-only` on its current upstream branch. The latest
 pulled commit is rendered even when it is newer than the job's submitted
-commit. If Git cannot update safely, the job remains in `01_NeedsRendering`
-instead of being claimed and failed.
+commit. If Git cannot update safely, the worker releases its D1 lease so the job
+can be claimed again instead of being incorrectly marked as a render failure.
 
 Each render computer can select its own **Local Unreal Project (.uproject)**.
 That machine-local path overrides the absolute project path recorded by the
@@ -197,15 +200,15 @@ show root. Real renders use that computer-local root, so Dropbox may use a
 different drive letter on every worker without any worker-side INI file.
 
 Before Unreal starts, the worker checks the local MP4 and EXR version targets.
-If output already exists, the job is failed safely with instructions to submit a
-new render version instead of silently overwriting an earlier render.
+Farm submissions currently request overwrite for the matching MP4 and EXR
+version by default; replacement remains confined to that job's declared output
+targets.
 
-When a valid render attempt fails, the worker appends its normalized name to the
-job's `blacklisted_workers` array, resets the job to `queued`, and atomically
-returns its package to `01_NeedsRendering`. That worker ignores the job on later
-queue scans, while another worker can claim and retry it. Each additional failed
-worker is added to the same list. Corrupt or unreadable job metadata still moves
-to `04_RenderFailed` because it cannot safely participate in automatic retries.
+When a valid render attempt fails, D1 appends the normalized worker name to the
+job blacklist and either requeues the job for another eligible worker or marks
+it failed when no retry remains. A crashed worker's lease expires and D1 makes
+the job claimable again automatically. Local control packages and diagnostic
+logs never need to sync through Dropbox.
 
 The interface also displays transparent pixel-art animations for the worker's
 Stopped, Waiting, Moving Files, Rendering, and Finishing stages. The five

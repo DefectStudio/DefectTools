@@ -19,6 +19,8 @@ from portable_pipe_tools.render_farm.cloud_dispatch import (
 from portable_pipe_tools.render_farm.cloud_queue import (
     finish_cloud_claimed_job,
     finish_invalid_cloud_claim,
+    get_default_cloud_spool_root,
+    materialize_cloud_job_package,
     reconcile_pending_cloud_updates,
 )
 from portable_pipe_tools.render_farm.git_sync import (
@@ -43,7 +45,6 @@ from portable_pipe_tools.render_farm.queue import (
     path_exists_with_retry,
     read_json_object,
     reconcile_completed_jobs,
-    recover_stranded_cloud_job_to_queue,
     safe_name,
     utc_now,
     write_json_atomic,
@@ -187,7 +188,9 @@ def run_once(
     git_sync: GitSyncCallback | None = None,
     dispatcher_client: DispatcherClient | None = None,
     dispatcher_app_version: str | None = None,
+    dispatcher_capabilities: dict[str, Any] | None = None,
     dispatcher_heartbeat_interval_seconds: float = 60.0,
+    cloud_spool_root: str | Path | None = None,
 ) -> WorkerResult | None:
     if minimum_stage_seconds < 0:
         raise ValueError("minimum_stage_seconds cannot be negative")
@@ -196,8 +199,14 @@ def run_once(
 
     sleep_function = sleep or time.sleep
     monotonic_function = monotonic or time.monotonic
-    paths = create_queue_folders(farm_root)
     worker = safe_name(worker_name, "WORKER")
+    shared_farm_root = Path(farm_root).expanduser()
+    package_root = (
+        Path(cloud_spool_root).expanduser()
+        if cloud_spool_root is not None
+        else get_default_cloud_spool_root(worker)
+    ) if dispatcher_client is not None else shared_farm_root
+    paths = create_queue_folders(package_root)
     cloud_lease: CloudJobLease | None = None
     cloud_dispatcher_stop_requested = False
 
@@ -233,10 +242,22 @@ def run_once(
                     "Delivered %d pending Cloud Dispatcher update(s).",
                     len(cloud_reconciled),
                 )
+            capabilities: dict[str, Any] = {
+                "unreal_mrq": True,
+                "cloud_job_packages": True,
+                "dropbox_outputs": True,
+                **(
+                    {"project": Path(local_uproject).stem}
+                    if local_uproject is not None
+                    else {}
+                ),
+            }
+            if dispatcher_capabilities:
+                capabilities.update(dispatcher_capabilities)
             claim = dispatcher_client.claim_job(
                 worker,
                 app_version=dispatcher_app_version,
-                capabilities={"unreal_mrq": True, "dropbox_packages": True},
+                capabilities=capabilities,
             )
             if claim.stop_requested:
                 LOGGER.info("Cloud Dispatcher requested that worker %s stop.", worker)
@@ -249,25 +270,21 @@ def run_once(
             if claim.lease is None:
                 return []
             cloud_lease = claim.lease
-            queued_folder = paths.needs_rendering / cloud_lease.job_id
-            if not path_exists_with_retry(queued_folder):
-                try:
-                    recovered_folder = recover_stranded_cloud_job_to_queue(
-                        paths,
-                        cloud_lease.job_id,
-                    )
-                except Exception as error:
-                    release_cloud_lease(
-                        "Automatic recovery of the stranded Dropbox package "
-                        f"failed: {type(error).__name__}: {error}"
-                    )
-                    raise
-                if recovered_folder is not None:
-                    queued_folder = recovered_folder
-                    LOGGER.warning(
-                        "Recovered stranded Cloud job package to the queue: %s",
-                        recovered_folder,
-                    )
+            try:
+                queued_folder = materialize_cloud_job_package(
+                    paths,
+                    cloud_lease.job,
+                )
+            except Exception as error:
+                release_cloud_lease(
+                    "Worker-local job materialization failed: "
+                    f"{type(error).__name__}: {error}"
+                )
+                raise
+            LOGGER.info(
+                "Materialized D1 job package in worker-local spool: %s",
+                queued_folder,
+            )
             priority = cloud_lease.job.get("priority", 50)
             submitted_utc = cloud_lease.job.get("submitted_utc", "")
             return [
@@ -329,7 +346,14 @@ def run_once(
                 project_directory,
             )
             sync_operation = git_sync or pull_latest_branch
-            git_pull_result = sync_operation(project_directory)
+            try:
+                git_pull_result = sync_operation(project_directory)
+            except Exception as error:
+                release_cloud_lease(
+                    "Worker Git preflight failed before local package claim: "
+                    f"{type(error).__name__}: {error}"
+                )
+                raise
 
     def claim_and_prepare_job() -> _ClaimedJob | None:
         if should_stop_before_claim is not None and should_stop_before_claim():
@@ -343,7 +367,7 @@ def run_once(
         )
         if claimed_folder is None:
             release_cloud_lease(
-                "Dropbox job package has not synced to this worker yet"
+                "Worker-local job package disappeared before claim"
             )
             return None
 
@@ -529,6 +553,8 @@ def run_once(
             "timeout_seconds": render_timeout_seconds,
             "local_uproject": local_uproject,
         }
+        if dispatcher_client is not None:
+            runner_arguments["render_farm_root"] = shared_farm_root
         if claimed_job.cloud_lease is not None:
             runner_arguments["should_cancel"] = should_cancel
         elif should_cancel_render is not None:

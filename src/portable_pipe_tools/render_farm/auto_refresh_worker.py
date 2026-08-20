@@ -17,6 +17,10 @@ from portable_pipe_tools.render_farm.workers import (
 
 
 AUTO_REFRESH_INTERVAL_SECONDS = 60.0
+SnapshotLoader = Callable[
+    [Path],
+    tuple[list[RenderJob], list[WorkerRecord]],
+]
 
 
 @dataclass(frozen=True)
@@ -35,12 +39,14 @@ class AutoRefreshWorker:
         repository_path_provider: Callable[[], Path | None],
         result_queue: Queue[AutoRefreshResult],
         interval_seconds: float = AUTO_REFRESH_INTERVAL_SECONDS,
+        snapshot_loader: SnapshotLoader | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("Auto-refresh interval must be greater than zero")
         self.repository_path_provider = repository_path_provider
         self.result_queue = result_queue
         self.interval_seconds = interval_seconds
+        self.snapshot_loader = snapshot_loader
         self._stop_event = Event()
         self._state_lock = Lock()
         self._thread: Thread | None = None
@@ -84,8 +90,13 @@ class AutoRefreshWorker:
             if repository_path is None:
                 continue
             try:
-                jobs = tuple(get_all_render_jobs(repository_path))
-                workers = tuple(list_render_workers(repository_path))
+                if self.snapshot_loader is None:
+                    loaded_jobs = get_all_render_jobs(repository_path)
+                    loaded_workers = list_render_workers(repository_path)
+                else:
+                    loaded_jobs, loaded_workers = self.snapshot_loader(repository_path)
+                jobs = tuple(loaded_jobs)
+                workers = tuple(loaded_workers)
             except Exception as error:
                 result = AutoRefreshResult(
                     repository_path=repository_path,

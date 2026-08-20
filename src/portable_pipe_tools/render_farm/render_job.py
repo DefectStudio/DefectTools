@@ -37,3 +37,4 @@ class RenderJob:
     job_data: dict[str, Any] = field(default_factory=dict)
     result_data: dict[str, Any] = field(default_factory=dict)
     load_error: str | None = None
+    control_source: str = "filesystem"

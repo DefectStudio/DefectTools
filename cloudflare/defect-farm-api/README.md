@@ -1,8 +1,25 @@
 # Defect Farm Dispatcher
 
 Cloudflare Worker and D1 control plane for Defect's remote Unreal render farm.
-Only job metadata and status travel through Cloudflare. Unreal projects, EXRs,
-MP4s, and archived logs remain on the existing Dropbox storage.
+The complete render-job JSON, job state, worker leases, blacklists, worker
+check-ins, and a bounded final log tail live in D1. Unreal projects and rendered
+EXRs/MP4s remain on the existing Dropbox storage.
+
+## Current data flow
+
+1. Unreal submits each complete job JSON directly to the Worker API.
+2. D1 is the sole authority for queue order, claims, leases, retries, and final
+   state. No Dropbox control package is created.
+3. A remote Render Worker claims the full payload over HTTPS and atomically
+   materializes it into a private machine-local spool under
+   `%LOCALAPPDATA%\DefectStudio\RenderFarm\CloudJobSpool`.
+4. Unreal renders to the same worker-local Dropbox show path selected in the
+   Render Worker GUI. Large EXRs and MP4s may sync independently without
+   delaying job discovery or claims.
+5. The Farm Render Manager reads and controls jobs and workers through D1.
+
+R2 output delivery is intentionally deferred. Dropbox remains the render-output
+transport until that separate migration is approved.
 
 ## Local setup
 

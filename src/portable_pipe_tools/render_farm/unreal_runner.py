@@ -458,14 +458,17 @@ def execute_unreal_job(
     timeout_seconds: float = DEFAULT_RENDER_TIMEOUT_SECONDS,
     local_uproject: str | Path | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    render_farm_root: str | Path | None = None,
 ) -> UnrealExecutionResult:
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be greater than zero")
 
     folder = _as_path(claimed_folder)
     uproject = validate_real_render_job(job, local_uproject)
-    render_farm_root = folder.parent.parent
-    output_mapping = prepare_worker_output_mapping(job, render_farm_root)
+    output_mapping = prepare_worker_output_mapping(
+        job,
+        render_farm_root if render_farm_root is not None else folder.parent.parent,
+    )
     LOGGER.info(
         "Derived worker-local show root from Render Farm folder: %s",
         output_mapping.local_show_file_server_path,

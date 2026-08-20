@@ -26,6 +26,11 @@ from portable_pipe_tools.render_farm.cloud_dispatch import (
     DispatcherClient,
     load_dispatcher_connection,
 )
+from portable_pipe_tools.render_farm.cloud_manager import (
+    get_cloud_render_jobs,
+    get_cloud_render_workers,
+    hydrate_cloud_render_job,
+)
 from portable_pipe_tools.render_farm.get_all_render_jobs import (
     get_all_render_jobs,
 )
@@ -240,6 +245,7 @@ class FarmRenderManagerApp:
             repository_path_provider=lambda: self.repository_path,
             result_queue=self._auto_refresh_results,
             interval_seconds=refresh_interval_minutes * 60,
+            snapshot_loader=self._load_manager_snapshot,
         )
 
         self._configure_styles()
@@ -1033,8 +1039,7 @@ class FarmRenderManagerApp:
         )
 
         try:
-            jobs = get_all_render_jobs(self.repository_path)
-            workers = list_render_workers(self.repository_path)
+            jobs, workers = self._load_manager_snapshot(self.repository_path)
         except Exception as error:
             self.status_var.set(f"Could not load render jobs: {error}")
             messagebox.showerror(
@@ -1061,6 +1066,24 @@ class FarmRenderManagerApp:
             f"Last update: {datetime.now().astimezone().strftime('%H:%M:%S')}"
         )
         return True
+
+    def _load_manager_snapshot(
+        self,
+        repository_path: Path,
+    ) -> tuple[list[RenderJob], list[WorkerRecord]]:
+        dispatcher_client = getattr(self, "dispatcher_client", None)
+        if dispatcher_client is None:
+            return (
+                get_all_render_jobs(repository_path),
+                list_render_workers(repository_path),
+            )
+        jobs = get_cloud_render_jobs(dispatcher_client, repository_path)
+        workers = get_cloud_render_workers(
+            dispatcher_client,
+            repository_path,
+            jobs,
+        )
+        return jobs, workers
 
     def _on_manual_refresh_clicked(self) -> None:
         if self._refresh_feedback_after_id is not None:
@@ -1450,8 +1473,18 @@ class FarmRenderManagerApp:
                     ("Last Heartbeat UTC", worker.last_heartbeat_utc or "Unknown"),
                     ("Git Branch", worker.worker_git_branch or "Unknown"),
                     ("Git Commit", worker.worker_git_commit or "Unknown"),
-                    ("Status File", str(worker.status_file)),
-                    ("STOP File", str(worker.stop_file)),
+                    (
+                        "Status Source",
+                        "Cloudflare D1"
+                        if worker.raw_data.get("control_source") == "cloud"
+                        else str(worker.status_file),
+                    ),
+                    (
+                        "STOP Source",
+                        "Cloudflare D1"
+                        if worker.raw_data.get("control_source") == "cloud"
+                        else str(worker.stop_file),
+                    ),
                 ),
             ),
         )
@@ -1584,6 +1617,19 @@ class FarmRenderManagerApp:
         job = self._jobs_by_item.get(selection[0])
         if job is None:
             return
+        if job.control_source == "cloud" and self.dispatcher_client is not None:
+            try:
+                job = hydrate_cloud_render_job(
+                    job,
+                    self.dispatcher_client,
+                    self.repository_path or Path("."),
+                )
+            except Exception as error:
+                self.status_var.set(
+                    f"Could not load complete D1 details for {job.job_name}: {error}"
+                )
+            else:
+                self._jobs_by_item[selection[0]] = job
         name = job.job_name or "Unnamed Job"
         selection_count = len(selection)
         suffix = f" (+{selection_count - 1} selected)" if selection_count > 1 else ""
@@ -1617,7 +1663,8 @@ class FarmRenderManagerApp:
             bool(selected_jobs)
             and getattr(self, "dispatcher_client", None) is not None
             and all(
-                job.queue_name == IS_RENDERING_FOLDER
+                job.control_source != "cloud"
+                and job.queue_name == IS_RENDERING_FOLDER
                 and str(
                     job.job_data.get(DISPATCHER_COORDINATION_FIELD) or ""
                 ).casefold()
@@ -1741,6 +1788,19 @@ class FarmRenderManagerApp:
                 "Dispatcher"
             )
             self._refresh_jobs()
+            return
+
+        if getattr(worker, "raw_data", {}).get("control_source") == "cloud":
+            messagebox.showerror(
+                "STOP Render Worker",
+                "The Cloud Dispatcher did not accept the STOP request. No "
+                "Dropbox STOP marker was created because D1 is authoritative.\n\n"
+                f"Cloud error: {cloud_error}",
+                parent=self.root,
+            )
+            self.status_var.set(
+                f"Could not stop {worker.worker_name} through D1: {cloud_error}"
+            )
             return
 
         try:
@@ -1994,8 +2054,8 @@ class FarmRenderManagerApp:
         prompt += (
             "\n\nEach replacement will receive a new job ID, a fresh submission "
             "time, zero attempts, and an empty black list. After the replacement "
-            "is safely queued, the original failed job will be permanently deleted "
-            "from both the Cloud Dispatcher and Dropbox."
+            "is safely queued in D1, the original failed D1 job will be permanently "
+            "deleted."
             "\n\nThe shot, render version, and output paths do not change. If output "
             "already exists for that version, the worker will replace the matching "
             "MP4 and EXR version folder before rendering."
@@ -2016,7 +2076,7 @@ class FarmRenderManagerApp:
         self.status_var.set("Resubmitting selected render jobs...")
         self.root.update_idletasks()
 
-        destinations: list[Path] = []
+        destinations: list[Path | str] = []
         errors: list[str] = []
         for job in selected_jobs:
             try:
@@ -2047,8 +2107,8 @@ class FarmRenderManagerApp:
 
         suffix = "job" if len(destinations) == 1 else "jobs"
         self.status_var.set(
-            f"Resubmitted {len(destinations)} render {suffix} to "
-            f"01_NeedsRendering and deleted the old failed {suffix}"
+            f"Resubmitted {len(destinations)} render {suffix} to D1 and "
+            f"deleted the old failed {suffix}"
         )
 
     def _delete_selected_jobs(self) -> None:
@@ -2070,7 +2130,8 @@ class FarmRenderManagerApp:
                 "Deleting it may interrupt active work."
             )
         prompt += (
-            "\n\nThis removes the job from the Cloud Dispatcher and Dropbox. "
+            "\n\nThis removes the job from the Cloud Dispatcher. Any legacy "
+            "Dropbox control package is also removed when present. "
             "Rendered MP4 and EXR outputs are preserved."
             "\n\nThis cannot be undone."
         )
@@ -2098,7 +2159,7 @@ class FarmRenderManagerApp:
         if auto_refresh_was_running and self.auto_refresh_var.get():
             self.auto_refresh_worker.start()
 
-        deleted_count = len(result.deleted_folders)
+        deleted_count = len(result.deleted_job_ids)
         if result.errors:
             messagebox.showerror(
                 "Delete Render Job",

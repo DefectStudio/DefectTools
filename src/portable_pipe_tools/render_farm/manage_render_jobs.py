@@ -58,6 +58,17 @@ def clear_render_job_blacklist(
     if job.queue_name == IS_RENDERING_FOLDER:
         raise ValueError(f'Cannot clear the blacklist while "{job.job_name}" is rendering')
 
+    if job.control_source == "cloud":
+        if dispatcher_client is None:
+            raise DispatcherError(
+                "Clearing a D1 job blacklist requires the Manager Cloud "
+                "Dispatcher key.",
+                code="dispatcher_not_configured",
+            )
+        response = dispatcher_client.clear_blacklist(job.job_id)
+        raw_cleared = response.get("cleared", 0)
+        return isinstance(raw_cleared, int) and raw_cleared > 0
+
     data = read_json_object(job.job_json_path)
     blacklist = data.get(BLACKLISTED_WORKERS_FIELD, [])
     if not isinstance(blacklist, list):
@@ -92,6 +103,12 @@ def recover_stalled_render_job(
         raise ValueError(
             f'Only jobs in {IS_RENDERING_FOLDER} can be recovered; '
             f'"{job.job_name}" is in {job.queue_name}'
+        )
+    if job.control_source == "cloud":
+        raise ValueError(
+            "D1 jobs recover automatically when their worker lease expires; "
+            "there is no Dropbox package to move. Refresh the Manager to run "
+            "lease recovery."
         )
     if dispatcher_client is None:
         raise DispatcherError(
@@ -156,15 +173,31 @@ def recover_stalled_render_job(
 def resubmit_failed_render_job(
     job: RenderJob,
     dispatcher_client: DispatcherClient | None = None,
-) -> Path:
-    """Replace a failed package with a fresh job in 01_NeedsRendering."""
+) -> Path | str:
+    """Replace a failed D1 job or legacy package with a fresh job."""
     if job.queue_name != RENDER_FAILED_FOLDER:
         raise ValueError(
             f'Only jobs in {RENDER_FAILED_FOLDER} can be resubmitted; '
             f'"{job.job_name}" is in {job.queue_name}'
         )
 
-    source_data = read_json_object(job.job_json_path)
+    if job.control_source == "cloud":
+        if dispatcher_client is None:
+            raise DispatcherError(
+                "Resubmitting a D1 job requires the Manager Cloud Dispatcher key.",
+                code="dispatcher_not_configured",
+            )
+        detail = dispatcher_client.get_job(job.job_id)
+        cloud_job = detail.get("job")
+        if not isinstance(cloud_job, dict):
+            raise DispatcherError(
+                f"Cloud Dispatcher returned no payload for {job.job_id}.",
+                code="invalid_dispatcher_response",
+                response=detail,
+            )
+        source_data = dict(cloud_job)
+    else:
+        source_data = read_json_object(job.job_json_path)
     old_job_id = str(source_data.get("job_id") or job.job_id).strip()
     submitted_utc = utc_now()
     compact_timestamp = (
@@ -188,6 +221,18 @@ def resubmit_failed_render_job(
     )
     if dispatcher_client is not None:
         data[DISPATCHER_COORDINATION_FIELD] = CLOUD_DISPATCHER_COORDINATION
+
+    if job.control_source == "cloud":
+        assert dispatcher_client is not None
+        response = dispatcher_client.replace_job(old_job_id, data)
+        if response.get("source_deleted") is not True:
+            raise DispatcherError(
+                "The Cloud Dispatcher did not confirm deletion of the old failed "
+                "job.",
+                code="replacement_not_confirmed",
+                response=response,
+            )
+        return new_job_id
 
     farm_root = job.job_folder.parent.parent
     paths = create_queue_folders(farm_root)

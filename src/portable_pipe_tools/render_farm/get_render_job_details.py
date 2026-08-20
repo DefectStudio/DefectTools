@@ -44,6 +44,12 @@ def get_render_job_details(job: RenderJob) -> tuple[JobDetailSection, ...]:
         (
             JobDetail("Job Name", _display(job.job_name)),
             JobDetail("Job ID", _display(job.job_id)),
+            JobDetail(
+                "Control Source",
+                "Cloudflare D1"
+                if job.control_source == "cloud"
+                else "Filesystem Queue",
+            ),
             JobDetail("Project", _display(job.project)),
             JobDetail("Submitted Project", _display(job.submitted_project)),
             JobDetail("Job Type", _display(data.get("job_type"))),
@@ -178,9 +184,24 @@ def get_render_job_details(job: RenderJob) -> tuple[JobDetailSection, ...]:
                 "Git Pull Summary",
                 _display(data.get("git_pull_summary")),
             ),
-            JobDetail("Job Folder", str(job.job_folder)),
-            JobDetail("Job JSON", str(job.job_json_path)),
-            JobDetail("Result JSON", _existing_path_or_missing(job.result_json_path)),
+            JobDetail(
+                "Job Folder",
+                "Worker-local spool"
+                if job.control_source == "cloud"
+                else str(job.job_folder),
+            ),
+            JobDetail(
+                "Job JSON",
+                "Stored in D1; materialized on the assigned worker"
+                if job.control_source == "cloud"
+                else str(job.job_json_path),
+            ),
+            JobDetail(
+                "Result JSON",
+                "Stored in D1"
+                if job.control_source == "cloud"
+                else _existing_path_or_missing(job.result_json_path),
+            ),
         ),
     )
     return (

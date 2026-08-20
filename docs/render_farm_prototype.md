@@ -1,5 +1,12 @@
 # Render Farm Filesystem Worker
 
+> **Legacy reference:** this document describes the original Dropbox
+> filesystem-queue prototype. Production Cloud mode now stores complete job
+> payloads, leases, state, blacklists, and worker controls in Cloudflare D1.
+> Workers materialize claims into a private local spool and use Dropbox only for
+> the final EXR/MP4 output paths. See `cloudflare/defect-farm-api/README.md` for
+> the current data flow.
+
 This checkpoint supports supervised and continuous filesystem-queue processing,
 including real Unreal 5.8 Movie Render Graph launches and post-render output
 validation, worker heartbeats, and filesystem-based remote stopping.

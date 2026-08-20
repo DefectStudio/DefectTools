@@ -544,7 +544,7 @@ def mark_cloud_job_rendering(
     worker_name: str,
     cloud_job: dict[str, Any],
 ) -> dict[str, Any]:
-    """Publish the D1-authoritative leased payload into the Dropbox package."""
+    """Publish the D1-authoritative payload into the worker-local package."""
     job = dict(cloud_job)
     job_id = str(job.get("job_id") or "").strip()
     if not job_id or safe_name(job_id, "") != job_id:

@@ -16,6 +16,7 @@ from portable_pipe_tools.render_farm.cloud_queue import (
     STALE_DISPATCHER_UPDATE_PREFIX,
     reconcile_pending_cloud_updates,
 )
+from portable_pipe_tools.render_farm.git_sync import GitPullError
 from portable_pipe_tools.render_farm.queue import (
     DISPATCHER_COORDINATION_FIELD,
     JOB_FILENAME,
@@ -41,9 +42,11 @@ class FakeDispatcher:
         self.stop_requested = False
         self.stop_acknowledged: list[str] = []
         self.claim_count = 0
+        self.last_claim_kwargs: dict = {}
 
-    def claim_job(self, worker_id: str, **_kwargs) -> CloudClaimResult:
+    def claim_job(self, worker_id: str, **kwargs) -> CloudClaimResult:
         self.claim_count += 1
+        self.last_claim_kwargs = dict(kwargs)
         lease = self.lease
         self.lease = None
         return CloudClaimResult(
@@ -110,6 +113,10 @@ class CloudWorkerTests(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
         self.farm_root = Path(self.temporary_directory.name) / "RenderFarm"
         self.paths = create_queue_folders(self.farm_root)
+        self.cloud_spool_root = (
+            Path(self.temporary_directory.name) / "CloudJobSpool"
+        )
+        self.cloud_paths = create_queue_folders(self.cloud_spool_root)
 
     def _lease_for_queued_job(self, worker: str = "CLOUD-WORKER") -> CloudJobLease:
         queued_folder = create_test_job(self.farm_root)
@@ -136,17 +143,26 @@ class CloudWorkerTests(unittest.TestCase):
             simulate_success=True,
             minimum_stage_seconds=0,
             dispatcher_client=dispatcher,
+            dispatcher_capabilities={
+                "git_branch": "main",
+                "git_commit": "abc123",
+            },
+            cloud_spool_root=self.cloud_spool_root,
         )
 
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual("complete", result.status)
         self.assertEqual([(lease.job_id, "CLOUD-WORKER")], dispatcher.completed)
+        self.assertEqual(
+            "abc123",
+            dispatcher.last_claim_kwargs["capabilities"]["git_commit"],
+        )
         self.assertFalse(
             (result.final_folder / PENDING_DISPATCHER_UPDATE_FILENAME).exists()
         )
 
-    def test_missing_dropbox_package_releases_cloud_lease(self) -> None:
+    def test_cloud_payload_materializes_without_a_dropbox_package(self) -> None:
         lease = CloudJobLease(
             job={
                 "job_id": "NOT_SYNCED_YET",
@@ -168,16 +184,75 @@ class CloudWorkerTests(unittest.TestCase):
             simulate_success=True,
             minimum_stage_seconds=0,
             dispatcher_client=dispatcher,
+            cloud_spool_root=self.cloud_spool_root,
         )
 
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("complete", result.status)
+        self.assertEqual([], dispatcher.released)
+        self.assertEqual(
+            [("NOT_SYNCED_YET", "CLOUD-WORKER")],
+            dispatcher.completed,
+        )
+
+    def test_cloud_git_preflight_failure_releases_d1_lease(self) -> None:
+        lease = self._lease_for_queued_job()
+        dispatcher = FakeDispatcher(lease)
+
+        def fail_git_sync(_project_directory: Path):
+            raise GitPullError("intentional Git failure")
+
+        local_uproject = Path(self.temporary_directory.name) / "S3Bishop.uproject"
+        local_uproject.touch()
+        with self.assertRaisesRegex(GitPullError, "intentional Git failure"):
+            run_once(
+                self.farm_root,
+                "CLOUD-WORKER",
+                simulate_success=True,
+                render_with_unreal=True,
+                unreal_runner=lambda *_args, **_kwargs: None,
+                local_uproject=local_uproject,
+                git_sync=fail_git_sync,
+                minimum_stage_seconds=0,
+                dispatcher_client=dispatcher,
+                cloud_spool_root=self.cloud_spool_root,
+            )
+
         self.assertEqual(1, len(dispatcher.released))
-        self.assertEqual("NOT_SYNCED_YET", dispatcher.released[0][0])
+        self.assertEqual(lease.job_id, dispatcher.released[0][0])
+        self.assertIn("Git preflight failed", dispatcher.released[0][2])
+        self.assertTrue(
+            (self.cloud_paths.needs_rendering / lease.job_id).is_dir()
+        )
+
+    def test_interrupted_local_staging_folder_is_recovered(self) -> None:
+        lease = self._lease_for_queued_job()
+        staging_folder = self.cloud_paths.submitting / lease.job_id
+        staging_folder.mkdir()
+        write_json_atomic(staging_folder / JOB_FILENAME, {"incomplete": True})
+        dispatcher = FakeDispatcher(lease)
+
+        result = run_once(
+            self.farm_root,
+            "CLOUD-WORKER",
+            simulate_success=True,
+            minimum_stage_seconds=0,
+            dispatcher_client=dispatcher,
+            cloud_spool_root=self.cloud_spool_root,
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("complete", result.status)
+        self.assertFalse(staging_folder.exists())
+        self.assertEqual([(lease.job_id, "CLOUD-WORKER")], dispatcher.completed)
 
     def test_cloud_claim_recovers_package_stranded_by_expired_worker(self) -> None:
         lease = self._lease_for_queued_job(worker="RECOVERY-WORKER")
-        queued_folder = self.paths.needs_rendering / lease.job_id
-        stranded_job = read_json_object(queued_folder / JOB_FILENAME)
+        queued_folder = self.cloud_paths.needs_rendering / lease.job_id
+        queued_folder.mkdir()
+        stranded_job = dict(lease.job)
         stranded_job.update(
             {
                 "status": "rendering",
@@ -187,7 +262,7 @@ class CloudWorkerTests(unittest.TestCase):
         )
         write_json_atomic(queued_folder / JOB_FILENAME, stranded_job)
         stranded_folder = (
-            self.paths.is_rendering / f"{lease.job_id}__CRASHED-WORKER"
+            self.cloud_paths.is_rendering / f"{lease.job_id}__CRASHED-WORKER"
         )
         queued_folder.rename(stranded_folder)
         dispatcher = FakeDispatcher(lease)
@@ -198,6 +273,7 @@ class CloudWorkerTests(unittest.TestCase):
             simulate_success=True,
             minimum_stage_seconds=0,
             dispatcher_client=dispatcher,
+            cloud_spool_root=self.cloud_spool_root,
         )
 
         self.assertIsNotNone(result)
@@ -233,6 +309,7 @@ class CloudWorkerTests(unittest.TestCase):
             simulate_success=True,
             minimum_stage_seconds=0,
             dispatcher_client=dispatcher,
+            cloud_spool_root=self.cloud_spool_root,
         )
 
         self.assertIsNotNone(result)
@@ -250,6 +327,7 @@ class CloudWorkerTests(unittest.TestCase):
             simulate_success=False,
             minimum_stage_seconds=0,
             dispatcher_client=dispatcher,
+            cloud_spool_root=self.cloud_spool_root,
         )
 
         self.assertIsNotNone(result)
@@ -271,15 +349,16 @@ class CloudWorkerTests(unittest.TestCase):
                 simulate_success=True,
                 minimum_stage_seconds=0,
                 dispatcher_client=dispatcher,
+                cloud_spool_root=self.cloud_spool_root,
             )
 
-        completed_folders = list(self.paths.render_complete.iterdir())
+        completed_folders = list(self.cloud_paths.render_complete.iterdir())
         self.assertEqual(1, len(completed_folders))
         pending_path = completed_folders[0] / PENDING_DISPATCHER_UPDATE_FILENAME
         self.assertTrue(pending_path.is_file())
 
         reconciled = reconcile_pending_cloud_updates(
-            self.paths,
+            self.cloud_paths,
             dispatcher,
             minimum_age_seconds=0,
         )
@@ -293,7 +372,9 @@ class CloudWorkerTests(unittest.TestCase):
         dispatcher = FakeDispatcher(lease)
         stale_job_id = "STALE-RELEASED-JOB"
         dispatcher.stale_failure_job_ids.add(stale_job_id)
-        stale_folder = self.paths.render_complete / "STALE-RELEASED-JOB__OLD-WORKER"
+        stale_folder = (
+            self.cloud_paths.render_complete / "STALE-RELEASED-JOB__OLD-WORKER"
+        )
         stale_folder.mkdir()
         pending_path = stale_folder / PENDING_DISPATCHER_UPDATE_FILENAME
         write_json_atomic(
@@ -318,6 +399,7 @@ class CloudWorkerTests(unittest.TestCase):
             simulate_success=True,
             minimum_stage_seconds=0,
             dispatcher_client=dispatcher,
+            cloud_spool_root=self.cloud_spool_root,
         )
 
         self.assertIsNotNone(result)
@@ -339,6 +421,11 @@ class CloudWorkerTests(unittest.TestCase):
         dispatcher = FakeDispatcher(lease)
 
         def fake_unreal_runner(**kwargs) -> UnrealExecutionResult:
+            self.assertEqual(self.farm_root, kwargs["render_farm_root"])
+            self.assertNotEqual(
+                self.farm_root,
+                Path(kwargs["claimed_folder"]).parent.parent,
+            )
             time.sleep(0.02)
             self.assertFalse(kwargs["should_cancel"]())
             return UnrealExecutionResult(
@@ -356,6 +443,7 @@ class CloudWorkerTests(unittest.TestCase):
             unreal_runner=fake_unreal_runner,
             dispatcher_client=dispatcher,
             dispatcher_heartbeat_interval_seconds=0.01,
+            cloud_spool_root=self.cloud_spool_root,
         )
 
         self.assertIsNotNone(result)
@@ -390,6 +478,7 @@ class CloudWorkerTests(unittest.TestCase):
             unreal_runner=fake_unreal_runner,
             dispatcher_client=dispatcher,
             dispatcher_heartbeat_interval_seconds=0.01,
+            cloud_spool_root=self.cloud_spool_root,
         )
 
         self.assertIsNotNone(result)

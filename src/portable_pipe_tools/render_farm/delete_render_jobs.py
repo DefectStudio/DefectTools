@@ -23,6 +23,7 @@ from portable_pipe_tools.render_farm.render_job import RenderJob
 @dataclass(frozen=True)
 class DeleteRenderJobsResult:
     deleted_folders: tuple[Path, ...]
+    deleted_job_ids: tuple[str, ...]
     errors: tuple[str, ...]
 
 
@@ -46,6 +47,7 @@ def _delete_target_error(job: RenderJob) -> str | None:
 def delete_render_jobs(jobs: list[RenderJob]) -> DeleteRenderJobsResult:
     """Permanently delete validated render-job package folders."""
     deleted_folders: list[Path] = []
+    deleted_job_ids: list[str] = []
     errors: list[str] = []
     seen_folders: set[Path] = set()
 
@@ -68,9 +70,11 @@ def delete_render_jobs(jobs: list[RenderJob]) -> DeleteRenderJobsResult:
             errors.append(f"Could not delete {job.job_name}: {error}")
         else:
             deleted_folders.append(job_folder)
+            deleted_job_ids.append(job.job_id)
 
     return DeleteRenderJobsResult(
         deleted_folders=tuple(deleted_folders),
+        deleted_job_ids=tuple(deleted_job_ids),
         errors=tuple(errors),
     )
 
@@ -79,12 +83,41 @@ def delete_render_jobs_with_dispatcher(
     jobs: list[RenderJob],
     dispatcher_client: DispatcherClient | None,
 ) -> DeleteRenderJobsResult:
-    """Delete cloud records first, then their validated Dropbox packages."""
+    """Delete D1 rows, plus validated packages for legacy filesystem jobs."""
     locally_ready: list[RenderJob] = []
+    cloud_deleted_job_ids: list[str] = []
     errors: list[str] = []
     seen_folders: set[Path] = set()
+    seen_cloud_job_ids: set[str] = set()
 
     for job in jobs:
+        if job.control_source == "cloud":
+            if job.job_id in seen_cloud_job_ids:
+                continue
+            seen_cloud_job_ids.add(job.job_id)
+            if dispatcher_client is None:
+                errors.append(
+                    f"Could not delete {job.job_name}: the Manager Cloud "
+                    "Dispatcher connection is not configured."
+                )
+                continue
+            try:
+                response = dispatcher_client.delete_job(job.job_id)
+            except DispatcherError as error:
+                errors.append(
+                    f"Could not delete {job.job_name} from the Cloud Dispatcher: "
+                    f"{error}"
+                )
+                continue
+            if response.get("deletion_confirmed") is not True:
+                errors.append(
+                    f"Could not delete {job.job_name}: the Cloud Dispatcher did "
+                    "not confirm deletion."
+                )
+                continue
+            cloud_deleted_job_ids.append(job.job_id)
+            continue
+
         job_folder = job.job_folder.absolute()
         if job_folder in seen_folders:
             continue
@@ -125,5 +158,8 @@ def delete_render_jobs_with_dispatcher(
     local_result = delete_render_jobs(locally_ready)
     return DeleteRenderJobsResult(
         deleted_folders=local_result.deleted_folders,
+        deleted_job_ids=(
+            tuple(cloud_deleted_job_ids) + local_result.deleted_job_ids
+        ),
         errors=tuple(errors) + local_result.errors,
     )

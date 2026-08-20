@@ -4,6 +4,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from portable_pipe_tools.render_farm.cloud_manager import (
+    get_cloud_render_jobs,
+    get_cloud_render_workers,
+    hydrate_cloud_render_job,
+)
+from portable_pipe_tools.render_farm.get_render_log import get_render_log
 from portable_pipe_tools.render_farm.get_all_render_jobs import get_all_render_jobs
 from portable_pipe_tools.render_farm.cloud_dispatch import DispatcherError
 from portable_pipe_tools.render_farm.manage_render_jobs import (
@@ -99,6 +105,80 @@ class RecoveryDispatcher(FakeManagerDispatcher):
                 "worker": self.worker,
             },
         }
+
+
+class D1ListingDispatcher(FakeManagerDispatcher):
+    def __init__(self) -> None:
+        super().__init__()
+        self.summary = {
+            "job_id": "SHOT_020_v003_cloud",
+            "batch_id": "cloud-batch",
+            "project": "show",
+            "job_type": "unreal_movie_render_graph",
+            "shot_name": "SHOT_020",
+            "render_version": 3,
+            "status": "complete",
+            "priority": 50,
+            "submitted_utc": "2026-08-20T10:00:00Z",
+            "submitted_by": "LIGHTER-PC",
+            "submitted_user": "chad",
+            "updated_utc": "2026-08-20T10:05:00Z",
+            "attempt": 1,
+            "worker": None,
+            "lease_expires_at": None,
+            "claimed_utc": "2026-08-20T10:01:00Z",
+            "render_started_utc": "2026-08-20T10:01:00Z",
+            "render_finished_utc": "2026-08-20T10:05:00Z",
+            "progress": 100,
+            "blacklisted_workers": [],
+            "resubmitted_from_job_id": None,
+            "revision": 3,
+        }
+
+    def list_jobs(self, *, limit: int, offset: int, **_kwargs) -> list[dict]:
+        self.asserted_page_size = limit
+        return [dict(self.summary)] if offset == 0 else []
+
+    def get_job(self, job_id: str) -> dict:
+        return {
+            "ok": True,
+            "summary": dict(self.summary),
+            "job": {
+                **self.summary,
+                "schema_version": 1,
+                "frame_start": 1001,
+                "frame_end": 1011,
+                "frame_count": 10,
+                "render_config": "/Game/Render/Hero.Hero",
+                "submitted_output_directory": "F:/show/renders/SHOT_020/v003",
+                "worker_output_directory": None,
+                "rendered_git_commit": None,
+                "result": {
+                    "status": "complete",
+                    "reason": "Render completed",
+                    "render_log_tail": "Cloud log tail survived Dropbox lag.",
+                    "job_snapshot": {
+                        "rendered_git_commit": "abc123",
+                        "worker_output_directory": "I:/show/renders/SHOT_020/v003",
+                    },
+                },
+            },
+        }
+
+    def list_workers(self) -> list[dict]:
+        return [
+            {
+                "id": "RENDER-01",
+                "display_name": "RENDER-01",
+                "first_seen_at": "2026-08-20T09:00:00Z",
+                "last_seen_at": "2099-08-20T10:05:00Z",
+                "status": "waiting",
+                "current_job_id": None,
+                "stop_requested": 0,
+                "app_version": "render-worker-gui",
+                "capabilities_json": '{"project":"show","cloud_job_packages":true}',
+            }
+        ]
 
 
 class CloudManagerTests(unittest.TestCase):
@@ -249,6 +329,44 @@ class CloudManagerTests(unittest.TestCase):
 
         self.assertEqual("job_has_active_lease", caught.exception.code)
         self.assertTrue(stalled_folder.is_dir())
+
+    def test_d1_listing_and_details_do_not_require_dropbox_job_packages(self) -> None:
+        dispatcher = D1ListingDispatcher()
+
+        jobs = get_cloud_render_jobs(dispatcher, self.repository)
+
+        self.assertEqual(1, len(jobs))
+        self.assertEqual("cloud", jobs[0].control_source)
+        self.assertEqual("complete", jobs[0].status)
+        self.assertFalse(jobs[0].job_json_path.exists())
+
+        hydrated = hydrate_cloud_render_job(
+            jobs[0],
+            dispatcher,
+            self.repository,
+        )
+        self.assertEqual(1001, hydrated.frame_start)
+        self.assertEqual("abc123", hydrated.job_data["rendered_git_commit"])
+        self.assertEqual("I:/show/renders/SHOT_020/v003", hydrated.output_directory)
+        self.assertIn("Cloud log tail", get_render_log(hydrated))
+
+        workers = get_cloud_render_workers(dispatcher, self.repository, jobs)
+        self.assertEqual(1, len(workers))
+        self.assertEqual("RENDER-01", workers[0].worker_name)
+        self.assertEqual("cloud", workers[0].raw_data["control_source"])
+
+    def test_d1_authoritative_resubmit_needs_no_dropbox_package(self) -> None:
+        dispatcher = D1ListingDispatcher()
+        dispatcher.summary["status"] = "failed"
+        dispatcher.summary["progress"] = 0
+        job = get_cloud_render_jobs(dispatcher, self.repository)[0]
+
+        new_job_id = resubmit_failed_render_job(job, dispatcher)
+
+        self.assertIsInstance(new_job_id, str)
+        self.assertEqual(job.job_id, dispatcher.replacements[0][0])
+        self.assertEqual(new_job_id, dispatcher.replacements[0][1]["job_id"])
+        self.assertFalse(job.job_folder.exists())
 
 
 if __name__ == "__main__":

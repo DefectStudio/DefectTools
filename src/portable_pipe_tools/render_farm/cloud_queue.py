@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +14,15 @@ from portable_pipe_tools.render_farm.cloud_dispatch import (
 from portable_pipe_tools.render_farm.queue import (
     JOB_FILENAME,
     QueuePaths,
+    create_directory_with_retry,
     fail_unreadable_claimed_job,
     finish_claimed_job,
+    path_exists_with_retry,
     read_json_object,
+    recover_stranded_cloud_job_to_queue,
+    rename_path_with_retry,
     retry_transient_windows_lock,
+    safe_name,
     utc_now,
     write_json_atomic,
 )
@@ -26,10 +32,125 @@ PENDING_DISPATCHER_UPDATE_FILENAME = "dispatcher_update_pending.json"
 STALE_DISPATCHER_UPDATE_PREFIX = "dispatcher_update_stale"
 PENDING_UPDATE_RECONCILIATION_GRACE_SECONDS = 60.0
 LOGGER = logging.getLogger("render_worker.cloud_queue")
+DEFAULT_LOCAL_SPOOL_FOLDER_NAME = "CloudJobSpool"
+MAX_CLOUD_RENDER_LOG_TAIL_BYTES = 64 * 1024
+
+
+def get_default_cloud_spool_root(worker_name: str) -> Path:
+    """Return this machine's private control-package root for one worker."""
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        base = Path(local_app_data)
+    else:
+        base = Path.home() / "AppData" / "Local"
+    override = os.environ.get("DEFECT_FARM_LOCAL_SPOOL_ROOT")
+    spool_base = (
+        Path(override).expanduser()
+        if override
+        else base / "DefectStudio" / "RenderFarm" / DEFAULT_LOCAL_SPOOL_FOLDER_NAME
+    )
+    return spool_base / safe_name(worker_name, "WORKER")
+
+
+def materialize_cloud_job_package(
+    paths: QueuePaths,
+    cloud_job: dict[str, Any],
+) -> Path:
+    """Atomically materialize a D1-leased payload into the local worker spool."""
+    job_id = str(cloud_job.get("job_id") or "").strip()
+    if not job_id or safe_name(job_id, "") != job_id:
+        raise ValueError("Cloud-leased job has an invalid job_id")
+    if cloud_job.get("status") != "rendering":
+        raise ValueError(f"Cloud-leased job {job_id} is not rendering")
+
+    queued_folder = paths.needs_rendering / job_id
+    if not path_exists_with_retry(queued_folder):
+        recovered = recover_stranded_cloud_job_to_queue(paths, job_id)
+        if recovered is not None:
+            queued_folder = recovered
+
+    if path_exists_with_retry(queued_folder):
+        write_json_atomic(queued_folder / JOB_FILENAME, dict(cloud_job))
+        return queued_folder
+
+    staging_folder = paths.submitting / job_id
+    if path_exists_with_retry(staging_folder):
+        if not staging_folder.is_dir():
+            raise NotADirectoryError(
+                f"Local Cloud staging path is not a directory: {staging_folder}"
+            )
+        LOGGER.warning(
+            "Recovering interrupted local Cloud job staging folder: %s",
+            staging_folder,
+        )
+    else:
+        create_directory_with_retry(staging_folder)
+    write_json_atomic(staging_folder / JOB_FILENAME, dict(cloud_job))
+    try:
+        rename_path_with_retry(staging_folder, queued_folder)
+    except Exception:
+        # The complete D1 payload remains durable in D1. Leaving the staging
+        # folder intact makes a local disk failure visible for diagnosis.
+        raise
+    return queued_folder
 
 
 def _pending_path(folder: Path) -> Path:
     return folder / PENDING_DISPATCHER_UPDATE_FILENAME
+
+
+def _read_render_log_tail(
+    claimed_folder: Path,
+    result: dict[str, Any],
+) -> str:
+    requested_names = (
+        result.get("unreal_log_file"),
+        "unreal.log",
+        result.get("unreal_stdout_file"),
+        "unreal_stdout.log",
+    )
+    seen: set[Path] = set()
+    for requested_name in requested_names:
+        if not requested_name:
+            continue
+        candidate = claimed_folder / Path(str(requested_name)).name
+        if candidate in seen or not candidate.is_file():
+            continue
+        seen.add(candidate)
+
+        def read_tail(path: Path = candidate) -> bytes:
+            with path.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                length = handle.tell()
+                handle.seek(max(0, length - MAX_CLOUD_RENDER_LOG_TAIL_BYTES))
+                return handle.read(MAX_CLOUD_RENDER_LOG_TAIL_BYTES)
+
+        raw_tail = retry_transient_windows_lock(
+            operation=read_tail,
+            description=f"Read Cloud render log tail {candidate}",
+        )
+        if raw_tail:
+            return raw_tail.decode("utf-8", errors="replace")
+    return ""
+
+
+def _cloud_result_details(
+    claimed_folder: Path,
+    job: dict[str, Any],
+    result_details: dict[str, Any] | None,
+) -> dict[str, Any]:
+    result = dict(result_details or {})
+    # Preserve worker-added path/Git diagnostics without rewriting the queued
+    # D1 payload. Manager detail views merge this bounded snapshot lazily.
+    result["job_snapshot"] = dict(job)
+    log_tail = _read_render_log_tail(claimed_folder, result)
+    if log_tail:
+        result["render_log_tail"] = log_tail
+        result["render_log_tail_truncated"] = (
+            len(log_tail.encode("utf-8", errors="replace"))
+            >= MAX_CLOUD_RENDER_LOG_TAIL_BYTES
+        )
+    return result
 
 
 def _remove_pending_update(path: Path) -> None:
@@ -103,6 +224,11 @@ def finish_cloud_claimed_job(
     reason: str,
     result_details: dict[str, Any] | None,
 ) -> Path:
+    cloud_result = _cloud_result_details(
+        claimed_folder,
+        job,
+        result_details,
+    )
     pending = {
         "schema_version": 1,
         "created_utc": utc_now(),
@@ -112,7 +238,7 @@ def finish_cloud_claimed_job(
         "lease_token": lease.lease_token,
         "reason": reason,
         "retryable": not success,
-        "result": result_details or {},
+        "result": cloud_result,
         "invalid_package": False,
     }
     write_json_atomic(_pending_path(claimed_folder), pending)
@@ -123,7 +249,7 @@ def finish_cloud_claimed_job(
         worker_name=worker_name,
         success=success,
         reason=reason,
-        result_details=result_details,
+        result_details=cloud_result,
     )
     final_pending_path = _pending_path(final_folder)
     _send_pending_update(dispatcher, pending)
@@ -184,7 +310,7 @@ def reconcile_pending_cloud_updates(
     *,
     minimum_age_seconds: float = PENDING_UPDATE_RECONCILIATION_GRACE_SECONDS,
 ) -> list[Path]:
-    """Finish durable Dropbox outbox records left by a crash/network outage."""
+    """Finish durable local outbox records left by a crash/network outage."""
     reconciled: list[Path] = []
     for state_folder in paths.all_queue_folders():
         try:
