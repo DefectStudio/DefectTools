@@ -600,6 +600,7 @@ def run_once(
                 success=success,
                 reason=reason,
                 result_details=result_details,
+                shared_farm_root=shared_farm_root,
             )
         else:
             final_folder = finish_claimed_job(

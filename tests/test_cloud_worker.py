@@ -196,6 +196,123 @@ class CloudWorkerTests(unittest.TestCase):
             dispatcher.completed,
         )
 
+    def test_cloud_render_logs_publish_to_dropbox_terminal_folders(self) -> None:
+        for success, state_folder_name in (
+            (True, "03_RenderComplete"),
+            (False, "04_RenderFailed"),
+        ):
+            with self.subTest(success=success):
+                job_id = f"LOG_ARCHIVE_{'SUCCESS' if success else 'FAILURE'}"
+                lease = CloudJobLease(
+                    job={
+                        "job_id": job_id,
+                        "status": "rendering",
+                        "worker": "CLOUD-WORKER",
+                        "attempt": 2,
+                        "priority": 50,
+                        "submitted_utc": "2026-08-20T00:00:00Z",
+                    },
+                    lease_token=f"lease-{job_id}",
+                    lease_expires_at=int(time.time()) + 300,
+                    stop_requested=False,
+                )
+                dispatcher = FakeDispatcher(lease)
+
+                def fake_unreal_runner(**kwargs) -> UnrealExecutionResult:
+                    claimed_folder = Path(kwargs["claimed_folder"])
+                    (claimed_folder / "unreal.log").write_text(
+                        "full Unreal log",
+                        encoding="utf-8",
+                    )
+                    (claimed_folder / "unreal_stdout.log").write_text(
+                        "full Unreal stdout",
+                        encoding="utf-8",
+                    )
+                    (claimed_folder / "git_pull.log").write_text(
+                        "Git transcript",
+                        encoding="utf-8",
+                    )
+                    return UnrealExecutionResult(
+                        success=success,
+                        reason="Intentional archive test",
+                        exit_code=0 if success else 1,
+                    )
+
+                result = run_once(
+                    self.farm_root,
+                    "CLOUD-WORKER",
+                    simulate_success=False,
+                    render_with_unreal=True,
+                    unreal_runner=fake_unreal_runner,
+                    minimum_stage_seconds=0,
+                    dispatcher_client=dispatcher,
+                    cloud_spool_root=self.cloud_spool_root,
+                )
+
+                self.assertIsNotNone(result)
+                archive_folder = (
+                    self.farm_root
+                    / state_folder_name
+                    / f"{job_id}__CLOUD-WORKER__attempt_002"
+                )
+                self.assertEqual(
+                    {"unreal.log", "unreal_stdout.log", "git_pull.log"},
+                    {path.name for path in archive_folder.iterdir()},
+                )
+                self.assertFalse((archive_folder / JOB_FILENAME).exists())
+
+    def test_dropbox_log_publication_failure_does_not_fail_cloud_job(self) -> None:
+        blocked_root = Path(self.temporary_directory.name) / "blocked-render-farm"
+        blocked_root.write_text(
+            "This path intentionally blocks mkdir.",
+            encoding="utf-8",
+        )
+        lease = CloudJobLease(
+            job={
+                "job_id": "LOG_ARCHIVE_BLOCKED",
+                "status": "rendering",
+                "worker": "CLOUD-WORKER",
+                "attempt": 1,
+                "priority": 50,
+                "submitted_utc": "2026-08-20T00:00:00Z",
+            },
+            lease_token="lease-log-archive-blocked",
+            lease_expires_at=int(time.time()) + 300,
+            stop_requested=False,
+        )
+        dispatcher = FakeDispatcher(lease)
+
+        def fake_unreal_runner(**kwargs) -> UnrealExecutionResult:
+            claimed_folder = Path(kwargs["claimed_folder"])
+            (claimed_folder / "unreal.log").write_text(
+                "This local log must survive Dropbox failure.",
+                encoding="utf-8",
+            )
+            return UnrealExecutionResult(
+                success=True,
+                reason="Dropbox publication failure is non-fatal",
+                exit_code=0,
+            )
+
+        result = run_once(
+            blocked_root,
+            "CLOUD-WORKER",
+            simulate_success=False,
+            render_with_unreal=True,
+            unreal_runner=fake_unreal_runner,
+            minimum_stage_seconds=0,
+            dispatcher_client=dispatcher,
+            cloud_spool_root=self.cloud_spool_root,
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual("complete", result.status)
+        self.assertEqual(
+            [(lease.job_id, "CLOUD-WORKER")],
+            dispatcher.completed,
+        )
+
     def test_cloud_git_preflight_failure_releases_d1_lease(self) -> None:
         lease = self._lease_for_queued_job()
         dispatcher = FakeDispatcher(lease)

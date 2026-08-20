@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import logging
 import os
 from pathlib import Path
+import shutil
 from typing import Any
 
 from portable_pipe_tools.render_farm.cloud_dispatch import (
@@ -14,6 +15,7 @@ from portable_pipe_tools.render_farm.cloud_dispatch import (
 from portable_pipe_tools.render_farm.queue import (
     JOB_FILENAME,
     QueuePaths,
+    TRANSIENT_WINDOWS_PUBLISH_ERRORS,
     create_directory_with_retry,
     fail_unreadable_claimed_job,
     finish_claimed_job,
@@ -34,6 +36,11 @@ PENDING_UPDATE_RECONCILIATION_GRACE_SECONDS = 60.0
 LOGGER = logging.getLogger("render_worker.cloud_queue")
 DEFAULT_LOCAL_SPOOL_FOLDER_NAME = "CloudJobSpool"
 MAX_CLOUD_RENDER_LOG_TAIL_BYTES = 64 * 1024
+CLOUD_RENDER_LOG_FILENAMES = (
+    "unreal.log",
+    "unreal_stdout.log",
+    "git_pull.log",
+)
 
 
 def get_default_cloud_spool_root(worker_name: str) -> Path:
@@ -153,6 +160,130 @@ def _cloud_result_details(
     return result
 
 
+def _render_log_archive_folder(
+    shared_farm_root: str | Path,
+    job: dict[str, Any],
+    worker_name: str,
+    success: bool,
+) -> Path:
+    job_id = safe_name(str(job.get("job_id") or ""), "JOB")
+    worker = safe_name(worker_name, "WORKER")
+    raw_attempt = job.get("attempt")
+    attempt = (
+        raw_attempt
+        if isinstance(raw_attempt, int)
+        and not isinstance(raw_attempt, bool)
+        and raw_attempt >= 0
+        else 0
+    )
+    shared_paths = QueuePaths.from_root(shared_farm_root)
+    state_folder = (
+        shared_paths.render_complete if success else shared_paths.render_failed
+    )
+    return state_folder / f"{job_id}__{worker}__attempt_{attempt:03d}"
+
+
+def _copy_render_log_atomic(source: Path, destination: Path) -> None:
+    temporary = destination.with_name(f".{destination.name}.uploading")
+    try:
+        retry_transient_windows_lock(
+            operation=lambda: shutil.copyfile(source, temporary),
+            description=f"Copy render log {source} -> {temporary}",
+            transient_winerrors=TRANSIENT_WINDOWS_PUBLISH_ERRORS,
+        )
+        retry_transient_windows_lock(
+            operation=lambda: os.replace(temporary, destination),
+            description=f"Publish render log {temporary} -> {destination}",
+            transient_winerrors=TRANSIENT_WINDOWS_PUBLISH_ERRORS,
+        )
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            LOGGER.warning(
+                "Could not remove temporary Dropbox render log: %s",
+                temporary,
+            )
+
+
+def publish_cloud_render_logs(
+    *,
+    claimed_folder: Path,
+    shared_farm_root: str | Path,
+    job: dict[str, Any],
+    worker_name: str,
+    success: bool,
+) -> list[Path]:
+    """Best-effort copy of small terminal logs into the Dropbox archive."""
+    try:
+        sources = [
+            claimed_folder / filename
+            for filename in CLOUD_RENDER_LOG_FILENAMES
+            if (claimed_folder / filename).is_file()
+        ]
+    except OSError as error:
+        LOGGER.warning(
+            "Could not inspect worker-local render logs for Dropbox publication: "
+            "%s: %s",
+            type(error).__name__,
+            error,
+        )
+        return []
+    if not sources:
+        LOGGER.warning(
+            "No worker-local render logs were available for Dropbox publication: %s",
+            claimed_folder,
+        )
+        return []
+
+    destination_folder = _render_log_archive_folder(
+        shared_farm_root,
+        job,
+        worker_name,
+        success,
+    )
+    try:
+        retry_transient_windows_lock(
+            operation=lambda: destination_folder.mkdir(parents=True, exist_ok=True),
+            description=f"Create Dropbox render log folder {destination_folder}",
+            transient_winerrors=TRANSIENT_WINDOWS_PUBLISH_ERRORS,
+        )
+    except OSError as error:
+        LOGGER.warning(
+            "Could not create the Dropbox render log folder; D1 job completion "
+            "will continue: %s (%s: %s)",
+            destination_folder,
+            type(error).__name__,
+            error,
+        )
+        return []
+
+    published: list[Path] = []
+    for source in sources:
+        destination = destination_folder / source.name
+        try:
+            _copy_render_log_atomic(source, destination)
+        except OSError as error:
+            LOGGER.warning(
+                "Could not publish render log to Dropbox; D1 job completion "
+                "will continue: %s -> %s (%s: %s)",
+                source,
+                destination,
+                type(error).__name__,
+                error,
+            )
+            continue
+        published.append(destination)
+
+    if published:
+        LOGGER.info(
+            "Published %d render log file(s) to Dropbox: %s",
+            len(published),
+            destination_folder,
+        )
+    return published
+
+
 def _remove_pending_update(path: Path) -> None:
     retry_transient_windows_lock(
         operation=lambda: path.unlink(missing_ok=True),
@@ -223,12 +354,33 @@ def finish_cloud_claimed_job(
     success: bool,
     reason: str,
     result_details: dict[str, Any] | None,
+    shared_farm_root: str | Path,
 ) -> Path:
     cloud_result = _cloud_result_details(
         claimed_folder,
         job,
         result_details,
     )
+    published_logs = (
+        publish_cloud_render_logs(
+            claimed_folder=claimed_folder,
+            shared_farm_root=shared_farm_root,
+            job=job,
+            worker_name=worker_name,
+            success=success,
+        )
+        if result_details is not None
+        and result_details.get("simulated") is False
+        else []
+    )
+    if published_logs:
+        archive_folder = published_logs[0].parent
+        cloud_result["dropbox_render_log_relative_folder"] = archive_folder.relative_to(
+            QueuePaths.from_root(shared_farm_root).root
+        ).as_posix()
+        cloud_result["dropbox_render_log_files"] = [
+            path.name for path in published_logs
+        ]
     pending = {
         "schema_version": 1,
         "created_utc": utc_now(),

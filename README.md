@@ -172,6 +172,13 @@ Choose the show-specific Dropbox `renderFarm` base folder in the interface. It
 is used to derive that machine's local Dropbox show root and existing render
 output paths. D1 supplies the job JSON and lease; the worker stores its transient
 control package under `%LOCALAPPDATA%\DefectStudio\RenderFarm\CloudJobSpool`.
+When a Cloud render attempt finishes, the worker also makes a best-effort copy
+of `unreal.log`, `unreal_stdout.log`, and `git_pull.log` into the selected
+Dropbox `renderFarm\03_RenderComplete` or `renderFarm\04_RenderFailed` folder.
+Each attempt uses a unique `<job>__<worker>__attempt_NNN` subfolder. These small
+log archives may sync whenever Dropbox is ready; publishing or syncing them is
+not part of queue coordination, and a Dropbox error cannot change the D1 job
+result.
 **Start Worker** keeps listening for real jobs at a configurable interval
 (15 seconds by default); **Stop Worker** interrupts an already-claimed Unreal
 render, requeues it as a failed attempt, and stops before claiming another.

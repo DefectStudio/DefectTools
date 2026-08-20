@@ -15,7 +15,10 @@ EXRs/MP4s remain on the existing Dropbox storage.
    `%LOCALAPPDATA%\DefectStudio\RenderFarm\CloudJobSpool`.
 4. Unreal renders to the same worker-local Dropbox show path selected in the
    Render Worker GUI. Large EXRs and MP4s may sync independently without
-   delaying job discovery or claims.
+   delaying job discovery or claims. At the end of each attempt, the worker
+   best-effort copies only its small render logs into Dropbox
+   `renderFarm/03_RenderComplete` or `renderFarm/04_RenderFailed`; their sync
+   state never controls the D1 job.
 5. The Farm Render Manager reads and controls jobs and workers through D1.
 
 R2 output delivery is intentionally deferred. Dropbox remains the render-output
