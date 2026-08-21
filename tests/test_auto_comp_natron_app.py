@@ -5,7 +5,10 @@ import tempfile
 import unittest
 from unittest.mock import Mock, call, patch
 
-from portable_pipe_tools.apps.auto_comp_natron_app import AutoCompNatronApp
+from portable_pipe_tools.apps.auto_comp_natron_app import (
+    AutoCompNatronApp,
+    RenderQueueJob,
+)
 from portable_pipe_tools.auto_comp_natron.create_comp import (
     CompAlreadyExistsError,
     CompTemplateNotFoundError,
@@ -18,6 +21,7 @@ from portable_pipe_tools.auto_comp_natron.open_comp import (
 )
 from portable_pipe_tools.auto_comp_natron.render_comp import (
     RenderCompCompletion,
+    RenderCompProgress,
     RenderCompResult,
     SmartWriteNotFoundError,
 )
@@ -95,6 +99,12 @@ class AutoCompNatronAppTests(unittest.TestCase):
             self.assertTrue(
                 {"EXR", "MP4", "MOV", "Hero"}.issubset(checkbox_labels)
             )
+            self.assertEqual("Job", app.queue_tree.heading("job", "text"))
+            self.assertEqual("Status", app.queue_tree.heading("status", "text"))
+            self.assertEqual((), app.queue_tree.get_children())
+            self.assertEqual("Pause Queue", app.pause_queue_button.cget("text"))
+            self.assertEqual("Resume Queue", app.resume_queue_button.cget("text"))
+            self.assertEqual("Clear Queue", app.clear_queue_button.cget("text"))
         finally:
             app.root.destroy()
 
@@ -785,7 +795,7 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 app._set_repository_connected(repository)
                 app.natron_executable_path = executable
                 app.shot_list.selection_clear(0, "end")
-                app.shot_list.selection_set(0, 1)
+                app.shot_list.selection_set(0)
                 app._select_shot_for_context_menu(1)
                 with (
                     patch(
@@ -818,6 +828,474 @@ class AutoCompNatronAppTests(unittest.TestCase):
                     "StatusSuccess.TLabel",
                     app.status_label.cget("style"),
                 )
+                queue_item = app.queue_tree.get_children()[0]
+                self.assertEqual(
+                    ("AAA / AAA_000_0020", "Complete"),
+                    app.queue_tree.item(queue_item, "values"),
+                )
+                self.assertIsNone(app._active_render_job)
+                self.assertIsNone(app._active_render_result)
+            finally:
+                app.root.destroy()
+
+    def test_closing_app_terminates_the_active_renderer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            result = RenderCompResult(
+                comp_path=Path("comp.ntp"),
+                process=Mock(),
+                status_path=temporary_path / "status.json",
+            )
+            app._active_render_result = result
+
+            with (
+                patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app."
+                    "terminate_render_comp"
+                ) as terminate,
+                patch.object(app.root, "destroy") as destroy,
+            ):
+                app._close()
+
+            terminate.assert_called_once_with(result)
+            self.assertIsNone(app._active_render_result)
+            destroy.assert_called_once_with()
+            app.root.destroy()
+
+    def test_render_comp_queues_multiple_selected_shots_in_display_order(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            executable = temporary_path / "Natron.exe"
+            executable.touch()
+            first_path = Path("AAA_000_0010_comp_v001.ntp")
+            second_path = Path("AAA_000_0020_comp_v001.ntp")
+            render_results = [
+                RenderCompResult(
+                    comp_path=path,
+                    process=Mock(),
+                    status_path=temporary_path / f"status-{index}.json",
+                )
+                for index, path in enumerate((first_path, second_path), start=1)
+            ]
+            completions = [
+                RenderCompCompletion(
+                    comp_path=path,
+                    rendered_smart_writes=1,
+                )
+                for path in (first_path, second_path)
+            ]
+
+            try:
+                app._set_repository_connected(repository)
+                app.natron_executable_path = executable
+                app.shot_list.selection_clear(0, "end")
+                app.shot_list.selection_set(0, 1)
+                with (
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "render_comp",
+                        side_effect=render_results,
+                    ) as render_mock,
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "poll_render_comp",
+                        side_effect=completions,
+                    ) as poll_mock,
+                ):
+                    app._render_selected_comp()
+
+                self.assertEqual(
+                    [
+                        call(
+                            repository / "alpha",
+                            "AAA",
+                            "AAA_000_0010",
+                            natron_executable=executable,
+                            hydration_progress=app._update_source_hydration_progress,
+                        ),
+                        call(
+                            repository / "alpha",
+                            "AAA",
+                            "AAA_000_0020",
+                            natron_executable=executable,
+                            hydration_progress=app._update_source_hydration_progress,
+                        ),
+                    ],
+                    render_mock.call_args_list,
+                )
+                self.assertEqual(
+                    [call(render_results[0]), call(render_results[1])],
+                    poll_mock.call_args_list,
+                )
+                self.assertEqual(
+                    [
+                        ("AAA / AAA_000_0010", "Complete"),
+                        ("AAA / AAA_000_0020", "Complete"),
+                    ],
+                    [
+                        app.queue_tree.item(item, "values")
+                        for item in app.queue_tree.get_children()
+                    ],
+                )
+                self.assertEqual([], app._pending_render_jobs)
+                self.assertIsNone(app._active_render_job)
+
+                app.clear_queue_button.invoke()
+
+                self.assertEqual((), app.queue_tree.get_children())
+                self.assertEqual("Cleared 2 queue entries.", app.status_var.get())
+            finally:
+                app.root.destroy()
+
+    def test_clear_queue_keeps_active_render_and_removes_waiting_jobs(self) -> None:
+        app = AutoCompNatronApp(prompt_on_startup=False)
+        app.root.withdraw()
+
+        try:
+            active_item_id = app.queue_tree.insert(
+                "",
+                "end",
+                values=("AAA / AAA_000_0010", "Rendering"),
+                tags=("rendering",),
+            )
+            waiting_item_id = app.queue_tree.insert(
+                "",
+                "end",
+                values=("AAA / AAA_000_0020", "Queued"),
+                tags=("queued",),
+            )
+            active_job = RenderQueueJob(
+                show_path=Path("alpha"),
+                sequence_name="AAA",
+                shot_name="AAA_000_0010",
+                tree_item_id=active_item_id,
+            )
+            waiting_job = RenderQueueJob(
+                show_path=Path("alpha"),
+                sequence_name="AAA",
+                shot_name="AAA_000_0020",
+                tree_item_id=waiting_item_id,
+            )
+            app._active_render_job = active_job
+            app._pending_render_jobs.append(waiting_job)
+
+            app.clear_queue_button.invoke()
+
+            self.assertEqual((active_item_id,), app.queue_tree.get_children())
+            self.assertEqual(
+                ("AAA / AAA_000_0010", "Rendering"),
+                app.queue_tree.item(active_item_id, "values"),
+            )
+            self.assertEqual([], app._pending_render_jobs)
+            self.assertIs(active_job, app._active_render_job)
+            self.assertEqual(
+                "Cleared 1 queue entry. The active render will continue.",
+                app.status_var.get(),
+            )
+        finally:
+            app.root.destroy()
+
+    def test_render_queue_waits_for_active_job_before_starting_next(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            executable = temporary_path / "Natron.exe"
+            executable.touch()
+            paths = [
+                Path("AAA_000_0010_comp_v001.ntp"),
+                Path("AAA_000_0020_comp_v001.ntp"),
+            ]
+            render_results = [
+                RenderCompResult(
+                    comp_path=path,
+                    process=Mock(),
+                    status_path=temporary_path / f"status-{index}.json",
+                )
+                for index, path in enumerate(paths, start=1)
+            ]
+            completions = [
+                RenderCompCompletion(
+                    comp_path=path,
+                    rendered_smart_writes=1,
+                )
+                for path in paths
+            ]
+
+            try:
+                app._set_repository_connected(repository)
+                app.natron_executable_path = executable
+                app.shot_list.selection_clear(0, "end")
+                app.shot_list.selection_set(0, 1)
+                with (
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "render_comp",
+                        side_effect=render_results,
+                    ) as render_mock,
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "poll_render_comp",
+                        side_effect=[None, *completions],
+                    ),
+                    patch.object(app.root, "after") as after_mock,
+                ):
+                    app._render_selected_comp()
+
+                    self.assertEqual(1, render_mock.call_count)
+                    self.assertEqual(
+                        ["Rendering", "Queued"],
+                        [
+                            app.queue_tree.item(item, "values")[1]
+                            for item in app.queue_tree.get_children()
+                        ],
+                    )
+                    after_mock.assert_called_once()
+                    self.assertEqual(250, after_mock.call_args.args[0])
+
+                    poll_again = after_mock.call_args.args[1]
+                    poll_again()
+
+                self.assertEqual(2, render_mock.call_count)
+                self.assertEqual(
+                    ["Complete", "Complete"],
+                    [
+                        app.queue_tree.item(item, "values")[1]
+                        for item in app.queue_tree.get_children()
+                    ],
+                )
+            finally:
+                app.root.destroy()
+
+    def test_live_progress_bar_belongs_only_to_the_active_queue_job(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            executable = temporary_path / "Natron.exe"
+            executable.touch()
+            render_result = RenderCompResult(
+                comp_path=Path("AAA_000_0010_comp_v001.ntp"),
+                process=Mock(),
+                status_path=temporary_path / "status.json",
+            )
+            progress = RenderCompProgress(
+                completed_frames=37,
+                total_frames=100,
+                percent=37.0,
+                current_frame=1037,
+            )
+
+            try:
+                app._set_repository_connected(repository)
+                app.natron_executable_path = executable
+                app.shot_list.selection_clear(0, "end")
+                app.shot_list.selection_set(0, 1)
+                with (
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "render_comp",
+                        return_value=render_result,
+                    ),
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "read_render_comp_progress",
+                        return_value=progress,
+                    ),
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "poll_render_comp",
+                        return_value=None,
+                    ),
+                    patch.object(app.root, "after"),
+                ):
+                    app._render_selected_comp()
+
+                items = app.queue_tree.get_children()
+                self.assertEqual(2, len(items))
+                self.assertEqual(
+                    "Rendering — 37%",
+                    app.queue_tree.item(items[0], "values")[1],
+                )
+                self.assertEqual(
+                    "Queued",
+                    app.queue_tree.item(items[1], "values")[1],
+                )
+                self.assertIsNotNone(app._render_progress_job)
+                self.assertEqual(
+                    items[0],
+                    app._render_progress_job.tree_item_id,
+                )
+                self.assertEqual(37.0, app._render_progress_percent)
+                regressed = RenderCompProgress(
+                    completed_frames=12,
+                    total_frames=100,
+                    percent=12.0,
+                    current_frame=1012,
+                )
+                app._update_render_progress(app._active_render_job, regressed)
+                self.assertEqual(
+                    "Rendering — 37%",
+                    app.queue_tree.item(items[0], "values")[1],
+                )
+                self.assertEqual(37.0, app._render_progress_percent)
+                self.assertIn("37/100 writer-frames", app.status_var.get())
+                finalizing = RenderCompProgress(
+                    completed_frames=100,
+                    total_frames=100,
+                    percent=99.0,
+                    current_frame=1100,
+                    completed_outputs=3,
+                    total_outputs=3,
+                    finalizing=True,
+                )
+                app._update_render_progress(app._active_render_job, finalizing)
+                self.assertEqual(
+                    "Finalizing — 99%",
+                    app.queue_tree.item(items[0], "values")[1],
+                )
+                self.assertEqual(
+                    1,
+                    sum(
+                        child.winfo_class() == "Canvas"
+                        for child in app.queue_tree.winfo_children()
+                    ),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_pause_and_resume_buttons_control_the_active_natron_renderer(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            item_id = app.queue_tree.insert(
+                "",
+                "end",
+                values=("AAA / AAA_000_0010", "Rendering — 42%"),
+            )
+            job = RenderQueueJob(
+                show_path=temporary_path,
+                sequence_name="AAA",
+                shot_name="AAA_000_0010",
+                tree_item_id=item_id,
+            )
+            result = RenderCompResult(
+                comp_path=Path("AAA_000_0010_comp_v001.ntp"),
+                process=Mock(),
+                status_path=temporary_path / "status.json",
+            )
+            app._active_render_job = job
+            app._active_render_result = result
+            app._show_render_progress(job, 42.0)
+
+            try:
+                with (
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "pause_render_comp",
+                        return_value=True,
+                    ) as pause_mock,
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "resume_render_comp",
+                        return_value=True,
+                    ) as resume_mock,
+                ):
+                    app.pause_queue_button.invoke()
+                    self.assertTrue(app._queue_paused)
+                    pause_mock.assert_called_once_with(result)
+                    self.assertEqual(
+                        "Paused — 42%",
+                        app.queue_tree.item(item_id, "values")[1],
+                    )
+                    self.assertEqual(
+                        "disabled",
+                        str(app.pause_queue_button["state"]),
+                    )
+                    self.assertEqual(
+                        "normal",
+                        str(app.resume_queue_button["state"]),
+                    )
+
+                    app.resume_queue_button.invoke()
+                    self.assertFalse(app._queue_paused)
+                    resume_mock.assert_called_once_with(result)
+                    self.assertEqual(
+                        "Rendering — 42%",
+                        app.queue_tree.item(item_id, "values")[1],
+                    )
+                    self.assertEqual(
+                        "normal",
+                        str(app.pause_queue_button["state"]),
+                    )
+                    self.assertEqual(
+                        "disabled",
+                        str(app.resume_queue_button["state"]),
+                    )
+            finally:
+                app.root.destroy()
+
+    def test_paused_queue_does_not_start_its_next_pending_render(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            item_id = app.queue_tree.insert(
+                "",
+                "end",
+                values=("AAA / AAA_000_0010", "Queued"),
+            )
+            job = RenderQueueJob(
+                show_path=temporary_path,
+                sequence_name="AAA",
+                shot_name="AAA_000_0010",
+                tree_item_id=item_id,
+            )
+            app._pending_render_jobs.append(job)
+            app._queue_paused = True
+
+            try:
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app.render_comp"
+                ) as render_mock:
+                    app._start_next_queued_render()
+
+                render_mock.assert_not_called()
+                self.assertEqual([job], app._pending_render_jobs)
+                self.assertIsNone(app._active_render_job)
             finally:
                 app.root.destroy()
 
@@ -851,6 +1329,11 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 self.assertEqual(
                     "StatusError.TLabel",
                     app.status_label.cget("style"),
+                )
+                queue_item = app.queue_tree.get_children()[0]
+                self.assertEqual(
+                    ("AAA / AAA_000_0010", "Failed"),
+                    app.queue_tree.item(queue_item, "values"),
                 )
             finally:
                 app.root.destroy()

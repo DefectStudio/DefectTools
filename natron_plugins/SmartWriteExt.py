@@ -359,7 +359,9 @@ def _copy_choice_options(native_param, exposed_param):
         options = native_param.getOptions()
     except (AttributeError, TypeError):
         return False
-    if options is None:
+    # WriteOIIO can expose an empty dynamic menu while it is still initializing.
+    # Keep any choices already persisted on the SmartWrite proxy in that case.
+    if not options:
         return False
     try:
         exposed_param.setOptions(
@@ -814,11 +816,13 @@ def _writer_render_range(app, group, writer):
 def _submit_render_tasks(app, tasks):
     """Small seam used by integration tests to inspect button submissions."""
 
+    if not tasks:
+        return
     app.render(tasks)
 
 
-def _render_enabled_outputs(app, group, checkbox_names):
-    """Submit selected, enabled internal writers as one Natron render batch."""
+def _enabled_render_tasks(app, group, checkbox_names):
+    """Return selected, enabled internal writer tasks without submitting them."""
 
     refreshOutputs(app, group)
     active_writers = _active_writers(group)
@@ -840,6 +844,14 @@ def _render_enabled_outputs(app, group, checkbox_names):
             app, group, writer
         )
         tasks.append((writer, first_frame, last_frame, frame_increment))
+
+    return tasks
+
+
+def _render_enabled_outputs(app, group, checkbox_names):
+    """Submit selected, enabled internal writers as one Natron render batch."""
+
+    tasks = _enabled_render_tasks(app, group, checkbox_names)
 
     if not tasks:
         return False

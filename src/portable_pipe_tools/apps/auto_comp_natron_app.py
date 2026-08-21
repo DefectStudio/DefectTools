@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tkinter as tk
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -16,9 +18,14 @@ from portable_pipe_tools.auto_comp_natron.open_comp import (
     open_comp,
 )
 from portable_pipe_tools.auto_comp_natron.render_comp import (
+    RenderCompProgress,
     RenderCompResult,
+    pause_render_comp,
     poll_render_comp,
+    read_render_comp_progress,
     render_comp,
+    resume_render_comp,
+    terminate_render_comp,
 )
 from portable_pipe_tools.auto_comp_natron.settings import (
     get_default_settings_path,
@@ -47,6 +54,15 @@ TEXT_COLOR = "#d8dadd"
 MUTED_TEXT = "#a5a9ae"
 SELECTION_COLOR = "#315f7a"
 
+
+@dataclass(frozen=True)
+class RenderQueueJob:
+    show_path: Path
+    sequence_name: str
+    shot_name: str
+    tree_item_id: str
+
+
 class AutoCompNatronApp:
     """Natron auto-comp GUI shell with a locally saved repository connection."""
 
@@ -57,8 +73,8 @@ class AutoCompNatronApp:
     ) -> None:
         self.root = tk.Tk()
         self.root.title("Auto Comp - Natron")
-        self.root.geometry("1040x680")
-        self.root.minsize(780, 520)
+        self.root.geometry("1040x940")
+        self.root.minsize(780, 640)
 
         self.settings_path = settings_path or get_default_settings_path()
         self.repository_path: Path | None = None
@@ -73,6 +89,15 @@ class AutoCompNatronApp:
         self.sequence_paths_by_name: dict[str, Path] = {}
         self.shot_names: list[str] = []
         self.shot_rows_by_name: dict[str, ShotRow] = {}
+        self._pending_render_jobs: list[RenderQueueJob] = []
+        self._queue_paused = False
+        self._active_render_job: RenderQueueJob | None = None
+        self._active_render_result: RenderCompResult | None = None
+        self._render_progress_job: RenderQueueJob | None = None
+        self._render_progress_percent = 0.0
+        self._render_progress_completed_frames = 0
+        self._render_progress_total_frames = 0
+        self._render_progress_finalizing = False
         self.exr_var = tk.BooleanVar(value=True)
         self.mp4_var = tk.BooleanVar(value=True)
         self.mov_var = tk.BooleanVar(value=False)
@@ -81,6 +106,7 @@ class AutoCompNatronApp:
         self._configure_styles()
         self._build_menu()
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._close)
         if prompt_on_startup:
             self.root.after_idle(self._initialize_startup_settings)
 
@@ -168,6 +194,49 @@ class AutoCompNatronApp:
             foreground=[("active", "#ffffff")],
         )
         style.configure(
+            "Queue.Treeview",
+            background=PANEL_BACKGROUND,
+            fieldbackground=PANEL_BACKGROUND,
+            foreground=TEXT_COLOR,
+            borderwidth=0,
+            relief="flat",
+            rowheight=27,
+            font=("Consolas", 10),
+        )
+        style.map(
+            "Queue.Treeview",
+            background=[("selected", SELECTION_COLOR)],
+            foreground=[("selected", "#ffffff")],
+        )
+        style.configure(
+            "Queue.Treeview.Heading",
+            background=PANEL_HEADER,
+            foreground=TEXT_COLOR,
+            borderwidth=0,
+            relief="flat",
+            padding=(8, 6),
+            font=("Segoe UI", 9, "bold"),
+        )
+        style.map(
+            "Queue.Treeview.Heading",
+            background=[("active", "#484b4f")],
+            foreground=[("active", "#ffffff")],
+        )
+        style.configure(
+            "QueueControl.TButton",
+            background="#45484c",
+            foreground=TEXT_COLOR,
+            bordercolor=BORDER_COLOR,
+            lightcolor="#56595d",
+            darkcolor=BORDER_COLOR,
+            padding=(12, 7),
+            font=("Segoe UI", 9, "bold"),
+        )
+        style.map(
+            "QueueControl.TButton",
+            background=[("active", "#55585c"), ("pressed", "#292b2e")],
+        )
+        style.configure(
             "Status.TLabel",
             background=TOOLBAR_BACKGROUND,
             foreground=MUTED_TEXT,
@@ -229,6 +298,7 @@ class AutoCompNatronApp:
             workspace.columnconfigure(column, weight=1, uniform="browser-panel")
         workspace.rowconfigure(0, weight=3)
         workspace.rowconfigure(1, weight=1)
+        workspace.rowconfigure(2, weight=2)
 
         self.show_list = self._create_browser_panel(
             workspace,
@@ -324,6 +394,7 @@ class AutoCompNatronApp:
         )
 
         self._build_options_panel(workspace)
+        self._build_queue_panel(workspace)
         self._build_status_bar(outer)
 
     def _build_status_bar(self, parent: ttk.Frame) -> None:
@@ -910,56 +981,122 @@ class AutoCompNatronApp:
             self.sequence_list,
             self.sequence_names,
         )
-        shot_name = self._active_selected_shot_name()
-        if show_path is None or not sequence_name or not shot_name:
-            self._set_status("Right-click a shot to render its comp.", "warning")
+        shot_names = self._selected_values(self.shot_list, self.shot_names)
+        if show_path is None or not sequence_name or not shot_names:
+            self._set_status(
+                "Select one or more shots to render their comps.",
+                "warning",
+            )
             return
         if not self._ensure_natron_executable():
             return
 
+        new_jobs: list[RenderQueueJob] = []
+        for shot_name in shot_names:
+            tree_item_id = self.queue_tree.insert(
+                "",
+                "end",
+                values=(f"{sequence_name} / {shot_name}", "Queued"),
+                tags=("queued",),
+            )
+            new_jobs.append(
+                RenderQueueJob(
+                    show_path=show_path,
+                    sequence_name=sequence_name,
+                    shot_name=shot_name,
+                    tree_item_id=tree_item_id,
+                )
+            )
+
+        self._pending_render_jobs.extend(new_jobs)
+        self.queue_tree.see(new_jobs[-1].tree_item_id)
+        if self._active_render_job is not None:
+            noun = "comp" if len(new_jobs) == 1 else "comps"
+            self._set_status(
+                f"Added {len(new_jobs)} {noun} to the render queue.",
+                "normal",
+            )
+            return
+
+        self._start_next_queued_render()
+
+    def _start_next_queued_render(self) -> None:
+        if self._queue_paused:
+            if self._pending_render_jobs:
+                self._set_status(
+                    f"Render queue paused with {len(self._pending_render_jobs)} "
+                    "pending job(s).",
+                    "normal",
+                )
+            return
+        if self._active_render_job is not None or not self._pending_render_jobs:
+            return
+
+        job = self._pending_render_jobs.pop(0)
+        self._active_render_job = job
+        self._set_render_queue_job_status(job, "Preparing", "preparing")
         self._set_status(
-            f"Checking Dropbox source files for {shot_name}...",
+            f"Checking Dropbox source files for {job.shot_name}...",
             "normal",
         )
         self.root.update_idletasks()
         try:
             result = render_comp(
-                show_path,
-                sequence_name,
-                shot_name,
+                job.show_path,
+                job.sequence_name,
+                job.shot_name,
                 natron_executable=self.natron_executable_path,
                 hydration_progress=self._update_source_hydration_progress,
             )
         except Exception as error:
+            self._hide_render_progress(job)
+            self._set_render_queue_job_status(job, "Failed", "failed")
+            self._active_render_job = None
             self._set_status(
-                f"Failed to render comp for {shot_name}: {error}",
+                f"Failed to render comp for {job.shot_name}: {error}",
                 "error",
             )
+            self._start_next_queued_render()
             return
 
+        self._set_render_queue_job_status(job, "Rendering", "rendering")
+        self._show_render_progress(job, 0.0)
         self._set_status(f"Rendering comp: {result.comp_path.name}...", "normal")
-        self._poll_render_result(result, shot_name)
+        self._active_render_result = result
+        self._poll_render_result(result, job)
 
     def _poll_render_result(
         self,
         result: RenderCompResult,
-        shot_name: str,
+        job: RenderQueueJob,
     ) -> None:
+        progress = read_render_comp_progress(result)
+        if progress is not None and not self._queue_paused:
+            self._update_render_progress(job, progress)
         try:
             completion = poll_render_comp(result)
         except Exception as error:
+            self._hide_render_progress(job)
+            self._set_render_queue_job_status(job, "Failed", "failed")
+            self._active_render_result = None
+            self._active_render_job = None
             self._set_status(
-                f"Failed to render comp for {shot_name}: {error}",
+                f"Failed to render comp for {job.shot_name}: {error}",
                 "error",
             )
+            self._start_next_queued_render()
             return
         if completion is None:
             self.root.after(
                 250,
-                lambda: self._poll_render_result(result, shot_name),
+                lambda: self._poll_render_result(result, job),
             )
             return
 
+        self._hide_render_progress(job)
+        self._set_render_queue_job_status(job, "Complete", "complete")
+        self._active_render_result = None
+        self._active_render_job = None
         hydration = (
             f"Downloaded {completion.hydrated_source_files} source frames. "
             if completion.hydrated_source_files
@@ -969,6 +1106,268 @@ class AutoCompNatronApp:
             f"{hydration}Successfully rendered comp: {completion.comp_path.name}.",
             "success",
         )
+        self._start_next_queued_render()
+
+    def _set_render_queue_job_status(
+        self,
+        job: RenderQueueJob,
+        status: str,
+        tag: str,
+    ) -> None:
+        self.queue_tree.item(
+            job.tree_item_id,
+            values=(f"{job.sequence_name} / {job.shot_name}", status),
+            tags=(tag,),
+        )
+        self.queue_tree.see(job.tree_item_id)
+
+    def _update_render_progress(
+        self,
+        job: RenderQueueJob,
+        progress: RenderCompProgress,
+    ) -> None:
+        same_job = job == self._render_progress_job
+        percent = max(0.0, min(99.0, progress.percent))
+        completed_frames = progress.completed_frames
+        total_frames = progress.total_frames
+        finalizing = progress.finalizing
+        if same_job:
+            percent = max(percent, self._render_progress_percent)
+            completed_frames = max(
+                completed_frames,
+                self._render_progress_completed_frames,
+            )
+            total_frames = max(
+                total_frames,
+                self._render_progress_total_frames,
+            )
+            finalizing = finalizing or self._render_progress_finalizing
+        self._render_progress_completed_frames = completed_frames
+        self._render_progress_total_frames = total_frames
+        self._render_progress_finalizing = finalizing
+        phase = "Finalizing" if finalizing else "Rendering"
+        self._set_render_queue_job_status(
+            job,
+            f"{phase} — {percent:.0f}%",
+            "rendering",
+        )
+        self._show_render_progress(job, percent)
+        if total_frames:
+            output_summary = (
+                f" across {progress.total_outputs} outputs"
+                if progress.total_outputs > 1
+                else ""
+            )
+            self._set_status(
+                f"{phase} {job.shot_name}: {completed_frames}/"
+                f"{total_frames} writer-frames{output_summary} "
+                f"({percent:.0f}%)...",
+                "normal",
+            )
+
+    def _show_render_progress(
+        self,
+        job: RenderQueueJob,
+        percent: float,
+    ) -> None:
+        bounded_percent = max(0.0, min(100.0, percent))
+        if job == self._render_progress_job:
+            bounded_percent = max(
+                bounded_percent,
+                self._render_progress_percent,
+            )
+        else:
+            self._render_progress_completed_frames = 0
+            self._render_progress_total_frames = 0
+            self._render_progress_finalizing = False
+        self._render_progress_job = job
+        self._render_progress_percent = bounded_percent
+        self._position_render_progress()
+
+    def _hide_render_progress(self, job: RenderQueueJob | None = None) -> None:
+        if job is not None and job != self._render_progress_job:
+            return
+        self._render_progress_job = None
+        self._render_progress_percent = 0.0
+        self._render_progress_completed_frames = 0
+        self._render_progress_total_frames = 0
+        self._render_progress_finalizing = False
+        self.render_progress_canvas.place_forget()
+
+    def _position_render_progress(self) -> None:
+        job = self._render_progress_job
+        if job is None or not self.queue_tree.exists(job.tree_item_id):
+            self.render_progress_canvas.place_forget()
+            return
+
+        bounds = self.queue_tree.bbox(job.tree_item_id, "status")
+        if not bounds:
+            self.render_progress_canvas.place_forget()
+            return
+
+        x, y, width, height = bounds
+        horizontal_padding = 4
+        vertical_padding = 4
+        bar_width = max(1, width - (horizontal_padding * 2))
+        bar_height = max(1, height - (vertical_padding * 2))
+        self.render_progress_canvas.place(
+            x=x + horizontal_padding,
+            y=y + vertical_padding,
+            width=bar_width,
+            height=bar_height,
+        )
+        self.render_progress_canvas.delete("all")
+        self.render_progress_canvas.create_rectangle(
+            0,
+            0,
+            bar_width,
+            bar_height,
+            fill="#202124",
+            outline="#161719",
+        )
+        filled_width = int(bar_width * self._render_progress_percent / 100.0)
+        if filled_width:
+            self.render_progress_canvas.create_rectangle(
+                1,
+                1,
+                filled_width,
+                max(1, bar_height - 1),
+                fill="#315f7a",
+                outline="",
+            )
+        self.render_progress_canvas.create_text(
+            bar_width // 2,
+            bar_height // 2,
+            text=f"{self._render_progress_percent:.0f}%",
+            fill="#ffffff",
+            font=("Segoe UI", 8, "bold"),
+        )
+
+    def _clear_render_queue(self) -> None:
+        active_item_id = (
+            self._active_render_job.tree_item_id
+            if self._active_render_job is not None
+            else None
+        )
+        removable_items = [
+            item_id
+            for item_id in self.queue_tree.get_children()
+            if item_id != active_item_id
+        ]
+
+        self._pending_render_jobs.clear()
+        if removable_items:
+            self.queue_tree.delete(*removable_items)
+        if self._active_render_job is None:
+            self._hide_render_progress()
+        else:
+            self._position_render_progress()
+
+        cleared_count = len(removable_items)
+        if cleared_count == 0:
+            message = (
+                "The active render is still running; there are no other queue "
+                "entries to clear."
+                if self._active_render_job is not None
+                else "The render queue is already empty."
+            )
+            self._set_status(message, "normal")
+            return
+
+        noun = "entry" if cleared_count == 1 else "entries"
+        message = f"Cleared {cleared_count} queue {noun}."
+        if self._active_render_job is not None:
+            message += " The active render will continue."
+        self._set_status(message, "success")
+
+    def _update_queue_pause_controls(self) -> None:
+        self.pause_queue_button.configure(
+            state="disabled" if self._queue_paused else "normal"
+        )
+        self.resume_queue_button.configure(
+            state="normal" if self._queue_paused else "disabled"
+        )
+
+    def _pause_render_queue(self) -> None:
+        if self._queue_paused:
+            self._set_status("The render queue is already paused.", "normal")
+            return
+
+        result = self._active_render_result
+        renderer_paused = False
+        if result is not None:
+            try:
+                renderer_paused = pause_render_comp(result)
+            except OSError as error:
+                self._set_status(
+                    f"Could not pause the active Natron render: {error}",
+                    "error",
+                )
+                return
+
+        self._queue_paused = True
+        self._update_queue_pause_controls()
+        if self._active_render_job is not None and renderer_paused:
+            self._set_render_queue_job_status(
+                self._active_render_job,
+                f"Paused — {self._render_progress_percent:.0f}%",
+                "rendering",
+            )
+            self._position_render_progress()
+            self._set_status(
+                f"Paused active render: {self._active_render_job.shot_name}.",
+                "normal",
+            )
+            return
+        self._set_status("Render queue paused.", "normal")
+
+    def _resume_render_queue(self) -> None:
+        if not self._queue_paused:
+            self._set_status("The render queue is already running.", "normal")
+            return
+
+        result = self._active_render_result
+        renderer_resumed = False
+        if result is not None:
+            try:
+                renderer_resumed = resume_render_comp(result)
+            except OSError as error:
+                self._set_status(
+                    f"Could not resume the active Natron render: {error}",
+                    "error",
+                )
+                return
+
+        self._queue_paused = False
+        self._update_queue_pause_controls()
+        if self._active_render_job is not None and renderer_resumed:
+            phase = (
+                "Finalizing" if self._render_progress_finalizing else "Rendering"
+            )
+            self._set_render_queue_job_status(
+                self._active_render_job,
+                f"{phase} — {self._render_progress_percent:.0f}%",
+                "rendering",
+            )
+            self._position_render_progress()
+            self._set_status(
+                f"Resumed active render: {self._active_render_job.shot_name}.",
+                "normal",
+            )
+            return
+        self._set_status("Render queue resumed.", "normal")
+        self._start_next_queued_render()
+
+    def _close(self) -> None:
+        result = self._active_render_result
+        self._active_render_result = None
+        try:
+            if result is not None:
+                terminate_render_comp(result)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        finally:
+            self.root.destroy()
 
     def _update_source_hydration_progress(
         self,
@@ -1267,6 +1666,114 @@ class AutoCompNatronApp:
             variable=self.hero_var,
             style="Option.TCheckbutton",
         ).pack(anchor="w")
+
+    def _build_queue_panel(self, parent: ttk.Frame) -> None:
+        shell = tk.Frame(
+            parent,
+            background=BORDER_COLOR,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        shell.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(12, 0))
+        shell.columnconfigure(0, weight=1)
+        shell.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(shell, style="PanelHeader.TFrame", padding=(16, 9))
+        header.grid(row=0, column=0, sticky="ew", padx=1, pady=(1, 0))
+
+        ttk.Label(
+            header,
+            text="Auto Compositor Queue",
+            style="PanelTitle.TLabel",
+        ).pack(anchor="w")
+
+        content = ttk.Frame(shell, style="Panel.TFrame", padding=(12, 12))
+        content.grid(row=1, column=0, sticky="nsew", padx=1, pady=(0, 1))
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        queue_list = ttk.Frame(content, style="Panel.TFrame")
+        queue_list.grid(row=0, column=0, sticky="nsew")
+        queue_list.columnconfigure(0, weight=1)
+        queue_list.rowconfigure(0, weight=1)
+
+        self.queue_tree = ttk.Treeview(
+            queue_list,
+            columns=("job", "status"),
+            show="headings",
+            selectmode="browse",
+            style="Queue.Treeview",
+        )
+        self.queue_tree.heading("job", text="Job", anchor="w")
+        self.queue_tree.heading("status", text="Status", anchor="w")
+        self.queue_tree.column("job", width=560, minwidth=220, stretch=True)
+        self.queue_tree.column("status", width=150, minwidth=100, stretch=False)
+        self.queue_tree.grid(row=0, column=0, sticky="nsew")
+        self.queue_tree.tag_configure("queued", foreground=TEXT_COLOR)
+        self.queue_tree.tag_configure("preparing", foreground="#ffcf70")
+        self.queue_tree.tag_configure("rendering", foreground="#74b9ff")
+        self.queue_tree.tag_configure("complete", foreground="#74d680")
+        self.queue_tree.tag_configure("failed", foreground="#ff7b72")
+
+        self.render_progress_canvas = tk.Canvas(
+            self.queue_tree,
+            background="#202124",
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        self.queue_tree.bind(
+            "<Configure>",
+            lambda _event: self._position_render_progress(),
+            add="+",
+        )
+
+        queue_scrollbar = ttk.Scrollbar(
+            queue_list,
+            orient="vertical",
+        )
+
+        def scroll_queue(*arguments: str) -> None:
+            self.queue_tree.yview(*arguments)
+            self._position_render_progress()
+
+        def update_queue_scrollbar(first: str, last: str) -> None:
+            queue_scrollbar.set(first, last)
+            self._position_render_progress()
+
+        queue_scrollbar.configure(command=scroll_queue)
+        queue_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.queue_tree.configure(yscrollcommand=update_queue_scrollbar)
+
+        controls = ttk.Frame(content, style="Panel.TFrame")
+        controls.grid(row=0, column=1, sticky="ns", padx=(12, 0))
+
+        self.pause_queue_button = ttk.Button(
+            controls,
+            text="Pause Queue",
+            command=self._pause_render_queue,
+            style="QueueControl.TButton",
+            width=15,
+        )
+        self.pause_queue_button.pack(fill="x", pady=(0, 8))
+
+        self.resume_queue_button = ttk.Button(
+            controls,
+            text="Resume Queue",
+            command=self._resume_render_queue,
+            style="QueueControl.TButton",
+            width=15,
+        )
+        self.resume_queue_button.pack(fill="x", pady=(0, 8))
+        self._update_queue_pause_controls()
+
+        self.clear_queue_button = ttk.Button(
+            controls,
+            text="Clear Queue",
+            command=self._clear_render_queue,
+            style="QueueControl.TButton",
+            width=15,
+        )
+        self.clear_queue_button.pack(fill="x")
 
     def run(self) -> None:
         self.root.mainloop()

@@ -351,6 +351,28 @@ def _load_plugin_with_extension(monkeypatch):
     return runpy.run_path(str(PLUGIN_FILE))
 
 
+def test_submit_render_tasks_uses_natrons_python_task_sequence_contract(
+    monkeypatch,
+) -> None:
+    monkeypatch.syspath_prepend(str(PLUGIN_FILE.parent))
+    extension = runpy.run_path(str(PLUGIN_FILE.with_name("SmartWriteExt.py")))
+    writers = [object(), object(), object()]
+    tasks = [
+        (writers[0], 1001, 1040, 1),
+        (writers[1], 1101, 1123, 2),
+        (writers[2], 1200, 1204, 1),
+    ]
+    calls = []
+
+    class RenderApp:
+        def render(self, *args) -> None:
+            calls.append(args)
+
+    extension["_submit_render_tasks"](RenderApp(), tasks)
+
+    assert calls == [(tasks,)]
+
+
 def test_smart_write_metadata_and_initial_scaffold() -> None:
     plugin = runpy.run_path(str(PLUGIN_FILE))
 
@@ -569,6 +591,7 @@ def test_exr_render_buttons_sync_every_exposed_setting_before_render(
         render_snapshots = []
 
         def capture_render(tasks) -> None:
+            tasks = list(tasks)
             render_snapshots.append(
                 {
                     "tasks": list(tasks),
@@ -656,6 +679,7 @@ def test_hero_render_buttons_sync_every_exposed_setting_before_submission(
     render_calls = []
 
     def capture_render(tasks) -> None:
+        tasks = list(tasks)
         hero_task = next(task for task in tasks if task[0] is hero_writer)
         assert hero_task[1:] == (1101, 1123, 2)
         assert {
@@ -748,6 +772,35 @@ def test_refresh_rehides_current_ui_version_marker(monkeypatch, tmp_path: Path) 
     plugin["refreshOutputs"](app, group)
 
     assert marker.visible is False
+
+
+def test_refresh_preserves_saved_layer_choices_when_writer_menu_is_empty(
+    monkeypatch, tmp_path: Path
+) -> None:
+    plugin = _load_plugin_with_extension(monkeypatch)
+    project_directory = tmp_path / "show" / "shot" / "comp" / "natron"
+    project_directory.mkdir(parents=True)
+    app = FakeApp(project_directory)
+    group = FakeGroup()
+    app.groups.append(group)
+    plugin["createInstance"](app, group)
+
+    saved_options = [
+        "uk.co.thefoundry.OfxImagePlaneColour",
+        "uk.co.thefoundry.OfxImagePlaneStereoDisparityLeft",
+        "uk.co.thefoundry.OfxImagePlaneStereoDisparityRight",
+        "uk.co.thefoundry.OfxImagePlaneBackMotionVector",
+        "uk.co.thefoundry.OfxImagePlaneForwardMotionVector",
+    ]
+    layer_choice = group.getParam("exr_outputChannels")
+    layer_choice.setOptions(saved_options)
+    layer_choice.set(0)
+    assert group.getNode("EXRWrite").getParam("outputChannels").getOptions() == []
+
+    plugin["refreshOutputs"](app, group)
+
+    assert layer_choice.getOptions() == saved_options
+    assert layer_choice.get() == 0
 
 
 def test_smart_write_configures_exact_shot_output_paths(
@@ -1294,6 +1347,7 @@ def test_video_render_buttons_resync_every_writer_option_before_submit(
         snapshots = []
 
         def capture_render(tasks) -> None:
+            tasks = list(tasks)
             snapshots.append(
                 {
                     "tasks": [(task[0].script_name, *task[1:]) for task in tasks],
