@@ -10,6 +10,7 @@ import shutil
 TEMPLATE_SEQUENCE = "ZZZ"
 TEMPLATE_SHOT_NUMBER = "0000"
 INITIAL_COMP_VERSION = 1
+BUNDLED_TEMPLATE_FILENAME = "default_comp_template.ntp"
 _PROJECT_PATHS_VALUE = re.compile(
     r"(<Name>projectPaths</Name>.*?<Value>)(.*?)(</Value>)",
     re.DOTALL,
@@ -72,6 +73,10 @@ def get_comp_path(
     )
 
 
+def get_bundled_template_path() -> Path:
+    return Path(__file__).resolve().parent / "templates" / BUNDLED_TEMPLATE_FILENAME
+
+
 def get_template_candidates(
     show_root: str | Path,
     sequence_name: str,
@@ -93,6 +98,9 @@ def get_template_candidates(
     )
     if fallback_path not in candidates:
         candidates.append(fallback_path)
+    bundled_template_path = get_bundled_template_path()
+    if bundled_template_path not in candidates:
+        candidates.append(bundled_template_path)
     return tuple(candidates)
 
 
@@ -221,6 +229,5 @@ def create_comp(
     return CreateCompResult(
         target_path=target_path,
         template_path=template_path,
-        used_fallback_template=template_path == template_candidates[-1]
-        and len(template_candidates) > 1,
+        used_fallback_template=template_path != template_candidates[0],
     )

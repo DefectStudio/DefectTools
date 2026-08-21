@@ -154,7 +154,7 @@ class OpenCompTests(unittest.TestCase):
     def test_create_and_open_creates_missing_comp_then_opens_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             show_root = Path(temporary_directory) / "show"
-            _, fallback_template = get_template_candidates(show_root, "BSH")
+            _, fallback_template, _ = get_template_candidates(show_root, "BSH")
             fallback_template.parent.mkdir(parents=True)
             fallback_template.write_text(
                 "<Project>"

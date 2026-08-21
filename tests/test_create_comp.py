@@ -3,12 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from portable_pipe_tools.auto_comp_natron.create_comp import (
     CompAlreadyExistsError,
     CompTemplateNotFoundError,
     SmartWriteOutputOptions,
     create_comp,
+    get_bundled_template_path,
     get_comp_path,
     get_template_candidates,
 )
@@ -18,7 +20,7 @@ class CreateCompTests(unittest.TestCase):
     def test_sequence_template_is_preferred(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             show_root = Path(temporary_directory) / "show"
-            sequence_template, fallback_template = get_template_candidates(
+            sequence_template, fallback_template, _ = get_template_candidates(
                 show_root,
                 "BSH",
             )
@@ -36,7 +38,7 @@ class CreateCompTests(unittest.TestCase):
     def test_zzz_template_is_used_when_sequence_template_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             show_root = Path(temporary_directory) / "show"
-            _, fallback_template = get_template_candidates(show_root, "BSH")
+            _, fallback_template, _ = get_template_candidates(show_root, "BSH")
             fallback_template.parent.mkdir(parents=True)
             fallback_template.write_bytes(b"fallback template")
 
@@ -49,6 +51,20 @@ class CreateCompTests(unittest.TestCase):
                 result.target_path,
             )
             self.assertEqual(b"fallback template", result.target_path.read_bytes())
+
+    def test_bundled_template_is_used_as_the_last_resort(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            show_root = Path(temporary_directory) / "show"
+
+            result = create_comp(show_root, "BSH", "BSH_000_0010")
+
+            self.assertEqual(get_bundled_template_path(), result.template_path)
+            self.assertTrue(result.used_fallback_template)
+            self.assertTrue(result.target_path.is_file())
+            self.assertIn(
+                "<boost_serialization",
+                result.target_path.read_text(encoding="utf-8"),
+            )
 
     def test_existing_comp_is_never_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -65,7 +81,7 @@ class CreateCompTests(unittest.TestCase):
     def test_copied_natron_project_path_points_to_target_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             show_root = Path(temporary_directory) / "show"
-            _, fallback_template = get_template_candidates(show_root, "BSH")
+            _, fallback_template, _ = get_template_candidates(show_root, "BSH")
             fallback_template.parent.mkdir(parents=True)
             fallback_template.write_text(
                 "<Project><Name>projectPaths</Name><Value>"
@@ -86,7 +102,7 @@ class CreateCompTests(unittest.TestCase):
     def test_smart_write_output_choices_are_persisted_in_new_comp(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             show_root = Path(temporary_directory) / "show"
-            _, fallback_template = get_template_candidates(show_root, "BSH")
+            _, fallback_template, _ = get_template_candidates(show_root, "BSH")
             fallback_template.parent.mkdir(parents=True)
             fallback_template.write_text(
                 "<Project>"
@@ -124,13 +140,22 @@ class CreateCompTests(unittest.TestCase):
                     project_text,
                 )
 
-    def test_missing_templates_report_both_checked_locations(self) -> None:
+    def test_missing_templates_report_all_checked_locations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             show_root = Path(temporary_directory) / "show"
-            expected_candidates = get_template_candidates(show_root, "BSH")
+            expected_candidates = (
+                show_root / "missing-sequence-template.ntp",
+                show_root / "missing-show-template.ntp",
+                show_root / "missing-bundled-template.ntp",
+            )
 
-            with self.assertRaises(CompTemplateNotFoundError) as context:
-                create_comp(show_root, "BSH", "BSH_000_0010")
+            with patch(
+                "portable_pipe_tools.auto_comp_natron.create_comp.create_comp."
+                "get_template_candidates",
+                return_value=expected_candidates,
+            ):
+                with self.assertRaises(CompTemplateNotFoundError) as context:
+                    create_comp(show_root, "BSH", "BSH_000_0010")
 
             self.assertEqual(expected_candidates, context.exception.candidates)
 
