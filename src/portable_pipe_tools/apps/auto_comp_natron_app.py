@@ -11,6 +11,7 @@ from portable_pipe_tools.auto_comp_natron.create_comp import (
     CompTemplateNotFoundError,
     SmartWriteOutputOptions,
     create_comp,
+    get_comp_path,
 )
 from portable_pipe_tools.auto_comp_natron.open_comp import (
     CompNotFoundError,
@@ -53,6 +54,8 @@ BORDER_COLOR = "#161719"
 TEXT_COLOR = "#d8dadd"
 MUTED_TEXT = "#a5a9ae"
 SELECTION_COLOR = "#315f7a"
+COMP_PRESENT_COLOR = "#74d680"
+COMP_MISSING_COLOR = "#ffcf70"
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,7 @@ class AutoCompNatronApp:
         self.shot_names: list[str] = []
         self.shot_rows_by_name: dict[str, ShotRow] = {}
         self._pending_render_jobs: list[RenderQueueJob] = []
+        self._render_job_keys_by_item_id: dict[str, tuple[str, str, str]] = {}
         self._queue_paused = False
         self._active_render_job: RenderQueueJob | None = None
         self._active_render_result: RenderCompResult | None = None
@@ -371,6 +375,14 @@ class AutoCompNatronApp:
             activeforeground="#ffffff",
             borderwidth=0,
         )
+        self._configure_shot_context_menu(comp_exists=True)
+
+        self._build_options_panel(workspace)
+        self._build_queue_panel(workspace)
+        self._build_status_bar(outer)
+
+    def _configure_shot_context_menu(self, *, comp_exists: bool) -> None:
+        self.shot_context_menu.delete(0, tk.END)
         self.shot_context_menu.add_command(
             label="Create Comp",
             command=self._create_selected_comp,
@@ -379,6 +391,9 @@ class AutoCompNatronApp:
             label="Create and Open Comp",
             command=self._create_and_open_selected_comp,
         )
+        if not comp_exists:
+            return
+
         self.shot_context_menu.add_command(
             label="Open Comp",
             command=self._open_selected_comp,
@@ -387,15 +402,15 @@ class AutoCompNatronApp:
             label="Render Comp",
             command=self._render_selected_comp,
         )
+        self.shot_context_menu.add_command(
+            label="Add to Render Queue",
+            command=self._add_selected_comps_to_render_queue,
+        )
         self.shot_context_menu.add_separator()
         self.shot_context_menu.add_command(
             label="Open in Explorer",
             command=self._open_selected_shot_in_explorer,
         )
-
-        self._build_options_panel(workspace)
-        self._build_queue_panel(workspace)
-        self._build_status_bar(outer)
 
     def _build_status_bar(self, parent: ttk.Frame) -> None:
         status_bar = ttk.Frame(
@@ -703,6 +718,7 @@ class AutoCompNatronApp:
         }
         self.shot_names = list(self.shot_rows_by_name)
         self._replace_list_values(self.shot_list, self.shot_names)
+        self._refresh_shot_comp_colors(show_path, sequence_name)
 
         selected_shot = self._preferred_value(preferred_shot, self.shot_names)
         if selected_shot:
@@ -789,6 +805,18 @@ class AutoCompNatronApp:
             return "break"
 
         self._select_shot_for_context_menu(index)
+        show_path = self._selected_show_path()
+        sequence_name = self._selected_value(
+            self.sequence_list,
+            self.sequence_names,
+        )
+        shot_name = self.shot_names[index]
+        comp_exists = (
+            show_path is not None
+            and bool(sequence_name)
+            and get_comp_path(show_path, sequence_name, shot_name).is_file()
+        )
+        self._configure_shot_context_menu(comp_exists=comp_exists)
         try:
             self.shot_context_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -925,6 +953,7 @@ class AutoCompNatronApp:
             f"{hydration}{action} comp: {result.comp_path.name}.",
             "success",
         )
+        self._refresh_shot_comp_colors(show_path, sequence_name)
 
     def _open_selected_comp(self) -> None:
         show_path = self._selected_show_path()
@@ -976,6 +1005,12 @@ class AutoCompNatronApp:
         )
 
     def _render_selected_comp(self) -> None:
+        self._queue_selected_comps(start_if_idle=True)
+
+    def _add_selected_comps_to_render_queue(self) -> None:
+        self._queue_selected_comps(start_if_idle=False)
+
+    def _queue_selected_comps(self, *, start_if_idle: bool) -> None:
         show_path = self._selected_show_path()
         sequence_name = self._selected_value(
             self.sequence_list,
@@ -984,15 +1019,29 @@ class AutoCompNatronApp:
         shot_names = self._selected_values(self.shot_list, self.shot_names)
         if show_path is None or not sequence_name or not shot_names:
             self._set_status(
-                "Select one or more shots to render their comps.",
+                (
+                    "Select one or more shots to render their comps."
+                    if start_if_idle
+                    else "Select one or more shots to add to the render queue."
+                ),
                 "warning",
             )
             return
-        if not self._ensure_natron_executable():
+        if start_if_idle and not self._ensure_natron_executable():
             return
 
+        existing_job_keys = set(self._render_job_keys_by_item_id.values())
         new_jobs: list[RenderQueueJob] = []
+        duplicate_count = 0
         for shot_name in shot_names:
+            job_key = self._render_queue_job_key(
+                show_path,
+                sequence_name,
+                shot_name,
+            )
+            if job_key in existing_job_keys:
+                duplicate_count += 1
+                continue
             tree_item_id = self.queue_tree.insert(
                 "",
                 "end",
@@ -1007,18 +1056,63 @@ class AutoCompNatronApp:
                     tree_item_id=tree_item_id,
                 )
             )
+            self._render_job_keys_by_item_id[tree_item_id] = job_key
+            existing_job_keys.add(job_key)
+
+        if not new_jobs:
+            noun = "comp is" if duplicate_count == 1 else "comps are"
+            self._set_status(
+                f"The selected {noun} already in the render queue.",
+                "normal",
+            )
+            if (
+                start_if_idle
+                and self._active_render_job is None
+                and self._pending_render_jobs
+            ):
+                self._start_next_queued_render()
+            return
 
         self._pending_render_jobs.extend(new_jobs)
         self.queue_tree.see(new_jobs[-1].tree_item_id)
-        if self._active_render_job is not None:
+        self._update_queue_pause_controls()
+        if not start_if_idle or self._active_render_job is not None:
             noun = "comp" if len(new_jobs) == 1 else "comps"
             self._set_status(
-                f"Added {len(new_jobs)} {noun} to the render queue.",
+                self._render_queue_added_message(
+                    len(new_jobs),
+                    duplicate_count,
+                    noun,
+                ),
                 "normal",
             )
             return
 
         self._start_next_queued_render()
+
+    @staticmethod
+    def _render_queue_job_key(
+        show_path: Path,
+        sequence_name: str,
+        shot_name: str,
+    ) -> tuple[str, str, str]:
+        return (
+            str(show_path.resolve(strict=False)).casefold(),
+            sequence_name.casefold(),
+            shot_name.casefold(),
+        )
+
+    @staticmethod
+    def _render_queue_added_message(
+        added_count: int,
+        duplicate_count: int,
+        noun: str,
+    ) -> str:
+        message = f"Added {added_count} {noun} to the render queue."
+        if duplicate_count:
+            duplicate_noun = "duplicate" if duplicate_count == 1 else "duplicates"
+            message += f" Skipped {duplicate_count} {duplicate_noun}."
+        return message
 
     def _start_next_queued_render(self) -> None:
         if self._queue_paused:
@@ -1034,6 +1128,7 @@ class AutoCompNatronApp:
 
         job = self._pending_render_jobs.pop(0)
         self._active_render_job = job
+        self._update_queue_pause_controls()
         self._set_render_queue_job_status(job, "Preparing", "preparing")
         self._set_status(
             f"Checking Dropbox source files for {job.shot_name}...",
@@ -1070,6 +1165,11 @@ class AutoCompNatronApp:
         result: RenderCompResult,
         job: RenderQueueJob,
     ) -> None:
+        if (
+            result is not self._active_render_result
+            or job is not self._active_render_job
+        ):
+            return
         progress = read_render_comp_progress(result)
         if progress is not None and not self._queue_paused:
             self._update_render_progress(job, progress)
@@ -1244,48 +1344,150 @@ class AutoCompNatronApp:
         )
 
     def _clear_render_queue(self) -> None:
+        queue_items = self.queue_tree.get_children()
+        active_result = self._active_render_result
+        active_cancelled = False
+        if active_result is not None:
+            try:
+                active_cancelled = terminate_render_comp(active_result)
+            except (OSError, subprocess.SubprocessError) as error:
+                self._set_status(
+                    f"Could not cancel the active Natron render: {error}",
+                    "error",
+                )
+                return
+
+        self._active_render_result = None
+        self._active_render_job = None
+        self._pending_render_jobs.clear()
+        self._render_job_keys_by_item_id.clear()
+        self._queue_paused = False
+        self._update_queue_pause_controls()
+        self._hide_render_progress()
+        if queue_items:
+            self.queue_tree.delete(*queue_items)
+
+        cleared_count = len(queue_items)
+        if cleared_count == 0:
+            self._set_status("The render queue is already empty.", "normal")
+            return
+
+        noun = "entry" if cleared_count == 1 else "entries"
+        message = f"Cleared {cleared_count} queue {noun}."
+        if active_cancelled:
+            message = f"Cancelled the active render and {message.lower()}"
+        self._set_status(message, "success")
+
+    def _show_render_queue_context_menu(self, event: tk.Event) -> str:
+        item_id = self.queue_tree.identify_row(event.y)
+        if not item_id:
+            return "break"
+
+        self.queue_tree.selection_set(item_id)
+        self.queue_tree.focus(item_id)
         active_item_id = (
             self._active_render_job.tree_item_id
             if self._active_render_job is not None
             else None
         )
-        removable_items = [
-            item_id
-            for item_id in self.queue_tree.get_children()
-            if item_id != active_item_id
-        ]
+        self.queue_context_menu.entryconfigure(
+            0,
+            label=(
+                "Cancel Render"
+                if item_id == active_item_id
+                else "Remove from Queue"
+            ),
+            state="normal",
+        )
+        try:
+            self.queue_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.queue_context_menu.grab_release()
+        return "break"
 
-        self._pending_render_jobs.clear()
-        if removable_items:
-            self.queue_tree.delete(*removable_items)
-        if self._active_render_job is None:
-            self._hide_render_progress()
-        else:
-            self._position_render_progress()
+    def _run_selected_render_queue_action(self) -> None:
+        selected_items = self.queue_tree.selection()
+        if not selected_items:
+            return
+        item_id = selected_items[0]
+        if (
+            self._active_render_job is not None
+            and item_id == self._active_render_job.tree_item_id
+        ):
+            self._cancel_active_render_queue_item()
+            return
+        self._remove_selected_render_queue_item()
 
-        cleared_count = len(removable_items)
-        if cleared_count == 0:
-            message = (
-                "The active render is still running; there are no other queue "
-                "entries to clear."
-                if self._active_render_job is not None
-                else "The render queue is already empty."
-            )
-            self._set_status(message, "normal")
+    def _cancel_active_render_queue_item(self) -> None:
+        job = self._active_render_job
+        result = self._active_render_result
+        if job is None or result is None:
+            self._set_status("There is no active render to cancel.", "normal")
             return
 
-        noun = "entry" if cleared_count == 1 else "entries"
-        message = f"Cleared {cleared_count} queue {noun}."
-        if self._active_render_job is not None:
-            message += " The active render will continue."
-        self._set_status(message, "success")
+        try:
+            terminate_render_comp(result)
+        except (OSError, subprocess.SubprocessError) as error:
+            self._set_status(
+                f"Could not cancel the active Natron render: {error}",
+                "error",
+            )
+            return
+
+        self._active_render_result = None
+        self._active_render_job = None
+        self._hide_render_progress(job)
+        self._set_render_queue_job_status(job, "Canceled", "canceled")
+        self._set_status(f"Canceled render: {job.shot_name}.", "normal")
+        self._start_next_queued_render()
+
+    def _remove_selected_render_queue_item(self) -> None:
+        selected_items = self.queue_tree.selection()
+        if not selected_items:
+            return
+        item_id = selected_items[0]
+        if (
+            self._active_render_job is not None
+            and item_id == self._active_render_job.tree_item_id
+        ):
+            self._set_status(
+                "The active render cannot be removed from the queue; allow it "
+                "to finish first.",
+                "normal",
+            )
+            return
+
+        values = self.queue_tree.item(item_id, "values")
+        job_label = str(values[0]) if values else "entry"
+        self._pending_render_jobs = [
+            job
+            for job in self._pending_render_jobs
+            if job.tree_item_id != item_id
+        ]
+        self._render_job_keys_by_item_id.pop(item_id, None)
+        self._update_queue_pause_controls()
+        self.queue_tree.delete(item_id)
+        self._position_render_progress()
+        self._set_status(
+            f"Removed {job_label} from the render queue.",
+            "success",
+        )
 
     def _update_queue_pause_controls(self) -> None:
+        can_start_pending_jobs = (
+            not self._queue_paused
+            and self._active_render_job is None
+            and bool(self._pending_render_jobs)
+        )
         self.pause_queue_button.configure(
             state="disabled" if self._queue_paused else "normal"
         )
         self.resume_queue_button.configure(
-            state="normal" if self._queue_paused else "disabled"
+            state=(
+                "normal"
+                if self._queue_paused or can_start_pending_jobs
+                else "disabled"
+            )
         )
 
     def _pause_render_queue(self) -> None:
@@ -1323,7 +1525,15 @@ class AutoCompNatronApp:
 
     def _resume_render_queue(self) -> None:
         if not self._queue_paused:
-            self._set_status("The render queue is already running.", "normal")
+            if self._active_render_job is not None:
+                self._set_status("The render queue is already running.", "normal")
+                return
+            if not self._pending_render_jobs:
+                self._set_status("There are no queued renders to start.", "normal")
+                return
+            if not self._ensure_natron_executable():
+                return
+            self._start_next_queued_render()
             return
 
         result = self._active_render_result
@@ -1455,6 +1665,7 @@ class AutoCompNatronApp:
             else "warning"
         )
         self._set_status(message, level)
+        self._refresh_shot_comp_colors(show_path, sequence_name)
 
     def _smart_write_output_options(self) -> SmartWriteOutputOptions:
         return SmartWriteOutputOptions(
@@ -1528,6 +1739,28 @@ class AutoCompNatronApp:
             return self.shot_names[active_index]
         first_selected = min(selected_indexes)
         return self.shot_names[first_selected]
+
+    def _refresh_shot_comp_colors(
+        self,
+        show_path: Path | None = None,
+        sequence_name: str = "",
+    ) -> None:
+        show_path = show_path or self._selected_show_path()
+        sequence_name = sequence_name or self._selected_value(
+            self.sequence_list,
+            self.sequence_names,
+        )
+        if show_path is None or not sequence_name:
+            return
+
+        for index, shot_name in enumerate(self.shot_names):
+            comp_path = get_comp_path(show_path, sequence_name, shot_name)
+            color = (
+                COMP_PRESENT_COLOR
+                if comp_path.is_file()
+                else COMP_MISSING_COLOR
+            )
+            self.shot_list.itemconfigure(index, foreground=color)
 
     @staticmethod
     def _replace_list_values(listbox: tk.Listbox, values: list[str]) -> None:
@@ -1714,6 +1947,25 @@ class AutoCompNatronApp:
         self.queue_tree.tag_configure("rendering", foreground="#74b9ff")
         self.queue_tree.tag_configure("complete", foreground="#74d680")
         self.queue_tree.tag_configure("failed", foreground="#ff7b72")
+        self.queue_tree.tag_configure("canceled", foreground="#ff7b72")
+        self.queue_tree.bind(
+            "<Button-3>",
+            self._show_render_queue_context_menu,
+        )
+
+        self.queue_context_menu = tk.Menu(
+            self.root,
+            tearoff=False,
+            background="#303236",
+            foreground=TEXT_COLOR,
+            activebackground=SELECTION_COLOR,
+            activeforeground="#ffffff",
+            borderwidth=0,
+        )
+        self.queue_context_menu.add_command(
+            label="Remove from Queue",
+            command=self._run_selected_render_queue_action,
+        )
 
         self.render_progress_canvas = tk.Canvas(
             self.queue_tree,

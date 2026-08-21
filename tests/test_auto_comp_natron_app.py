@@ -7,6 +7,8 @@ from unittest.mock import Mock, call, patch
 
 from portable_pipe_tools.apps.auto_comp_natron_app import (
     AutoCompNatronApp,
+    COMP_MISSING_COLOR,
+    COMP_PRESENT_COLOR,
     RenderQueueJob,
 )
 from portable_pipe_tools.auto_comp_natron.create_comp import (
@@ -14,6 +16,7 @@ from portable_pipe_tools.auto_comp_natron.create_comp import (
     CompTemplateNotFoundError,
     CreateCompResult,
     SmartWriteOutputOptions,
+    get_comp_path,
 )
 from portable_pipe_tools.auto_comp_natron.open_comp import (
     CompNotFoundError,
@@ -322,8 +325,12 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 app.shot_context_menu.entrycget(3, "label"),
             )
             self.assertEqual(
+                "Add to Render Queue",
+                app.shot_context_menu.entrycget(4, "label"),
+            )
+            self.assertEqual(
                 "Open in Explorer",
-                app.shot_context_menu.entrycget(5, "label"),
+                app.shot_context_menu.entrycget(6, "label"),
             )
             self.assertEqual(
                 "Create All Comps",
@@ -333,6 +340,11 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 "Open in Explorer",
                 app.sequence_context_menu.entrycget(2, "label"),
             )
+            self.assertEqual(
+                "Remove from Queue",
+                app.queue_context_menu.entrycget(0, "label"),
+            )
+            self.assertTrue(app.queue_tree.bind("<Button-3>"))
         finally:
             app.root.destroy()
 
@@ -764,6 +776,124 @@ class AutoCompNatronAppTests(unittest.TestCase):
             finally:
                 app.root.destroy()
 
+    def test_shot_names_show_whether_the_comp_file_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            comp_path = get_comp_path(
+                repository / "alpha",
+                "AAA",
+                "AAA_000_0020",
+            )
+            comp_path.parent.mkdir(parents=True)
+            comp_path.touch()
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+
+                self.assertEqual(
+                    COMP_MISSING_COLOR,
+                    str(app.shot_list.itemcget(0, "foreground")),
+                )
+                self.assertEqual(
+                    COMP_PRESENT_COLOR,
+                    str(app.shot_list.itemcget(1, "foreground")),
+                )
+
+                first_comp_path = get_comp_path(
+                    repository / "alpha",
+                    "AAA",
+                    "AAA_000_0010",
+                )
+                first_comp_path.parent.mkdir(parents=True)
+                first_comp_path.touch()
+                selected_indexes = app.shot_list.curselection()
+
+                app._refresh_shot_comp_colors()
+
+                self.assertEqual(
+                    COMP_PRESENT_COLOR,
+                    str(app.shot_list.itemcget(0, "foreground")),
+                )
+                self.assertEqual(selected_indexes, app.shot_list.curselection())
+            finally:
+                app.root.destroy()
+
+    def test_missing_comp_context_menu_only_offers_creation_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            comp_path = get_comp_path(
+                repository / "alpha",
+                "AAA",
+                "AAA_000_0020",
+            )
+            comp_path.parent.mkdir(parents=True)
+            comp_path.touch()
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            event = Mock(y=10, x_root=100, y_root=100)
+
+            try:
+                app._set_repository_connected(repository)
+                with (
+                    patch.object(app.shot_list, "nearest", return_value=0),
+                    patch.object(
+                        app.shot_list,
+                        "bbox",
+                        return_value=(0, 0, 100, 20),
+                    ),
+                    patch.object(app.shot_context_menu, "tk_popup"),
+                ):
+                    app._show_shot_context_menu(event)
+
+                self.assertEqual(1, app.shot_context_menu.index("end"))
+                self.assertEqual(
+                    "Create Comp",
+                    app.shot_context_menu.entrycget(0, "label"),
+                )
+                self.assertEqual(
+                    "Create and Open Comp",
+                    app.shot_context_menu.entrycget(1, "label"),
+                )
+
+                with (
+                    patch.object(app.shot_list, "nearest", return_value=1),
+                    patch.object(
+                        app.shot_list,
+                        "bbox",
+                        return_value=(0, 0, 100, 20),
+                    ),
+                    patch.object(app.shot_context_menu, "tk_popup"),
+                ):
+                    app._show_shot_context_menu(event)
+
+                self.assertEqual(6, app.shot_context_menu.index("end"))
+                self.assertEqual(
+                    "Open Comp",
+                    app.shot_context_menu.entrycget(2, "label"),
+                )
+                self.assertEqual(
+                    "Render Comp",
+                    app.shot_context_menu.entrycget(3, "label"),
+                )
+                self.assertEqual(
+                    "Add to Render Queue",
+                    app.shot_context_menu.entrycget(4, "label"),
+                )
+            finally:
+                app.root.destroy()
+
     def test_render_comp_targets_right_clicked_shot_and_reports_completion(
         self,
     ) -> None:
@@ -835,6 +965,107 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 )
                 self.assertIsNone(app._active_render_job)
                 self.assertIsNone(app._active_render_result)
+            finally:
+                app.root.destroy()
+
+    def test_add_to_render_queue_adds_selected_shots_without_starting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+                app.shot_list.selection_clear(0, "end")
+                app.shot_list.selection_set(0, 1)
+                with (
+                    patch.object(app, "_start_next_queued_render") as start_next,
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "render_comp"
+                    ) as render_mock,
+                ):
+                    app.shot_context_menu.invoke(4)
+
+                start_next.assert_not_called()
+                render_mock.assert_not_called()
+                self.assertIsNone(app._active_render_job)
+                self.assertEqual(
+                    ["AAA_000_0010", "AAA_000_0020"],
+                    [job.shot_name for job in app._pending_render_jobs],
+                )
+                self.assertEqual(
+                    [
+                        ("AAA / AAA_000_0010", "Queued"),
+                        ("AAA / AAA_000_0020", "Queued"),
+                    ],
+                    [
+                        app.queue_tree.item(item, "values")
+                        for item in app.queue_tree.get_children()
+                    ],
+                )
+                self.assertEqual("normal", str(app.resume_queue_button["state"]))
+                self.assertEqual(
+                    "Added 2 comps to the render queue.",
+                    app.status_var.get(),
+                )
+                original_items = app.queue_tree.get_children()
+                app.shot_context_menu.invoke(4)
+                self.assertEqual(original_items, app.queue_tree.get_children())
+                self.assertEqual(2, len(app._pending_render_jobs))
+                self.assertEqual(
+                    "The selected comps are already in the render queue.",
+                    app.status_var.get(),
+                )
+
+                with (
+                    patch.object(
+                        app,
+                        "_ensure_natron_executable",
+                        return_value=True,
+                    ) as ensure_natron,
+                    patch.object(app, "_start_next_queued_render") as start_next,
+                ):
+                    app.resume_queue_button.invoke()
+
+                ensure_natron.assert_called_once_with()
+                start_next.assert_called_once_with()
+            finally:
+                app.root.destroy()
+
+    def test_render_queue_mixed_selection_skips_only_duplicate_shots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+                app.shot_list.selection_clear(0, "end")
+                app.shot_list.selection_set(0)
+                app._add_selected_comps_to_render_queue()
+                app.shot_list.selection_set(1)
+                app._add_selected_comps_to_render_queue()
+
+                self.assertEqual(
+                    ["AAA_000_0010", "AAA_000_0020"],
+                    [job.shot_name for job in app._pending_render_jobs],
+                )
+                self.assertEqual(2, len(app.queue_tree.get_children()))
+                self.assertEqual(
+                    "Added 1 comp to the render queue. Skipped 1 duplicate.",
+                    app.status_var.get(),
+                )
             finally:
                 app.root.destroy()
 
@@ -961,7 +1192,7 @@ class AutoCompNatronAppTests(unittest.TestCase):
             finally:
                 app.root.destroy()
 
-    def test_clear_queue_keeps_active_render_and_removes_waiting_jobs(self) -> None:
+    def test_clear_queue_cancels_active_render_and_removes_every_job(self) -> None:
         app = AutoCompNatronApp(prompt_on_startup=False)
         app.root.withdraw()
 
@@ -990,22 +1221,52 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 shot_name="AAA_000_0020",
                 tree_item_id=waiting_item_id,
             )
-            app._active_render_job = active_job
-            app._pending_render_jobs.append(waiting_job)
-
-            app.clear_queue_button.invoke()
-
-            self.assertEqual((active_item_id,), app.queue_tree.get_children())
-            self.assertEqual(
-                ("AAA / AAA_000_0010", "Rendering"),
-                app.queue_tree.item(active_item_id, "values"),
+            render_result = RenderCompResult(
+                comp_path=Path("AAA_000_0010_comp_v001.ntp"),
+                process=Mock(),
+                status_path=Path("status.json"),
             )
+            app._active_render_job = active_job
+            app._active_render_result = render_result
+            app._pending_render_jobs.append(waiting_job)
+            app._queue_paused = True
+            app._update_queue_pause_controls()
+
+            with patch(
+                "portable_pipe_tools.apps.auto_comp_natron_app."
+                "terminate_render_comp",
+                return_value=True,
+            ) as terminate_mock:
+                app.clear_queue_button.invoke()
+
+            terminate_mock.assert_called_once_with(render_result)
+            self.assertEqual((), app.queue_tree.get_children())
             self.assertEqual([], app._pending_render_jobs)
-            self.assertIs(active_job, app._active_render_job)
+            self.assertIsNone(app._active_render_job)
+            self.assertIsNone(app._active_render_result)
+            self.assertFalse(app._queue_paused)
+            self.assertIsNone(app._render_progress_job)
+            self.assertEqual("normal", str(app.pause_queue_button["state"]))
+            self.assertEqual("disabled", str(app.resume_queue_button["state"]))
             self.assertEqual(
-                "Cleared 1 queue entry. The active render will continue.",
+                "Cancelled the active render and cleared 2 queue entries.",
                 app.status_var.get(),
             )
+
+            with (
+                patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app."
+                    "read_render_comp_progress"
+                ) as read_progress,
+                patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app."
+                    "poll_render_comp"
+                ) as poll_render,
+            ):
+                app._poll_render_result(render_result, active_job)
+
+            read_progress.assert_not_called()
+            poll_render.assert_not_called()
         finally:
             app.root.destroy()
 
@@ -1296,6 +1557,156 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 render_mock.assert_not_called()
                 self.assertEqual([job], app._pending_render_jobs)
                 self.assertIsNone(app._active_render_job)
+            finally:
+                app.root.destroy()
+
+    def test_queue_context_menu_removes_the_right_clicked_pending_job(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            first_item = app.queue_tree.insert(
+                "",
+                "end",
+                values=("AAA / AAA_000_0010", "Queued"),
+            )
+            second_item = app.queue_tree.insert(
+                "",
+                "end",
+                values=("AAA / AAA_000_0020", "Queued"),
+            )
+            first_job = RenderQueueJob(
+                show_path=temporary_path,
+                sequence_name="AAA",
+                shot_name="AAA_000_0010",
+                tree_item_id=first_item,
+            )
+            second_job = RenderQueueJob(
+                show_path=temporary_path,
+                sequence_name="AAA",
+                shot_name="AAA_000_0020",
+                tree_item_id=second_item,
+            )
+            app._pending_render_jobs.extend([first_job, second_job])
+            event = Mock(y=10, x_root=100, y_root=100)
+
+            try:
+                with (
+                    patch.object(
+                        app.queue_tree,
+                        "identify_row",
+                        return_value=first_item,
+                    ),
+                    patch.object(app.queue_context_menu, "tk_popup") as popup,
+                ):
+                    self.assertEqual(
+                        "break",
+                        app._show_render_queue_context_menu(event),
+                    )
+
+                self.assertEqual((first_item,), app.queue_tree.selection())
+                popup.assert_called_once_with(100, 100)
+                app.queue_context_menu.invoke(0)
+                self.assertFalse(app.queue_tree.exists(first_item))
+                self.assertTrue(app.queue_tree.exists(second_item))
+                self.assertEqual([second_job], app._pending_render_jobs)
+                self.assertEqual(
+                    "Removed AAA / AAA_000_0010 from the render queue.",
+                    app.status_var.get(),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_active_render_context_action_cancels_and_keeps_a_red_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            item_id = app.queue_tree.insert(
+                "",
+                "end",
+                values=("AAA / AAA_000_0010", "Rendering"),
+            )
+            job = RenderQueueJob(
+                show_path=temporary_path,
+                sequence_name="AAA",
+                shot_name="AAA_000_0010",
+                tree_item_id=item_id,
+            )
+            result = RenderCompResult(
+                comp_path=Path("AAA_000_0010_comp_v001.ntp"),
+                process=Mock(),
+                status_path=temporary_path / "status.json",
+            )
+            app._active_render_job = job
+            app._active_render_result = result
+            app._show_render_progress(job, 42.0)
+            event = Mock(y=10, x_root=100, y_root=100)
+
+            try:
+                with (
+                    patch.object(
+                        app.queue_tree,
+                        "identify_row",
+                        return_value=item_id,
+                    ),
+                    patch.object(app.queue_context_menu, "tk_popup"),
+                ):
+                    app._show_render_queue_context_menu(event)
+
+                self.assertEqual(
+                    "Cancel Render",
+                    app.queue_context_menu.entrycget(0, "label"),
+                )
+                self.assertEqual(
+                    "normal",
+                    str(app.queue_context_menu.entrycget(0, "state")),
+                )
+                with (
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "terminate_render_comp",
+                        return_value=True,
+                    ) as terminate_mock,
+                    patch.object(app, "_start_next_queued_render") as start_next,
+                ):
+                    app.queue_context_menu.invoke(0)
+
+                terminate_mock.assert_called_once_with(result)
+                start_next.assert_called_once_with()
+                self.assertTrue(app.queue_tree.exists(item_id))
+                self.assertEqual(
+                    ("AAA / AAA_000_0010", "Canceled"),
+                    app.queue_tree.item(item_id, "values"),
+                )
+                self.assertEqual(
+                    ("canceled",),
+                    app.queue_tree.item(item_id, "tags"),
+                )
+                self.assertEqual(
+                    "#ff7b72",
+                    str(
+                        app.queue_tree.tag_configure(
+                            "canceled",
+                            "foreground",
+                        )
+                    ),
+                )
+                self.assertIsNone(app._active_render_job)
+                self.assertIsNone(app._active_render_result)
+                self.assertIsNone(app._render_progress_job)
+                self.assertEqual(
+                    "Canceled render: AAA_000_0010.",
+                    app.status_var.get(),
+                )
             finally:
                 app.root.destroy()
 
