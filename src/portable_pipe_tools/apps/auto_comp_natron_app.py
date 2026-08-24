@@ -4,7 +4,8 @@ import tkinter as tk
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
+from types import TracebackType
 
 from portable_pipe_tools.auto_comp_natron.create_comp import (
     CompAlreadyExistsError,
@@ -12,6 +13,11 @@ from portable_pipe_tools.auto_comp_natron.create_comp import (
     SmartWriteOutputOptions,
     create_comp,
     get_comp_path,
+)
+from portable_pipe_tools.auto_comp_natron.diagnostic_logging import (
+    VerboseDiagnosticLog,
+    get_default_diagnostic_log_path,
+    get_shared_diagnostic_log_directory,
 )
 from portable_pipe_tools.auto_comp_natron.open_comp import (
     CompNotFoundError,
@@ -30,14 +36,19 @@ from portable_pipe_tools.auto_comp_natron.render_comp import (
 )
 from portable_pipe_tools.auto_comp_natron.settings import (
     get_default_settings_path,
+    load_log_username,
     load_saved_browser_selection,
     load_saved_natron_executable,
     load_saved_repository_folder,
+    load_verbose_logging_enabled,
     save_browser_selection,
+    save_log_username,
     save_natron_executable,
     save_repository_folder,
+    save_verbose_logging_enabled,
 )
 from portable_pipe_tools.show_manager.shot_manager_core import (
+    SequenceManifestError,
     ShotRow,
     find_sequence_folders,
     find_shot_folders,
@@ -73,6 +84,7 @@ class AutoCompNatronApp:
         self,
         settings_path: Path | None = None,
         prompt_on_startup: bool = True,
+        diagnostic_log_path: Path | None = None,
     ) -> None:
         self.root = tk.Tk()
         self.root.title("Auto Comp - Natron")
@@ -80,6 +92,27 @@ class AutoCompNatronApp:
         self.root.minsize(780, 640)
 
         self.settings_path = settings_path or get_default_settings_path()
+        verbose_logging_enabled = load_verbose_logging_enabled(self.settings_path)
+        self.log_username = load_log_username(self.settings_path)
+        self.verbose_logging_var = tk.BooleanVar(value=verbose_logging_enabled)
+        self._diagnostic_log_path_overridden = diagnostic_log_path is not None
+        daily_log_directory: Path | None = None
+        if not self._diagnostic_log_path_overridden:
+            saved_repository = load_saved_repository_folder(self.settings_path)
+            if saved_repository:
+                saved_repository_path = Path(saved_repository).expanduser()
+                if saved_repository_path.is_dir():
+                    daily_log_directory = get_shared_diagnostic_log_directory(
+                        saved_repository_path,
+                        log_username=self.log_username or None,
+                    )
+        self._diagnostic_log = VerboseDiagnosticLog(
+            diagnostic_log_path or get_default_diagnostic_log_path(),
+            enabled=verbose_logging_enabled,
+            daily_directory=daily_log_directory,
+            log_username=self.log_username or None,
+        )
+        self.root.report_callback_exception = self._report_callback_exception
         self.repository_path: Path | None = None
         self.natron_executable_path: Path | None = None
         self.repository_status_var = tk.StringVar(
@@ -111,6 +144,11 @@ class AutoCompNatronApp:
         self._build_menu()
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+        self._log_verbose(
+            "Auto Comp initialized",
+            settings_path=self.settings_path,
+            verbose_logging=verbose_logging_enabled,
+        )
         if prompt_on_startup:
             self.root.after_idle(self._initialize_startup_settings)
 
@@ -284,9 +322,154 @@ class AutoCompNatronApp:
             command=self._browse_natron_executable,
         )
         file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.root.destroy)
+        file_menu.add_checkbutton(
+            label="Enable Verbose Logging",
+            variable=self.verbose_logging_var,
+            command=self._toggle_verbose_logging,
+        )
+        file_menu.add_command(
+            label="Open Verbose Log Folder",
+            command=self._open_verbose_log_folder,
+        )
+        file_menu.add_command(
+            label="Change Log Username...",
+            command=self._prompt_for_log_username,
+        )
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._close)
+        self.file_menu = file_menu
         menu_bar.add_cascade(label="File", menu=file_menu)
         self.root.configure(menu=menu_bar)
+
+    def _toggle_verbose_logging(self) -> None:
+        enabled = self.verbose_logging_var.get()
+        try:
+            save_verbose_logging_enabled(enabled, self.settings_path)
+        except Exception as error:
+            self.verbose_logging_var.set(not enabled)
+            self._log_verbose_exception(
+                "Could not save verbose logging setting",
+                error,
+            )
+            self._set_status(
+                f"Could not save verbose logging setting: {error}",
+                "error",
+            )
+            return
+
+        self._diagnostic_log.set_enabled(enabled)
+        if enabled:
+            self._log_verbose(
+                "Verbose logging toggled on",
+                log_path=self._diagnostic_log.path,
+            )
+            self._set_status(
+                f"Verbose logging enabled: {self._diagnostic_log.path}",
+                "success",
+            )
+        else:
+            self._set_status("Verbose logging disabled.", "normal")
+
+    def _open_verbose_log_folder(self) -> None:
+        log_directory = self._diagnostic_log.path.parent
+        try:
+            log_directory.mkdir(parents=True, exist_ok=True)
+            open_folder_in_file_browser(log_directory)
+        except Exception as error:
+            self._log_verbose_exception(
+                "Could not open verbose log folder",
+                error,
+                log_directory=log_directory,
+            )
+            self._set_status(
+                f"Could not open verbose log folder: {error}",
+                "error",
+            )
+            return
+        self._set_status(f"Opened verbose log folder: {log_directory}", "success")
+
+    def _initialize_log_username(self) -> bool:
+        if self.log_username:
+            return True
+        return self._prompt_for_log_username(first_startup=True)
+
+    def _prompt_for_log_username(self, first_startup: bool = False) -> bool:
+        self._log_verbose(
+            "Log username prompt opened",
+            first_startup=first_startup,
+        )
+        title = (
+            "First Time Setup - Log Username"
+            if first_startup
+            else "Change Log Username"
+        )
+        while True:
+            selected = simpledialog.askstring(
+                title,
+                "Enter your username or nickname. This is used for log "
+                "diagnosis only.",
+                initialvalue=self.log_username,
+                parent=self.root,
+            )
+            if selected is None:
+                existing_username = self.log_username
+                self._log_verbose(
+                    "Log username prompt canceled",
+                    preserved_log_username=existing_username or None,
+                )
+                if existing_username:
+                    self._set_status(
+                        f"Log username unchanged: {existing_username}.",
+                        "normal",
+                    )
+                    return True
+                self._set_status(
+                    "Log username was not set; using the automatic computer identity.",
+                    "warning",
+                )
+                return False
+            selected_username = selected.strip()
+            if selected_username:
+                break
+            messagebox.showerror(
+                "Auto Comp - Natron",
+                "Log username cannot be empty.",
+                parent=self.root,
+            )
+
+        try:
+            save_log_username(selected_username, self.settings_path)
+        except Exception as error:
+            self._log_verbose_exception(
+                "Could not save log username",
+                error,
+                selected_username=selected_username,
+            )
+            self._set_status(f"Could not save log username: {error}", "error")
+            return False
+
+        self.log_username = selected_username
+        self._diagnostic_log.set_log_username(selected_username)
+        if (
+            self.repository_path is not None
+            and not self._diagnostic_log_path_overridden
+        ):
+            self._diagnostic_log.set_daily_directory(
+                get_shared_diagnostic_log_directory(
+                    self.repository_path,
+                    log_username=selected_username,
+                )
+            )
+        self._log_verbose(
+            "Log username configured",
+            log_username=selected_username,
+            log_path=self._diagnostic_log.path,
+        )
+        self._set_status(
+            f"Log username set to {selected_username}.",
+            "success",
+        )
+        return True
 
     def _build_ui(self) -> None:
         outer = ttk.Frame(self.root, style="App.TFrame")
@@ -479,20 +662,44 @@ class AutoCompNatronApp:
         ).grid(row=0, column=4, rowspan=2, sticky="e")
 
     def _initialize_startup_settings(self) -> None:
+        self._log_verbose("Startup settings initialization started")
+        self._initialize_log_username()
         self._initialize_natron_executable()
         self._initialize_repository()
+        self._log_verbose(
+            "Startup settings initialization completed",
+            repository=self.repository_path,
+            natron_executable=self.natron_executable_path,
+            log_username=self.log_username,
+        )
 
     def _initialize_natron_executable(self) -> None:
         saved_executable = load_saved_natron_executable(self.settings_path)
+        self._log_verbose(
+            "Loaded saved Natron executable setting",
+            saved_executable=saved_executable,
+        )
         if saved_executable:
             saved_path = Path(saved_executable).expanduser()
             if saved_path.is_file():
                 self.natron_executable_path = saved_path
+                self._log_verbose(
+                    "Saved Natron executable is available",
+                    natron_executable=saved_path,
+                )
                 return
+            self._log_verbose(
+                "Saved Natron executable is unavailable",
+                natron_executable=saved_path,
+            )
         self.natron_executable_path = None
         self._browse_natron_executable(first_startup=True)
 
     def _browse_natron_executable(self, first_startup: bool = False) -> bool:
+        self._log_verbose(
+            "Natron executable picker opened",
+            first_startup=first_startup,
+        )
         title = (
             "First Time Setup - Choose Natron Executable"
             if first_startup
@@ -515,6 +722,7 @@ class AutoCompNatronApp:
             parent=self.root,
         )
         if not selected:
+            self._log_verbose("Natron executable picker canceled")
             return False
 
         selected_path = Path(selected).expanduser()
@@ -529,6 +737,11 @@ class AutoCompNatronApp:
         try:
             save_natron_executable(selected_path, self.settings_path)
         except Exception as error:
+            self._log_verbose_exception(
+                "Could not save Natron executable setting",
+                error,
+                selected_path=selected_path,
+            )
             messagebox.showerror(
                 "Auto Comp - Natron",
                 f"Could not save the local configuration:\n{error}",
@@ -554,11 +767,19 @@ class AutoCompNatronApp:
 
     def _initialize_repository(self) -> None:
         saved_folder = load_saved_repository_folder(self.settings_path)
+        self._log_verbose(
+            "Loaded saved repository setting",
+            saved_repository=saved_folder,
+        )
         if saved_folder:
             saved_path = Path(saved_folder).expanduser()
             if saved_path.is_dir():
                 self._set_repository_connected(saved_path)
             else:
+                self._log_verbose(
+                    "Saved repository is unavailable",
+                    repository=saved_path,
+                )
                 self.repository_path = None
                 self.repository_status_var.set("Repository Connected: No")
                 self.repository_status_label.configure(
@@ -569,6 +790,10 @@ class AutoCompNatronApp:
         self._browse_repository_folder(first_startup=True)
 
     def _browse_repository_folder(self, first_startup: bool = False) -> None:
+        self._log_verbose(
+            "Repository folder picker opened",
+            first_startup=first_startup,
+        )
         title = (
             "First Time Setup - Choose Repository Folder"
             if first_startup
@@ -586,6 +811,7 @@ class AutoCompNatronApp:
             parent=self.root,
         )
         if not selected:
+            self._log_verbose("Repository folder picker canceled")
             return
 
         selected_path = Path(selected).expanduser()
@@ -600,6 +826,11 @@ class AutoCompNatronApp:
         try:
             save_repository_folder(selected_path, self.settings_path)
         except Exception as error:
+            self._log_verbose_exception(
+                "Could not save repository setting",
+                error,
+                selected_path=selected_path,
+            )
             messagebox.showerror(
                 "Auto Comp - Natron",
                 f"Could not save the local configuration:\n{error}",
@@ -610,6 +841,17 @@ class AutoCompNatronApp:
         self._set_repository_connected(selected_path)
 
     def _set_repository_connected(self, repository_folder: Path) -> None:
+        if not self._diagnostic_log_path_overridden:
+            self._diagnostic_log.set_daily_directory(
+                get_shared_diagnostic_log_directory(
+                    repository_folder,
+                    log_username=self.log_username or None,
+                )
+            )
+        self._log_verbose(
+            "Repository selected",
+            repository=repository_folder,
+        )
         self.repository_path = repository_folder
         self.repository_status_var.set("Repository Connected: Yes")
         self.repository_status_label.configure(style="RepositoryConnected.TLabel")
@@ -621,9 +863,18 @@ class AutoCompNatronApp:
             self._clear_browser()
             return
 
+        self._log_verbose(
+            "Repository scan started",
+            repository=self.repository_path,
+        )
         try:
             show_folders = find_show_folders(self.repository_path)
         except Exception as error:
+            self._log_verbose_exception(
+                "Repository scan failed",
+                error,
+                repository=self.repository_path,
+            )
             self._clear_browser()
             messagebox.showerror(
                 "Auto Comp - Natron",
@@ -639,6 +890,12 @@ class AutoCompNatronApp:
             show_info.name: show_info.show_root for show_info in show_folders
         }
         self.show_names = list(self.show_paths_by_name)
+        self._log_verbose(
+            "Repository scan completed",
+            repository=self.repository_path,
+            show_count=len(self.show_names),
+            shows=self.show_names,
+        )
         self._replace_list_values(self.show_list, self.show_names)
 
         selected_show = self._preferred_value(saved_show, self.show_names)
@@ -662,12 +919,19 @@ class AutoCompNatronApp:
             self._clear_sequences_and_shots()
             return
 
+        self._log_verbose("Sequence scan started", show_path=show_path)
         sequence_folders = find_sequence_folders(show_path)
         self.sequence_paths_by_name = {
             sequence_path.name.upper(): sequence_path
             for sequence_path in sequence_folders
         }
         self.sequence_names = list(self.sequence_paths_by_name)
+        self._log_verbose(
+            "Sequence scan completed",
+            show_path=show_path,
+            sequence_count=len(self.sequence_names),
+            sequences=self.sequence_names,
+        )
         self._replace_list_values(self.sequence_list, self.sequence_names)
 
         selected_sequence = self._preferred_value(
@@ -694,9 +958,37 @@ class AutoCompNatronApp:
             self._clear_shots()
             return
 
+        self._log_verbose(
+            "Active shot scan started",
+            show_path=show_path,
+            sequence=sequence_name,
+        )
         try:
-            shot_rows = find_shot_folders(show_path, sequence_name)
+            shot_rows = find_shot_folders(
+                show_path,
+                sequence_name,
+                active_only=True,
+            )
+        except SequenceManifestError as error:
+            self._log_verbose_exception(
+                "Sequence manifest invalid",
+                error,
+                show_path=show_path,
+                sequence=sequence_name,
+            )
+            self._clear_shots()
+            self._set_status(
+                "Manifest invalid, unable to load shots.",
+                "error",
+            )
+            return
         except Exception as error:
+            self._log_verbose_exception(
+                "Shot scan failed",
+                error,
+                show_path=show_path,
+                sequence=sequence_name,
+            )
             self._clear_shots()
             messagebox.showerror(
                 "Auto Comp - Natron",
@@ -717,6 +1009,13 @@ class AutoCompNatronApp:
             shot_row.shot_name: shot_row for shot_row in shot_rows
         }
         self.shot_names = list(self.shot_rows_by_name)
+        self._log_verbose(
+            "Active shot scan completed",
+            show_path=show_path,
+            sequence=sequence_name,
+            shot_count=len(self.shot_names),
+            shots=self.shot_names,
+        )
         self._replace_list_values(self.shot_list, self.shot_names)
         self._refresh_shot_comp_colors(show_path, sequence_name)
 
@@ -746,6 +1045,7 @@ class AutoCompNatronApp:
         self._save_current_selection()
 
     def _show_show_context_menu(self, event: tk.Event) -> str:
+        self._log_verbose("Show context menu requested")
         if not self.show_names:
             return "break"
         index = self.show_list.nearest(event.y)
@@ -757,6 +1057,10 @@ class AutoCompNatronApp:
             return "break"
 
         self._select_show_for_context_menu(index)
+        self._log_verbose(
+            "Show context menu opened",
+            show=self._selected_value(self.show_list, self.show_names),
+        )
         try:
             self.show_context_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -770,6 +1074,7 @@ class AutoCompNatronApp:
         self._on_show_selected(None)
 
     def _show_sequence_context_menu(self, event: tk.Event) -> str:
+        self._log_verbose("Sequence context menu requested")
         if not self.sequence_names:
             return "break"
         index = self.sequence_list.nearest(event.y)
@@ -781,6 +1086,13 @@ class AutoCompNatronApp:
             return "break"
 
         self._select_sequence_for_context_menu(index)
+        self._log_verbose(
+            "Sequence context menu opened",
+            sequence=self._selected_value(
+                self.sequence_list,
+                self.sequence_names,
+            ),
+        )
         try:
             self.sequence_context_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -794,6 +1106,7 @@ class AutoCompNatronApp:
         self._on_sequence_selected(None)
 
     def _show_shot_context_menu(self, event: tk.Event) -> str:
+        self._log_verbose("Shot context menu requested")
         if not self.shot_names:
             return "break"
         index = self.shot_list.nearest(event.y)
@@ -817,6 +1130,11 @@ class AutoCompNatronApp:
             and get_comp_path(show_path, sequence_name, shot_name).is_file()
         )
         self._configure_shot_context_menu(comp_exists=comp_exists)
+        self._log_verbose(
+            "Shot context menu opened",
+            shot=shot_name,
+            comp_exists=comp_exists,
+        )
         try:
             self.shot_context_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -857,6 +1175,11 @@ class AutoCompNatronApp:
         folder_path: Path | None,
         item_kind: str,
     ) -> None:
+        self._log_verbose(
+            "Open folder requested",
+            item_kind=item_kind,
+            folder_path=folder_path,
+        )
         if folder_path is None:
             self._set_status(
                 f"Right-click a {item_kind} to open its folder.",
@@ -874,6 +1197,12 @@ class AutoCompNatronApp:
         try:
             open_folder_in_file_browser(folder_path)
         except Exception as error:
+            self._log_verbose_exception(
+                "Open folder failed",
+                error,
+                item_kind=item_kind,
+                folder_path=folder_path,
+            )
             self._set_status(
                 f"Could not open {item_kind} folder: {error}",
                 "error",
@@ -927,6 +1256,10 @@ class AutoCompNatronApp:
             "normal",
         )
         self.root.update_idletasks()
+        natron_output_log = self._natron_output_log_path(
+            "Natron-GUI",
+            shot_name,
+        )
         try:
             result = create_and_open_comp(
                 show_path,
@@ -935,8 +1268,17 @@ class AutoCompNatronApp:
                 smart_write_outputs=self._smart_write_output_options(),
                 natron_executable=self.natron_executable_path,
                 hydration_progress=self._update_source_hydration_progress,
+                output_log_path=natron_output_log,
+                **self._diagnostic_callback_options(),
             )
         except Exception as error:
+            self._log_verbose_exception(
+                "Create and open comp failed",
+                error,
+                show_path=show_path,
+                sequence=sequence_name,
+                shot=shot_name,
+            )
             self._set_status(
                 f"Failed to create and open comp for {shot_name}: {error}",
                 "error",
@@ -953,6 +1295,14 @@ class AutoCompNatronApp:
             f"{hydration}{action} comp: {result.comp_path.name}.",
             "success",
         )
+        self._log_verbose(
+            "Natron GUI process launched",
+            shot=shot_name,
+            comp_path=result.comp_path,
+            process_id=getattr(result.process, "pid", None),
+            natron_output_log=result.output_log_path,
+        )
+        self._monitor_natron_gui_process(result, shot_name)
         self._refresh_shot_comp_colors(show_path, sequence_name)
 
     def _open_selected_comp(self) -> None:
@@ -973,6 +1323,10 @@ class AutoCompNatronApp:
             "normal",
         )
         self.root.update_idletasks()
+        natron_output_log = self._natron_output_log_path(
+            "Natron-GUI",
+            shot_name,
+        )
         try:
             result = open_comp(
                 show_path,
@@ -980,14 +1334,30 @@ class AutoCompNatronApp:
                 shot_name,
                 natron_executable=self.natron_executable_path,
                 hydration_progress=self._update_source_hydration_progress,
+                output_log_path=natron_output_log,
+                **self._diagnostic_callback_options(),
             )
         except CompNotFoundError as error:
+            self._log_verbose_exception(
+                "Open comp could not find project",
+                error,
+                show_path=show_path,
+                sequence=sequence_name,
+                shot=shot_name,
+            )
             self._set_status(
                 f"Failed to open comp for {shot_name}: {error.comp_path} does not exist.",
                 "error",
             )
             return
         except Exception as error:
+            self._log_verbose_exception(
+                "Open comp failed",
+                error,
+                show_path=show_path,
+                sequence=sequence_name,
+                shot=shot_name,
+            )
             self._set_status(
                 f"Failed to open comp for {shot_name}: {error}",
                 "error",
@@ -1003,6 +1373,14 @@ class AutoCompNatronApp:
             f"{hydration}Opened comp: {result.comp_path.name}.",
             "success",
         )
+        self._log_verbose(
+            "Natron GUI process launched",
+            shot=shot_name,
+            comp_path=result.comp_path,
+            process_id=getattr(result.process, "pid", None),
+            natron_output_log=result.output_log_path,
+        )
+        self._monitor_natron_gui_process(result, shot_name)
 
     def _render_selected_comp(self) -> None:
         self._queue_selected_comps(start_if_idle=True)
@@ -1017,6 +1395,13 @@ class AutoCompNatronApp:
             self.sequence_names,
         )
         shot_names = self._selected_values(self.shot_list, self.shot_names)
+        self._log_verbose(
+            "Render queue action requested",
+            start_if_idle=start_if_idle,
+            show_path=show_path,
+            sequence=sequence_name,
+            shots=shot_names,
+        )
         if show_path is None or not sequence_name or not shot_names:
             self._set_status(
                 (
@@ -1135,6 +1520,10 @@ class AutoCompNatronApp:
             "normal",
         )
         self.root.update_idletasks()
+        natron_output_log = self._natron_output_log_path(
+            "NatronRenderer",
+            job.shot_name,
+        )
         try:
             result = render_comp(
                 job.show_path,
@@ -1142,8 +1531,17 @@ class AutoCompNatronApp:
                 job.shot_name,
                 natron_executable=self.natron_executable_path,
                 hydration_progress=self._update_source_hydration_progress,
+                output_log_path=natron_output_log,
+                **self._diagnostic_callback_options(),
             )
         except Exception as error:
+            self._log_verbose_exception(
+                "Render launch failed",
+                error,
+                show_path=job.show_path,
+                sequence=job.sequence_name,
+                shot=job.shot_name,
+            )
             self._hide_render_progress(job)
             self._set_render_queue_job_status(job, "Failed", "failed")
             self._active_render_job = None
@@ -1156,6 +1554,15 @@ class AutoCompNatronApp:
 
         self._set_render_queue_job_status(job, "Rendering", "rendering")
         self._show_render_progress(job, 0.0)
+        self._log_verbose(
+            "Render process launched",
+            shot=job.shot_name,
+            comp_path=result.comp_path,
+            process_id=result.process.pid,
+            status_path=result.status_path,
+            render_log=result.log_path,
+            hydrated_source_files=result.hydrated_source_files,
+        )
         self._set_status(f"Rendering comp: {result.comp_path.name}...", "normal")
         self._active_render_result = result
         self._poll_render_result(result, job)
@@ -1172,10 +1579,28 @@ class AutoCompNatronApp:
             return
         progress = read_render_comp_progress(result)
         if progress is not None and not self._queue_paused:
+            self._log_verbose(
+                "Render progress update",
+                shot=job.shot_name,
+                completed_frames=progress.completed_frames,
+                total_frames=progress.total_frames,
+                percent=progress.percent,
+                current_frame=progress.current_frame,
+                completed_outputs=progress.completed_outputs,
+                total_outputs=progress.total_outputs,
+                finalizing=progress.finalizing,
+            )
             self._update_render_progress(job, progress)
         try:
             completion = poll_render_comp(result)
         except Exception as error:
+            self._log_verbose_exception(
+                "Render polling failed",
+                error,
+                comp_path=result.comp_path,
+                render_log=result.log_path,
+                status_path=result.status_path,
+            )
             self._hide_render_progress(job)
             self._set_render_queue_job_status(job, "Failed", "failed")
             self._active_render_result = None
@@ -1195,6 +1620,13 @@ class AutoCompNatronApp:
 
         self._hide_render_progress(job)
         self._set_render_queue_job_status(job, "Complete", "complete")
+        self._log_verbose(
+            "Render completed",
+            shot=job.shot_name,
+            comp_path=completion.comp_path,
+            rendered_smart_writes=completion.rendered_smart_writes,
+            render_log=result.log_path,
+        )
         self._active_render_result = None
         self._active_render_job = None
         hydration = (
@@ -1214,6 +1646,13 @@ class AutoCompNatronApp:
         status: str,
         tag: str,
     ) -> None:
+        self._log_verbose(
+            "Render queue status changed",
+            shot=job.shot_name,
+            sequence=job.sequence_name,
+            status=status,
+            tag=tag,
+        )
         self.queue_tree.item(
             job.tree_item_id,
             values=(f"{job.sequence_name} / {job.shot_name}", status),
@@ -1346,11 +1785,22 @@ class AutoCompNatronApp:
     def _clear_render_queue(self) -> None:
         queue_items = self.queue_tree.get_children()
         active_result = self._active_render_result
+        self._log_verbose(
+            "Clear render queue requested",
+            queue_item_count=len(queue_items),
+            active_comp=active_result.comp_path if active_result else None,
+        )
         active_cancelled = False
         if active_result is not None:
             try:
                 active_cancelled = terminate_render_comp(active_result)
             except (OSError, subprocess.SubprocessError) as error:
+                self._log_verbose_exception(
+                    "Could not cancel active render while clearing queue",
+                    error,
+                    comp_path=active_result.comp_path,
+                    render_log=active_result.log_path,
+                )
                 self._set_status(
                     f"Could not cancel the active Natron render: {error}",
                     "error",
@@ -1379,6 +1829,7 @@ class AutoCompNatronApp:
         self._set_status(message, "success")
 
     def _show_render_queue_context_menu(self, event: tk.Event) -> str:
+        self._log_verbose("Render queue context menu requested")
         item_id = self.queue_tree.identify_row(event.y)
         if not item_id:
             return "break"
@@ -1399,6 +1850,15 @@ class AutoCompNatronApp:
             ),
             state="normal",
         )
+        self._log_verbose(
+            "Render queue context menu opened",
+            queue_item=item_id,
+            action=(
+                "Cancel Render"
+                if item_id == active_item_id
+                else "Remove from Queue"
+            ),
+        )
         try:
             self.queue_context_menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -1407,6 +1867,10 @@ class AutoCompNatronApp:
 
     def _run_selected_render_queue_action(self) -> None:
         selected_items = self.queue_tree.selection()
+        self._log_verbose(
+            "Render queue item action requested",
+            selected_items=selected_items,
+        )
         if not selected_items:
             return
         item_id = selected_items[0]
@@ -1421,6 +1885,11 @@ class AutoCompNatronApp:
     def _cancel_active_render_queue_item(self) -> None:
         job = self._active_render_job
         result = self._active_render_result
+        self._log_verbose(
+            "Cancel active render requested",
+            shot=job.shot_name if job else None,
+            comp_path=result.comp_path if result else None,
+        )
         if job is None or result is None:
             self._set_status("There is no active render to cancel.", "normal")
             return
@@ -1428,6 +1897,12 @@ class AutoCompNatronApp:
         try:
             terminate_render_comp(result)
         except (OSError, subprocess.SubprocessError) as error:
+            self._log_verbose_exception(
+                "Could not cancel active render",
+                error,
+                comp_path=result.comp_path,
+                render_log=result.log_path,
+            )
             self._set_status(
                 f"Could not cancel the active Natron render: {error}",
                 "error",
@@ -1443,6 +1918,10 @@ class AutoCompNatronApp:
 
     def _remove_selected_render_queue_item(self) -> None:
         selected_items = self.queue_tree.selection()
+        self._log_verbose(
+            "Remove render queue item requested",
+            selected_items=selected_items,
+        )
         if not selected_items:
             return
         item_id = selected_items[0]
@@ -1491,6 +1970,7 @@ class AutoCompNatronApp:
         )
 
     def _pause_render_queue(self) -> None:
+        self._log_verbose("Pause render queue requested")
         if self._queue_paused:
             self._set_status("The render queue is already paused.", "normal")
             return
@@ -1501,6 +1981,12 @@ class AutoCompNatronApp:
             try:
                 renderer_paused = pause_render_comp(result)
             except OSError as error:
+                self._log_verbose_exception(
+                    "Could not pause active render",
+                    error,
+                    comp_path=result.comp_path,
+                    render_log=result.log_path,
+                )
                 self._set_status(
                     f"Could not pause the active Natron render: {error}",
                     "error",
@@ -1524,6 +2010,7 @@ class AutoCompNatronApp:
         self._set_status("Render queue paused.", "normal")
 
     def _resume_render_queue(self) -> None:
+        self._log_verbose("Resume render queue requested")
         if not self._queue_paused:
             if self._active_render_job is not None:
                 self._set_status("The render queue is already running.", "normal")
@@ -1542,6 +2029,12 @@ class AutoCompNatronApp:
             try:
                 renderer_resumed = resume_render_comp(result)
             except OSError as error:
+                self._log_verbose_exception(
+                    "Could not resume active render",
+                    error,
+                    comp_path=result.comp_path,
+                    render_log=result.log_path,
+                )
                 self._set_status(
                     f"Could not resume the active Natron render: {error}",
                     "error",
@@ -1569,13 +2062,25 @@ class AutoCompNatronApp:
         self._start_next_queued_render()
 
     def _close(self) -> None:
+        self._log_verbose(
+            "Auto Comp closing",
+            active_render=(
+                self._active_render_job.shot_name
+                if self._active_render_job is not None
+                else None
+            ),
+            pending_render_count=len(self._pending_render_jobs),
+        )
         result = self._active_render_result
         self._active_render_result = None
         try:
             if result is not None:
                 terminate_render_comp(result)
-        except (OSError, subprocess.SubprocessError):
-            pass
+        except (OSError, subprocess.SubprocessError) as error:
+            self._log_verbose_exception(
+                "Could not terminate render while closing",
+                error,
+            )
         finally:
             self.root.destroy()
 
@@ -1631,6 +2136,14 @@ class AutoCompNatronApp:
     ) -> None:
 
         smart_write_outputs = self._smart_write_output_options()
+        self._log_verbose(
+            "Create comp batch requested",
+            action=status_action,
+            show_path=show_path,
+            sequence=sequence_name,
+            shots=shot_names,
+            smart_write_outputs=smart_write_outputs,
+        )
         succeeded = 0
         failed = 0
         last_failure = ""
@@ -1641,6 +2154,7 @@ class AutoCompNatronApp:
                     sequence_name,
                     shot_name,
                     smart_write_outputs=smart_write_outputs,
+                    **self._diagnostic_callback_options(),
                 )
             except CompAlreadyExistsError:
                 failed += 1
@@ -1649,10 +2163,23 @@ class AutoCompNatronApp:
                 failed += 1
                 last_failure = f"no template was found for {shot_name}"
             except Exception as error:
+                self._log_verbose_exception(
+                    "Create comp failed",
+                    error,
+                    show_path=show_path,
+                    sequence=sequence_name,
+                    shot=shot_name,
+                )
                 failed += 1
                 last_failure = f"{shot_name}: {error}"
             else:
                 succeeded += 1
+                self._log_verbose(
+                    "Create comp succeeded",
+                    show_path=show_path,
+                    sequence=sequence_name,
+                    shot=shot_name,
+                )
 
         message = f"{status_action} complete — Succeeded: {succeeded}; Failed: {failed}."
         if last_failure:
@@ -1675,6 +2202,92 @@ class AutoCompNatronApp:
             hero=self.hero_var.get(),
         )
 
+    def _on_output_options_changed(self) -> None:
+        self._log_verbose(
+            "Output options changed",
+            options=self._smart_write_output_options(),
+        )
+
+    def _log_verbose(self, event: str, **details: object) -> None:
+        self._diagnostic_log.write(event, **details)
+
+    def _log_verbose_exception(
+        self,
+        event: str,
+        error: BaseException,
+        **details: object,
+    ) -> None:
+        self._diagnostic_log.exception(event, error, **details)
+
+    def _natron_output_log_path(
+        self,
+        process_kind: str,
+        item_name: str,
+    ) -> Path | None:
+        if not self.verbose_logging_var.get():
+            return None
+        output_path = self._diagnostic_log.natron_output_log_path(
+            process_kind,
+            item_name,
+        )
+        self._log_verbose(
+            "Natron output capture configured",
+            process_kind=process_kind,
+            item_name=item_name,
+            output_log=output_path,
+        )
+        return output_path
+
+    def _monitor_natron_gui_process(
+        self,
+        result: object,
+        shot_name: str,
+    ) -> None:
+        process = getattr(result, "process", None)
+        poll = getattr(process, "poll", None)
+        if not callable(poll):
+            return
+        try:
+            exit_code = poll()
+        except Exception as error:
+            self._log_verbose_exception(
+                "Could not poll Natron GUI process",
+                error,
+                shot=shot_name,
+                process_id=getattr(process, "pid", None),
+            )
+            return
+        if exit_code is None:
+            self.root.after(
+                1000,
+                lambda: self._monitor_natron_gui_process(result, shot_name),
+            )
+            return
+        self._log_verbose(
+            "Natron GUI process exited",
+            shot=shot_name,
+            process_id=getattr(process, "pid", None),
+            exit_code=exit_code,
+            natron_output_log=getattr(result, "output_log_path", None),
+        )
+
+    def _report_callback_exception(
+        self,
+        exception_type: type[BaseException],
+        error: BaseException,
+        traceback_object: TracebackType | None,
+    ) -> None:
+        del exception_type
+        if getattr(error, "__traceback__", None) is None and traceback_object:
+            error = error.with_traceback(traceback_object)
+        self._log_verbose_exception("Unhandled Auto Comp GUI callback error", error)
+        self._set_status(f"Unexpected Auto Comp error: {error}", "error")
+
+    def _diagnostic_callback_options(self) -> dict[str, object]:
+        if not self.verbose_logging_var.get():
+            return {}
+        return {"diagnostic_log": self._log_verbose}
+
     def _set_status(self, message: str, level: str = "normal") -> None:
         style_by_level = {
             "normal": "Status.TLabel",
@@ -1686,18 +2299,35 @@ class AutoCompNatronApp:
         self.status_label.configure(
             style=style_by_level.get(level, "Status.TLabel")
         )
+        self._log_verbose("Status changed", level=level, message=message)
 
     def _save_current_selection(self) -> None:
         if self.repository_path is None:
             return
+        show_name = self._selected_value(self.show_list, self.show_names)
+        sequence_name = self._selected_value(
+            self.sequence_list,
+            self.sequence_names,
+        )
+        shot_name = self._selected_value(self.shot_list, self.shot_names)
+        self._log_verbose(
+            "Browser selection changed",
+            show=show_name,
+            sequence=sequence_name,
+            shot=shot_name,
+        )
         try:
             save_browser_selection(
-                self._selected_value(self.show_list, self.show_names),
-                self._selected_value(self.sequence_list, self.sequence_names),
-                self._selected_value(self.shot_list, self.shot_names),
+                show_name,
+                sequence_name,
+                shot_name,
                 self.settings_path,
             )
         except Exception as error:
+            self._log_verbose_exception(
+                "Could not save browser selection",
+                error,
+            )
             messagebox.showerror(
                 "Auto Comp - Natron",
                 f"Could not save the browser selection:\n{error}",
@@ -1753,14 +2383,23 @@ class AutoCompNatronApp:
         if show_path is None or not sequence_name:
             return
 
+        comp_state_by_shot: dict[str, str] = {}
         for index, shot_name in enumerate(self.shot_names):
             comp_path = get_comp_path(show_path, sequence_name, shot_name)
+            comp_exists = comp_path.is_file()
             color = (
                 COMP_PRESENT_COLOR
-                if comp_path.is_file()
+                if comp_exists
                 else COMP_MISSING_COLOR
             )
             self.shot_list.itemconfigure(index, foreground=color)
+            comp_state_by_shot[shot_name] = "present" if comp_exists else "missing"
+        self._log_verbose(
+            "Shot comp availability refreshed",
+            show_path=show_path,
+            sequence=sequence_name,
+            comp_states=comp_state_by_shot,
+        )
 
     @staticmethod
     def _replace_list_values(listbox: tk.Listbox, values: list[str]) -> None:
@@ -1877,6 +2516,7 @@ class AutoCompNatronApp:
             text="EXR",
             variable=self.exr_var,
             style="Option.TCheckbutton",
+            command=self._on_output_options_changed,
         ).pack(anchor="w")
 
         ttk.Checkbutton(
@@ -1884,6 +2524,7 @@ class AutoCompNatronApp:
             text="MP4",
             variable=self.mp4_var,
             style="Option.TCheckbutton",
+            command=self._on_output_options_changed,
         ).pack(anchor="w")
 
         ttk.Checkbutton(
@@ -1891,6 +2532,7 @@ class AutoCompNatronApp:
             text="MOV",
             variable=self.mov_var,
             style="Option.TCheckbutton",
+            command=self._on_output_options_changed,
         ).pack(anchor="w")
 
         ttk.Checkbutton(
@@ -1898,6 +2540,7 @@ class AutoCompNatronApp:
             text="Hero",
             variable=self.hero_var,
             style="Option.TCheckbutton",
+            command=self._on_output_options_changed,
         ).pack(anchor="w")
 
     def _build_queue_panel(self, parent: ttk.Frame) -> None:
@@ -2032,8 +2675,36 @@ class AutoCompNatronApp:
 
 
 def main() -> None:
-    app = AutoCompNatronApp()
-    app.run()
+    app: AutoCompNatronApp | None = None
+    try:
+        app = AutoCompNatronApp()
+        app.run()
+    except BaseException as error:
+        if app is not None:
+            app._log_verbose_exception("Fatal Auto Comp process error", error)
+        else:
+            try:
+                settings_path = get_default_settings_path()
+                saved_repository = load_saved_repository_folder(settings_path)
+                log_username = load_log_username(settings_path)
+                daily_directory = None
+                if saved_repository:
+                    repository_path = Path(saved_repository).expanduser()
+                    if repository_path.is_dir():
+                        daily_directory = get_shared_diagnostic_log_directory(
+                            repository_path,
+                            log_username=log_username or None,
+                        )
+                emergency_log = VerboseDiagnosticLog(
+                    get_default_diagnostic_log_path(),
+                    enabled=True,
+                    daily_directory=daily_directory,
+                    log_username=log_username or None,
+                )
+                emergency_log.exception("Fatal Auto Comp startup error", error)
+            except Exception:
+                pass
+        raise
 
 
 if __name__ == "__main__":

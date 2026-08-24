@@ -79,6 +79,7 @@ class RenderCompTests(unittest.TestCase):
             process.pid = 1234
             popen.return_value = process
             hydrate.return_value = SourceHydrationResult(None, 12, 4)
+            diagnostic_messages: list[str] = []
 
             with (
                 patch(
@@ -97,6 +98,8 @@ class RenderCompTests(unittest.TestCase):
                     "BSH",
                     "BSH_000_0010",
                     natron_executable=temporary_path / "Natron.exe",
+                    diagnostic_log=diagnostic_messages.append,
+                    output_log_path=log_path,
                 )
 
             command = popen.call_args.args[0]
@@ -126,6 +129,10 @@ class RenderCompTests(unittest.TestCase):
             log_text = log_path.read_text(encoding="utf-8")
             self.assertIn("Starting render", log_text)
             self.assertIn("NatronRenderer PID: 1234", log_text)
+            diagnostic_text = "\n".join(diagnostic_messages)
+            self.assertIn("SmartWrite inspection passed", diagnostic_text)
+            self.assertIn("Natron output log", diagnostic_text)
+            self.assertIn("NatronRenderer PID is 1234", diagnostic_text)
 
     def test_missing_comp_fails_before_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

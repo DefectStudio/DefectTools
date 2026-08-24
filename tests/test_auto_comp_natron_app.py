@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
+import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock, call, patch
+from unittest.mock import ANY, Mock, call, patch
 
 from portable_pipe_tools.apps.auto_comp_natron_app import (
     AutoCompNatronApp,
@@ -18,6 +20,9 @@ from portable_pipe_tools.auto_comp_natron.create_comp import (
     SmartWriteOutputOptions,
     get_comp_path,
 )
+from portable_pipe_tools.auto_comp_natron.diagnostic_logging import (
+    get_shared_diagnostic_log_directory,
+)
 from portable_pipe_tools.auto_comp_natron.open_comp import (
     CompNotFoundError,
     OpenCompResult,
@@ -29,10 +34,14 @@ from portable_pipe_tools.auto_comp_natron.render_comp import (
     SmartWriteNotFoundError,
 )
 from portable_pipe_tools.auto_comp_natron.settings import (
+    load_log_username,
     load_saved_browser_selection,
     load_saved_natron_executable,
     load_saved_repository_folder,
+    load_verbose_logging_enabled,
+    save_log_username,
     save_repository_folder,
+    save_verbose_logging_enabled,
 )
 
 
@@ -47,7 +56,147 @@ def _create_test_repository(repository: Path) -> None:
         (repository / relative_folder).mkdir(parents=True)
 
 
+def _write_sequence_manifest(
+    repository: Path,
+    show_name: str,
+    sequence_name: str,
+    shots: list[dict[str, object]],
+) -> Path:
+    manifest_path = (
+        repository
+        / show_name
+        / "sequences"
+        / sequence_name
+        / f"{sequence_name.lower()}_sequence_shots_manifest.json"
+    )
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0.0",
+                "manifest_type": "sequence_shots_manifest",
+                "sequence_name": sequence_name,
+                "shots": shots,
+            },
+            indent=4,
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
 class AutoCompNatronAppTests(unittest.TestCase):
+    def test_every_user_action_callback_reaches_diagnostic_logging(self) -> None:
+        source_path = (
+            Path(__file__).parents[1]
+            / "src"
+            / "portable_pipe_tools"
+            / "apps"
+            / "auto_comp_natron_app.py"
+        )
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        app_class = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef)
+            and node.name == "AutoCompNatronApp"
+        )
+        methods = {
+            node.name: node
+            for node in app_class.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        callbacks: set[str] = set()
+        for node in ast.walk(app_class):
+            callback_expression: ast.AST | None = None
+            if isinstance(node, ast.keyword) and node.arg == "command":
+                callback_expression = node.value
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "bind"
+                and len(node.args) > 1
+            ):
+                callback_expression = node.args[1]
+            if callback_expression is None:
+                continue
+            for callback_node in ast.walk(callback_expression):
+                if (
+                    isinstance(callback_node, ast.Attribute)
+                    and isinstance(callback_node.value, ast.Name)
+                    and callback_node.value.id == "self"
+                    and callback_node.attr in methods
+                ):
+                    callbacks.add(callback_node.attr)
+
+        logging_endpoints = {
+            "_log_verbose",
+            "_log_verbose_exception",
+            "_set_status",
+        }
+
+        def reaches_logging(method_name: str, visited: set[str]) -> bool:
+            if method_name in visited:
+                return False
+            visited = {*visited, method_name}
+            for node in ast.walk(methods[method_name]):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "self"
+                ):
+                    continue
+                called_method = node.func.attr
+                if called_method in logging_endpoints:
+                    return True
+                if called_method in methods and reaches_logging(
+                    called_method,
+                    visited,
+                ):
+                    return True
+            return False
+
+        layout_callbacks = {"_position_render_progress"}
+        missing_logging = sorted(
+            callback
+            for callback in callbacks - layout_callbacks
+            if not reaches_logging(callback, set())
+        )
+        self.assertEqual([], missing_logging)
+
+    def test_unhandled_gui_callback_errors_are_written_with_tracebacks(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            log_path = temporary_path / "verbose.log"
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+                diagnostic_log_path=log_path,
+            )
+            app.root.withdraw()
+            try:
+                self.assertEqual(
+                    app._report_callback_exception,
+                    app.root.report_callback_exception,
+                )
+                try:
+                    raise RuntimeError("callback exploded")
+                except RuntimeError as error:
+                    app._report_callback_exception(
+                        RuntimeError,
+                        error,
+                        error.__traceback__,
+                    )
+
+                log_text = log_path.read_text(encoding="utf-8")
+                self.assertIn("Unhandled Auto Comp GUI callback error", log_text)
+                self.assertIn("RuntimeError: callback exploded", log_text)
+                self.assertIn("Unexpected Auto Comp error", app.status_var.get())
+            finally:
+                app.root.destroy()
+
     def test_missing_natron_executable_is_prompted_for_and_saved(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory)
@@ -110,6 +259,208 @@ class AutoCompNatronAppTests(unittest.TestCase):
             self.assertEqual("Clear Queue", app.clear_queue_button.cget("text"))
         finally:
             app.root.destroy()
+
+    def test_file_menu_toggles_persistent_verbose_logging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            settings_path = temporary_path / "settings.json"
+            log_path = temporary_path / "verbose.log"
+            save_verbose_logging_enabled(False, settings_path)
+            app = AutoCompNatronApp(
+                settings_path=settings_path,
+                prompt_on_startup=False,
+                diagnostic_log_path=log_path,
+            )
+            app.root.withdraw()
+
+            try:
+                self.assertEqual(
+                    "Enable Verbose Logging",
+                    app.file_menu.entrycget(3, "label"),
+                )
+                self.assertEqual(
+                    "Change Log Username...",
+                    app.file_menu.entrycget(5, "label"),
+                )
+                self.assertFalse(app.verbose_logging_var.get())
+
+                app.file_menu.invoke(3)
+                app._set_status("Diagnostic test action.", "normal")
+
+                self.assertTrue(app.verbose_logging_var.get())
+                self.assertTrue(load_verbose_logging_enabled(settings_path))
+                log_text = log_path.read_text(encoding="utf-8")
+                self.assertIn("Verbose logging toggled on", log_text)
+                self.assertIn("Diagnostic test action.", log_text)
+
+                app.file_menu.invoke(3)
+                log_size_after_disable = log_path.stat().st_size
+                app._set_status("This should not be logged.", "normal")
+
+                self.assertFalse(app.verbose_logging_var.get())
+                self.assertFalse(load_verbose_logging_enabled(settings_path))
+                self.assertEqual(log_size_after_disable, log_path.stat().st_size)
+            finally:
+                app.root.destroy()
+
+    def test_first_time_log_username_is_prompted_saved_and_used_as_folder(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            settings_path = temporary_path / "settings.json"
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            app = AutoCompNatronApp(
+                settings_path=settings_path,
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app."
+                    "simpledialog.askstring",
+                    return_value="  Kat Francis  ",
+                ) as username_prompt:
+                    configured = app._initialize_log_username()
+
+                self.assertTrue(configured)
+                username_prompt.assert_called_once()
+                self.assertEqual("Kat Francis", app.log_username)
+                self.assertEqual("Kat Francis", load_log_username(settings_path))
+                self.assertEqual(
+                    "Kat Francis",
+                    app._diagnostic_log.path.parent.name,
+                )
+                log_text = app._diagnostic_log.path.read_text(encoding="utf-8")
+                self.assertIn("Log username configured", log_text)
+                self.assertIn("log_username='Kat Francis'", log_text)
+            finally:
+                app.root.destroy()
+
+    def test_saved_log_username_skips_first_time_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            settings_path = temporary_path / "settings.json"
+            save_log_username("Kat Francis", settings_path)
+            app = AutoCompNatronApp(
+                settings_path=settings_path,
+                prompt_on_startup=False,
+                diagnostic_log_path=temporary_path / "verbose.log",
+            )
+            app.root.withdraw()
+
+            try:
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app."
+                    "simpledialog.askstring"
+                ) as username_prompt:
+                    configured = app._initialize_log_username()
+
+                self.assertTrue(configured)
+                username_prompt.assert_not_called()
+            finally:
+                app.root.destroy()
+
+    def test_canceling_change_username_preserves_existing_username(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            settings_path = temporary_path / "settings.json"
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            save_repository_folder(repository, settings_path)
+            save_log_username("Kat Francis", settings_path)
+            app = AutoCompNatronApp(
+                settings_path=settings_path,
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+                original_log_path = app._diagnostic_log.path
+                with (
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "simpledialog.askstring",
+                        return_value=None,
+                    ),
+                    patch(
+                        "portable_pipe_tools.apps.auto_comp_natron_app."
+                        "save_log_username"
+                    ) as save_username,
+                    patch.object(
+                        app._diagnostic_log,
+                        "set_daily_directory",
+                    ) as change_log_directory,
+                ):
+                    app.file_menu.invoke(5)
+
+                save_username.assert_not_called()
+                change_log_directory.assert_not_called()
+                self.assertEqual("Kat Francis", app.log_username)
+                self.assertEqual("Kat Francis", load_log_username(settings_path))
+                self.assertEqual(original_log_path, app._diagnostic_log.path)
+                self.assertEqual(
+                    "Log username unchanged: Kat Francis.",
+                    app.status_var.get(),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_saved_verbose_logging_setting_is_enabled_at_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            settings_path = temporary_path / "settings.json"
+            log_path = temporary_path / "verbose.log"
+            save_verbose_logging_enabled(True, settings_path)
+
+            app = AutoCompNatronApp(
+                settings_path=settings_path,
+                prompt_on_startup=False,
+                diagnostic_log_path=log_path,
+            )
+            app.root.withdraw()
+
+            try:
+                self.assertTrue(app.verbose_logging_var.get())
+                log_text = log_path.read_text(encoding="utf-8")
+                self.assertIn("Verbose logging enabled", log_text)
+                self.assertIn("Auto Comp initialized", log_text)
+            finally:
+                app.root.destroy()
+
+    def test_saved_repository_without_verbose_setting_defaults_to_shared_logging(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            settings_path = temporary_path / "settings.json"
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            save_repository_folder(repository, settings_path)
+
+            app = AutoCompNatronApp(
+                settings_path=settings_path,
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                self.assertTrue(app.verbose_logging_var.get())
+                expected_directory = get_shared_diagnostic_log_directory(
+                    repository
+                )
+                self.assertEqual(expected_directory, app._diagnostic_log.path.parent)
+                self.assertTrue(app._diagnostic_log.path.exists())
+                self.assertIn(
+                    "Auto Comp initialized",
+                    app._diagnostic_log.path.read_text(encoding="utf-8"),
+                )
+            finally:
+                app.root.destroy()
 
     def test_connecting_selects_first_show_sequence_and_shot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -187,9 +538,9 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 """{
     "sequence_name": "AAA",
     "shots": [
-        {"shot_name": "AAA_000_0100", "order": 1},
-        {"shot_name": "AAA_000_0020", "order": 2},
-        {"shot_name": "AAA_000_0010", "order": 3}
+        {"shot_name": "AAA_000_0100", "order": 1, "is_active": true},
+        {"shot_name": "AAA_000_0020", "order": 2, "is_active": true},
+        {"shot_name": "AAA_000_0010", "order": 3, "is_active": true}
     ]
 }
 """,
@@ -473,6 +824,7 @@ class AutoCompNatronAppTests(unittest.TestCase):
                         mov=True,
                         hero=False,
                     ),
+                    diagnostic_log=ANY,
                 )
                 self.assertEqual(
                     "Create Comps complete — Succeeded: 1; Failed: 0.",
@@ -591,12 +943,14 @@ class AutoCompNatronAppTests(unittest.TestCase):
                             "AAA",
                             "AAA_000_0010",
                             smart_write_outputs=SmartWriteOutputOptions(),
+                            diagnostic_log=ANY,
                         ),
                         call(
                             repository / "alpha",
                             "AAA",
                             "AAA_000_0020",
                             smart_write_outputs=SmartWriteOutputOptions(),
+                            diagnostic_log=ANY,
                         ),
                     ],
                     create_mock.call_args_list,
@@ -671,12 +1025,14 @@ class AutoCompNatronAppTests(unittest.TestCase):
                             "AAA",
                             "AAA_000_0010",
                             smart_write_outputs=SmartWriteOutputOptions(),
+                            diagnostic_log=ANY,
                         ),
                         call(
                             repository / "alpha",
                             "AAA",
                             "AAA_000_0020",
                             smart_write_outputs=SmartWriteOutputOptions(),
+                            diagnostic_log=ANY,
                         ),
                     ],
                     create_mock.call_args_list,
@@ -688,6 +1044,105 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 self.assertEqual(
                     "StatusSuccess.TLabel",
                     app.status_label.cget("style"),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_verbose_create_action_records_nested_creation_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            settings_path = temporary_path / "settings.json"
+            log_path = temporary_path / "verbose.log"
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            save_verbose_logging_enabled(True, settings_path)
+            app = AutoCompNatronApp(
+                settings_path=settings_path,
+                prompt_on_startup=False,
+                diagnostic_log_path=log_path,
+            )
+            app.root.withdraw()
+            result = CreateCompResult(
+                target_path=Path("created.ntp"),
+                template_path=Path("template.ntp"),
+                used_fallback_template=False,
+            )
+
+            def create_with_diagnostics(
+                _show_path: Path,
+                _sequence_name: str,
+                _shot_name: str,
+                **options: object,
+            ) -> CreateCompResult:
+                diagnostic_log = options.get("diagnostic_log")
+                self.assertTrue(callable(diagnostic_log))
+                diagnostic_log("Nested create step reached")
+                return result
+
+            try:
+                app._set_repository_connected(repository)
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app.create_comp",
+                    side_effect=create_with_diagnostics,
+                ):
+                    app._create_selected_comp()
+
+                log_text = log_path.read_text(encoding="utf-8")
+                self.assertIn("Create comp batch requested", log_text)
+                self.assertIn("Nested create step reached", log_text)
+                self.assertIn("Create comp succeeded", log_text)
+            finally:
+                app.root.destroy()
+
+    def test_create_all_sequence_comps_processes_only_active_manifest_shots(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            _write_sequence_manifest(
+                repository,
+                "alpha",
+                "AAA",
+                [
+                    {
+                        "shot_name": "AAA_000_0010",
+                        "order": 1,
+                        "is_active": False,
+                    },
+                    {
+                        "shot_name": "AAA_000_0020",
+                        "order": 2,
+                        "is_active": True,
+                    },
+                ],
+            )
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+            success_result = CreateCompResult(
+                target_path=Path("created.ntp"),
+                template_path=Path("AAA template.ntp"),
+                used_fallback_template=False,
+            )
+
+            try:
+                app._set_repository_connected(repository)
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app.create_comp",
+                    return_value=success_result,
+                ) as create_mock:
+                    app._create_all_sequence_comps()
+
+                create_mock.assert_called_once_with(
+                    repository / "alpha",
+                    "AAA",
+                    "AAA_000_0020",
+                    smart_write_outputs=SmartWriteOutputOptions(),
+                    diagnostic_log=ANY,
                 )
             finally:
                 app.root.destroy()
@@ -730,6 +1185,8 @@ class AutoCompNatronAppTests(unittest.TestCase):
                     smart_write_outputs=SmartWriteOutputOptions(),
                     natron_executable=executable,
                     hydration_progress=app._update_source_hydration_progress,
+                    output_log_path=ANY,
+                    diagnostic_log=ANY,
                 )
                 self.assertEqual(
                     "Downloaded 38 source frames. Successfully created and opened comp: "
@@ -772,6 +1229,124 @@ class AutoCompNatronAppTests(unittest.TestCase):
                 self.assertEqual(
                     "Opened existing comp: AAA_000_0010_comp_v001.ntp.",
                     app.status_var.get(),
+                )
+            finally:
+                app.root.destroy()
+
+    def test_sequence_manifest_hides_inactive_and_unlisted_shots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            unlisted_shot = (
+                repository / "alpha" / "sequences" / "AAA" / "AAA_000_0100"
+            )
+            unlisted_shot.mkdir()
+            _write_sequence_manifest(
+                repository,
+                "alpha",
+                "AAA",
+                [
+                    {
+                        "shot_name": "AAA_000_0010",
+                        "order": 1,
+                        "is_active": False,
+                    },
+                    {
+                        "shot_name": "AAA_000_0020",
+                        "order": 2,
+                        "is_active": True,
+                    },
+                ],
+            )
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+
+                self.assertEqual(["AAA_000_0020"], app.shot_names)
+                self.assertNotIn("AAA_000_0010", app.shot_rows_by_name)
+                self.assertNotIn("AAA_000_0100", app.shot_rows_by_name)
+            finally:
+                app.root.destroy()
+
+    def test_sequence_manifest_with_no_active_shots_shows_empty_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            _write_sequence_manifest(
+                repository,
+                "alpha",
+                "AAA",
+                [
+                    {
+                        "shot_name": "AAA_000_0010",
+                        "order": 1,
+                        "is_active": False,
+                    },
+                    {
+                        "shot_name": "AAA_000_0020",
+                        "order": 2,
+                        "is_active": False,
+                    },
+                ],
+            )
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                app._set_repository_connected(repository)
+
+                self.assertEqual([], app.shot_names)
+                self.assertEqual((), app.shot_list.curselection())
+            finally:
+                app.root.destroy()
+
+    def test_invalid_sequence_manifest_reports_red_status_without_popup(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            repository = temporary_path / "repository"
+            _create_test_repository(repository)
+            manifest_path = (
+                repository
+                / "alpha"
+                / "sequences"
+                / "AAA"
+                / "aaa_sequence_shots_manifest.json"
+            )
+            manifest_path.write_text("{invalid json", encoding="utf-8")
+            app = AutoCompNatronApp(
+                settings_path=temporary_path / "settings.json",
+                prompt_on_startup=False,
+            )
+            app.root.withdraw()
+
+            try:
+                with patch(
+                    "portable_pipe_tools.apps.auto_comp_natron_app."
+                    "messagebox.showerror"
+                ) as show_error:
+                    app._set_repository_connected(repository)
+
+                show_error.assert_not_called()
+                self.assertEqual([], app.shot_names)
+                self.assertEqual(
+                    "Manifest invalid, unable to load shots.",
+                    app.status_var.get(),
+                )
+                self.assertEqual(
+                    "StatusError.TLabel",
+                    app.status_label.cget("style"),
                 )
             finally:
                 app.root.destroy()
@@ -947,6 +1522,8 @@ class AutoCompNatronAppTests(unittest.TestCase):
                     "AAA_000_0020",
                     natron_executable=executable,
                     hydration_progress=app._update_source_hydration_progress,
+                    output_log_path=ANY,
+                    diagnostic_log=ANY,
                 )
                 poll_mock.assert_called_once_with(render_result)
                 self.assertEqual(
@@ -1157,6 +1734,8 @@ class AutoCompNatronAppTests(unittest.TestCase):
                             "AAA_000_0010",
                             natron_executable=executable,
                             hydration_progress=app._update_source_hydration_progress,
+                            output_log_path=ANY,
+                            diagnostic_log=ANY,
                         ),
                         call(
                             repository / "alpha",
@@ -1164,6 +1743,8 @@ class AutoCompNatronAppTests(unittest.TestCase):
                             "AAA_000_0020",
                             natron_executable=executable,
                             hydration_progress=app._update_source_hydration_progress,
+                            output_log_path=ANY,
+                            diagnostic_log=ANY,
                         ),
                     ],
                     render_mock.call_args_list,
@@ -1778,6 +2359,8 @@ class AutoCompNatronAppTests(unittest.TestCase):
                     "AAA_000_0010",
                     natron_executable=executable,
                     hydration_progress=app._update_source_hydration_progress,
+                    output_log_path=ANY,
+                    diagnostic_log=ANY,
                 )
                 self.assertIn("does not exist", app.status_var.get())
                 self.assertEqual(

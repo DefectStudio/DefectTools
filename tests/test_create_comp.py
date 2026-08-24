@@ -35,6 +35,29 @@ class CreateCompTests(unittest.TestCase):
             self.assertFalse(result.used_fallback_template)
             self.assertEqual(b"sequence template", result.target_path.read_bytes())
 
+    def test_verbose_diagnostic_callback_reports_each_creation_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            show_root = Path(temporary_directory) / "show"
+            sequence_template, _, _ = get_template_candidates(show_root, "BSH")
+            sequence_template.parent.mkdir(parents=True)
+            sequence_template.write_bytes(b"sequence template")
+            messages: list[str] = []
+
+            create_comp(
+                show_root,
+                "BSH",
+                "BSH_000_0010",
+                diagnostic_log=messages.append,
+            )
+
+            log_text = "\n".join(messages)
+            self.assertIn("validating selection", log_text)
+            self.assertIn("template candidates", log_text)
+            self.assertIn("selected template", log_text)
+            self.assertIn("copying template", log_text)
+            self.assertIn("updating Natron Project directory", log_text)
+            self.assertIn("completed successfully", log_text)
+
     def test_zzz_template_is_used_when_sequence_template_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             show_root = Path(temporary_directory) / "show"

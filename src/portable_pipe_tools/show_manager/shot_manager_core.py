@@ -85,6 +85,12 @@ class ShotRow:
     edl_proposed_range: tuple[int, int] | None = None
 
 
+class SequenceManifestError(ValueError):
+    def __init__(self, manifest_path: Path) -> None:
+        self.manifest_path = manifest_path
+        super().__init__(f"Invalid sequence manifest: {manifest_path}")
+
+
 @dataclass(frozen=True)
 class EdlShotOccurrence:
     edit_index: int
@@ -1025,10 +1031,13 @@ def _shot_rows_from_sequence_manifest(sequence_folder: Path) -> list[ShotRow]:
     manifest_path = _get_sequence_manifest_path(sequence_folder)
     if not manifest_path.is_file():
         return []
-    manifest = _read_json_file(manifest_path)
-    shots = manifest.get("shots") or []
+    try:
+        manifest = _read_json_file(manifest_path)
+    except (OSError, json.JSONDecodeError, ValueError) as error:
+        raise SequenceManifestError(manifest_path) from error
+    shots = manifest.get("shots")
     if not isinstance(shots, list):
-        raise ValueError(f"Manifest 'shots' field must be a list: {manifest_path}")
+        raise SequenceManifestError(manifest_path)
     sequence_name = str(manifest.get("sequence_name") or sequence_folder.name).upper()
     shot_rows = []
     for index, shot_data in enumerate(shots, start=1):
@@ -1091,12 +1100,27 @@ def _fallback_shot_rows_from_sequence_folder(sequence_folder: Path) -> list[Shot
     ]
 
 
-def _shot_rows_from_sequence_folder(sequence_folder: Path) -> list[ShotRow]:
-    manifest_rows = _shot_rows_from_sequence_manifest(sequence_folder)
-    return manifest_rows if manifest_rows else _fallback_shot_rows_from_sequence_folder(sequence_folder)
+def _shot_rows_from_sequence_folder(
+    sequence_folder: Path,
+    *,
+    active_only: bool = False,
+) -> list[ShotRow]:
+    manifest_path = _get_sequence_manifest_path(sequence_folder)
+    if manifest_path.is_file():
+        manifest_rows = _shot_rows_from_sequence_manifest(sequence_folder)
+        if active_only:
+            return [shot_row for shot_row in manifest_rows if shot_row.is_active]
+        if manifest_rows:
+            return manifest_rows
+    return _fallback_shot_rows_from_sequence_folder(sequence_folder)
 
 
-def find_shot_folders(show_root: str | Path, selected_sequence: str) -> list[ShotRow]:
+def find_shot_folders(
+    show_root: str | Path,
+    selected_sequence: str,
+    *,
+    active_only: bool = False,
+) -> list[ShotRow]:
     show_path = _as_path(show_root)
     if selected_sequence == ALL_SEQUENCES_LABEL:
         sequence_folders = find_sequence_folders(show_path)
@@ -1105,7 +1129,12 @@ def find_shot_folders(show_root: str | Path, selected_sequence: str) -> list[Sho
         sequence_folders = [sequence_path] if _is_sequence_folder(sequence_path) else []
     shot_rows = []
     for sequence_folder in sequence_folders:
-        shot_rows.extend(_shot_rows_from_sequence_folder(sequence_folder))
+        shot_rows.extend(
+            _shot_rows_from_sequence_folder(
+                sequence_folder,
+                active_only=active_only,
+            )
+        )
     return sorted(shot_rows, key=lambda row: (row.order, row.sequence.lower(), row.section_number, row.shot_number, row.shot_name.lower()))
 
 

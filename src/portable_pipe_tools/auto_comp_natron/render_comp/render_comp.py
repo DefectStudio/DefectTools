@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
@@ -35,6 +36,12 @@ LOAD_RENDER_PROJECT_COMMAND = (
 _MIN_VIDEO_BYTES = 1024
 _VIDEO_EXTENSIONS = {".mp4", ".mov"}
 _RENDER_EXIT_GRACE_SECONDS = 2.0
+DiagnosticLog = Callable[[str], None]
+
+
+def _log_step(diagnostic_log: DiagnosticLog | None, message: str) -> None:
+    if diagnostic_log is not None:
+        diagnostic_log(message)
 
 
 class SmartWriteNotFoundError(RuntimeError):
@@ -200,22 +207,49 @@ def render_comp(
     *,
     natron_executable: str | Path | None = None,
     hydration_progress: HydrationProgress | None = None,
+    diagnostic_log: DiagnosticLog | None = None,
+    output_log_path: str | Path | None = None,
 ) -> RenderCompResult:
     comp_path = get_comp_path(show_root, sequence_name, shot_name)
+    _log_step(diagnostic_log, f"Render comp: resolved project {comp_path}")
     if not comp_path.is_file():
+        _log_step(diagnostic_log, "Render comp: project file does not exist")
         raise CompNotFoundError(comp_path)
+    _log_step(diagnostic_log, "Render comp: inspecting project for SmartWrite")
     _require_smart_write(comp_path)
+    _log_step(diagnostic_log, "Render comp: SmartWrite inspection passed")
 
+    _log_step(diagnostic_log, "Render comp: hydrating latest source sequence")
     hydration = hydrate_latest_source_sequence(
         show_root,
         sequence_name,
         shot_name,
         progress=hydration_progress,
     )
+    _log_step(
+        diagnostic_log,
+        f"Render comp: hydration completed with {hydration.hydrated_files} files",
+    )
     environment = build_natron_environment()
     renderer = get_natron_renderer_executable(natron_executable, environment)
     status_path = _new_status_path()
-    log_path = _new_log_path(shot_name)
+    log_path = (
+        Path(output_log_path)
+        if output_log_path is not None
+        else _new_log_path(shot_name)
+    )
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as capture_error:
+        _log_step(
+            diagnostic_log,
+            "Render comp: could not use requested Natron output log; "
+            f"falling back to the local log ({capture_error!r})",
+        )
+        log_path = _new_log_path(shot_name)
+    _log_step(diagnostic_log, f"Render comp: renderer is {renderer}")
+    _log_step(diagnostic_log, f"Render comp: status file is {status_path}")
+    _log_step(diagnostic_log, f"Render comp: Natron output log is {log_path}")
     environment[RENDER_STATUS_ENV] = str(status_path)
     environment[RENDER_PROJECT_ENV] = str(comp_path)
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -233,6 +267,10 @@ def render_comp(
         log_path,
         f"Hydrated source files: {hydration.hydrated_files}",
     )
+    _log_step(
+        diagnostic_log,
+        f"Render comp: launching command {subprocess.list2cmdline(command)}",
+    )
     try:
         # A project passed as NatronRenderer's main argument is rendered again
         # automatically. Load it first, then run our Python script as the main
@@ -247,10 +285,12 @@ def render_comp(
             )
     except OSError as error:
         _append_render_log(log_path, f"Launch failed: {error!r}")
+        _log_step(diagnostic_log, f"Render comp: launch failed with {error!r}")
         status_path.unlink(missing_ok=True)
         raise CompRenderLaunchError(comp_path, error, log_path) from error
 
     _append_render_log(log_path, f"NatronRenderer PID: {process.pid}")
+    _log_step(diagnostic_log, f"Render comp: NatronRenderer PID is {process.pid}")
 
     return RenderCompResult(
         comp_path=comp_path,

@@ -7,13 +7,17 @@ import unittest
 
 from portable_pipe_tools.auto_comp_natron.settings import (
     SETTINGS_SCHEMA_VERSION,
+    load_log_username,
     load_saved_browser_selection,
     load_saved_natron_executable,
     load_saved_repository_folder,
     load_settings,
+    load_verbose_logging_enabled,
     save_browser_selection,
+    save_log_username,
     save_natron_executable,
     save_repository_folder,
+    save_verbose_logging_enabled,
 )
 
 
@@ -85,6 +89,36 @@ class AutoCompNatronSettingsTests(unittest.TestCase):
                 load_saved_natron_executable(settings_path),
             )
             self.assertEqual("F:/Shows", load_saved_repository_folder(settings_path))
+
+    def test_verbose_logging_setting_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "settings.json"
+
+            self.assertTrue(load_verbose_logging_enabled(settings_path))
+            save_verbose_logging_enabled(True, settings_path)
+            self.assertTrue(load_verbose_logging_enabled(settings_path))
+            save_verbose_logging_enabled(False, settings_path)
+            self.assertFalse(load_verbose_logging_enabled(settings_path))
+
+    def test_log_username_round_trip_preserves_other_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "settings.json"
+            save_repository_folder("F:/Shows", settings_path)
+
+            save_log_username("  Kat Francis  ", settings_path)
+
+            self.assertEqual("Kat Francis", load_log_username(settings_path))
+            self.assertEqual(
+                "F:/Shows",
+                load_saved_repository_folder(settings_path),
+            )
+
+    def test_empty_log_username_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "settings.json"
+
+            with self.assertRaisesRegex(ValueError, "cannot be empty"):
+                save_log_username("   ", settings_path)
 
 
 if __name__ == "__main__":

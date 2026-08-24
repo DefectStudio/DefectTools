@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 
-SETTINGS_SCHEMA_VERSION = 3
+SETTINGS_SCHEMA_VERSION = 5
 SETTINGS_FILENAME = "auto_comp_natron_local_save.json"
 
 
@@ -30,6 +30,16 @@ def load_saved_repository_folder(settings_path: Path | None = None) -> str:
 def load_saved_natron_executable(settings_path: Path | None = None) -> str:
     settings = load_settings(settings_path)
     return str(settings.get("natron_executable") or "").strip()
+
+
+def load_verbose_logging_enabled(settings_path: Path | None = None) -> bool:
+    settings = load_settings(settings_path)
+    return bool(settings.get("verbose_logging_enabled", True))
+
+
+def load_log_username(settings_path: Path | None = None) -> str:
+    settings = load_settings(settings_path)
+    return str(settings.get("log_username") or "").strip()
 
 
 def load_saved_browser_selection(
@@ -72,6 +82,29 @@ def save_natron_executable(
     path = settings_path or get_default_settings_path()
     settings = load_settings(path)
     settings["natron_executable"] = str(natron_executable)
+    return _write_settings(path, settings)
+
+
+def save_verbose_logging_enabled(
+    enabled: bool,
+    settings_path: Path | None = None,
+) -> Path:
+    path = settings_path or get_default_settings_path()
+    settings = load_settings(path)
+    settings["verbose_logging_enabled"] = bool(enabled)
+    return _write_settings(path, settings)
+
+
+def save_log_username(
+    username: str,
+    settings_path: Path | None = None,
+) -> Path:
+    selected_username = str(username).strip()
+    if not selected_username:
+        raise ValueError("Log username cannot be empty.")
+    path = settings_path or get_default_settings_path()
+    settings = load_settings(path)
+    settings["log_username"] = selected_username
     return _write_settings(path, settings)
 
 

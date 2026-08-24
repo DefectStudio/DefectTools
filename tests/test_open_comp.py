@@ -21,6 +21,7 @@ from portable_pipe_tools.auto_comp_natron.open_comp import (
     get_portable_natron_plugins_path,
     get_smart_read_onload_script_path,
     open_comp,
+    open_comp_in_natron,
 )
 from portable_pipe_tools.auto_comp_natron.open_comp.open_comp import _default_opener
 from portable_pipe_tools.auto_comp_natron.source_media import (
@@ -88,6 +89,35 @@ class OpenCompTests(unittest.TestCase):
             options["creationflags"],
         )
 
+    @patch(
+        "portable_pipe_tools.auto_comp_natron.open_comp.open_comp.subprocess.Popen"
+    )
+    def test_interactive_natron_stdout_and_stderr_are_captured(
+        self,
+        popen: Mock,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            comp_path = temporary_path / "shot.ntp"
+            output_log_path = temporary_path / "logs" / "natron.log"
+            process = Mock(pid=4321)
+            popen.return_value = process
+
+            result = open_comp_in_natron(
+                comp_path,
+                temporary_path / "Natron.exe",
+                output_log_path=output_log_path,
+            )
+
+            self.assertIs(process, result)
+            options = popen.call_args.kwargs
+            self.assertEqual(str(output_log_path), options["stdout"].name)
+            self.assertEqual(__import__("subprocess").STDOUT, options["stderr"])
+            self.assertIn(
+                "Starting Natron for",
+                output_log_path.read_text(encoding="utf-8"),
+            )
+
     def test_open_comp_opens_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             show_root = Path(temporary_directory) / "show"
@@ -95,17 +125,24 @@ class OpenCompTests(unittest.TestCase):
             comp_path.parent.mkdir(parents=True)
             comp_path.write_bytes(b"comp")
             opener = Mock()
+            diagnostic_messages: list[str] = []
 
             result = open_comp(
                 show_root,
                 "BSH",
                 "BSH_000_0010",
                 opener=opener,
+                diagnostic_log=diagnostic_messages.append,
             )
 
             opener.assert_called_once_with(comp_path)
             self.assertEqual(comp_path, result.comp_path)
             self.assertFalse(result.created)
+            diagnostic_text = "\n".join(diagnostic_messages)
+            self.assertIn("resolved project", diagnostic_text)
+            self.assertIn("hydration completed", diagnostic_text)
+            self.assertIn("launching through custom opener", diagnostic_text)
+            self.assertIn("launch request completed", diagnostic_text)
 
     @patch(
         "portable_pipe_tools.auto_comp_natron.open_comp.open_comp."

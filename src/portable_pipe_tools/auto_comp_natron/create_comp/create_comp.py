@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import html
 from pathlib import Path
@@ -19,6 +20,12 @@ _PROJECT_PATH_ENTRY = re.compile(
     r"(&lt;Name&gt;Project&lt;/Name&gt;&lt;Value&gt;).*?(&lt;/Value&gt;)",
     re.DOTALL,
 )
+DiagnosticLog = Callable[[str], None]
+
+
+def _log_step(diagnostic_log: DiagnosticLog | None, message: str) -> None:
+    if diagnostic_log is not None:
+        diagnostic_log(message)
 
 
 class CompAlreadyExistsError(FileExistsError):
@@ -198,33 +205,57 @@ def create_comp(
     shot_name: str,
     *,
     smart_write_outputs: SmartWriteOutputOptions | None = None,
+    diagnostic_log: DiagnosticLog | None = None,
 ) -> CreateCompResult:
     sequence = sequence_name.strip().upper()
     shot = shot_name.strip()
+    _log_step(
+        diagnostic_log,
+        f"Create comp: validating selection sequence={sequence!r}, shot={shot!r}",
+    )
     _validate_selection(sequence, shot)
 
     target_path = get_comp_path(show_root, sequence, shot)
+    _log_step(diagnostic_log, f"Create comp: target path is {target_path}")
     if target_path.exists():
+        _log_step(diagnostic_log, "Create comp: target already exists")
         raise CompAlreadyExistsError(target_path)
 
     template_candidates = get_template_candidates(show_root, sequence)
+    _log_step(
+        diagnostic_log,
+        "Create comp: template candidates are "
+        + "; ".join(str(candidate) for candidate in template_candidates),
+    )
     template_path = next(
         (candidate for candidate in template_candidates if candidate.is_file()),
         None,
     )
     if template_path is None:
+        _log_step(diagnostic_log, "Create comp: no template candidate exists")
         raise CompTemplateNotFoundError(template_candidates)
+    _log_step(diagnostic_log, f"Create comp: selected template {template_path}")
 
     try:
+        _log_step(diagnostic_log, "Create comp: copying template without overwrite")
         _copy_without_overwrite(template_path, target_path)
+        _log_step(diagnostic_log, "Create comp: updating Natron Project directory")
         _set_natron_project_directory(target_path)
         if smart_write_outputs is not None:
+            _log_step(
+                diagnostic_log,
+                f"Create comp: applying SmartWrite outputs {smart_write_outputs!r}",
+            )
             _set_smart_write_outputs(target_path, smart_write_outputs)
     except FileExistsError as error:
+        _log_step(diagnostic_log, "Create comp: target appeared during creation")
         raise CompAlreadyExistsError(target_path) from error
     except Exception:
+        _log_step(diagnostic_log, "Create comp: failed; removing partial target")
         target_path.unlink(missing_ok=True)
         raise
+
+    _log_step(diagnostic_log, f"Create comp: completed successfully at {target_path}")
 
     return CreateCompResult(
         target_path=target_path,
