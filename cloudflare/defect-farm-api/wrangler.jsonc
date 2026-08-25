@@ -16,7 +16,7 @@
     "LEASE_SECONDS": "300"
   },
   "secrets": {
-    "required": ["SUBMIT_TOKEN", "WORKER_TOKEN", "MANAGER_TOKEN"]
+    "required": ["SUBMIT_TOKEN", "WORKER_TOKEN", "MANAGER_TOKEN", "VIEWER_TOKEN"]
   },
   "d1_databases": [
     {

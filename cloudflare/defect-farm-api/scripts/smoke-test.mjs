@@ -6,6 +6,7 @@ const tokens = {
   submit: process.env.DEFECT_FARM_SUBMIT_TOKEN ?? "local-submit-token-for-tests",
   worker: process.env.DEFECT_FARM_WORKER_TOKEN ?? "local-worker-token-for-tests",
   manager: process.env.DEFECT_FARM_MANAGER_TOKEN ?? "local-manager-token-for-tests",
+  viewer: process.env.DEFECT_FARM_VIEWER_TOKEN ?? "local-viewer-token-for-tests",
 };
 
 async function request(path, { role, method = "GET", body, expected = 200 } = {}) {
@@ -58,7 +59,7 @@ const job = {
 
 const health = await request("/health");
 assert.equal(health.ok, true);
-for (const role of ["submit", "worker", "manager"]) {
+for (const role of ["submit", "worker", "manager", "viewer"]) {
   const auth = await request("/api/v1/auth/check", { role });
   assert.equal(auth.role, role);
 }
@@ -111,6 +112,37 @@ assert.equal(
   true,
 );
 
+const workerQueuedListing = await request(
+  "/api/v1/jobs?status=queued&limit=100&offset=0",
+  { role: "worker" },
+);
+const viewerQueuedListing = await request(
+  "/api/v1/jobs?status=queued&limit=100&offset=0",
+  { role: "viewer" },
+);
+assert.equal(
+  viewerQueuedListing.jobs.some((listedJob) => listedJob.job_id === jobId),
+  true,
+  "viewer tokens should be able to see submitted renders",
+);
+await request("/api/v1/jobs", {
+  role: "viewer",
+  method: "POST",
+  body: { ...job, job_id: `${jobId}_viewer_rejected` },
+  expected: 403,
+});
+await request("/api/v1/jobs/claim", {
+  role: "viewer",
+  method: "POST",
+  body: workerBody("viewer-cannot-claim"),
+  expected: 403,
+});
+assert.equal(
+  workerQueuedListing.jobs.some((listedJob) => listedJob.job_id === jobId),
+  true,
+  "worker tokens should be able to see submitted renders",
+);
+
 const workers = ["smoke-worker-a", "smoke-worker-b"];
 const claims = await Promise.all(
   workers.map((workerId) =>
@@ -130,6 +162,62 @@ assert.equal(winningClaim.job.job_id, jobId);
 const firstWorker = winningClaim.job.worker;
 const secondWorker = workers.find((worker) => worker !== firstWorker);
 assert.ok(secondWorker);
+
+const workerRenderingListing = await request(
+  "/api/v1/jobs?status=rendering&limit=100&offset=0",
+  { role: "worker" },
+);
+assert.equal(
+  workerRenderingListing.jobs.some((listedJob) => listedJob.job_id === jobId),
+  true,
+  "worker tokens should be able to see ongoing renders",
+);
+
+const workerVisibleWorkers = await request("/api/v1/workers", {
+  role: "worker",
+});
+assert.equal(
+  workerVisibleWorkers.workers.some((worker) => worker.id === firstWorker),
+  true,
+  "worker tokens should be able to see render-worker status",
+);
+
+const workerVisibleJobDetail = await request(`/api/v1/jobs/${jobId}`, {
+  role: "worker",
+});
+assert.equal(workerVisibleJobDetail.job.job_id, jobId);
+assert.equal(workerVisibleJobDetail.job.status, "rendering");
+
+const viewerRenderingListing = await request(
+  "/api/v1/jobs?status=rendering&limit=100&offset=0",
+  { role: "viewer" },
+);
+assert.equal(
+  viewerRenderingListing.jobs.some((listedJob) => listedJob.job_id === jobId),
+  true,
+  "viewer tokens should be able to see ongoing renders",
+);
+const viewerVisibleWorkers = await request("/api/v1/workers", {
+  role: "viewer",
+});
+assert.equal(
+  viewerVisibleWorkers.workers.some((worker) => worker.id === firstWorker),
+  true,
+  "viewer tokens should be able to see render-worker status",
+);
+const viewerVisibleJobDetail = await request(`/api/v1/jobs/${jobId}`, {
+  role: "viewer",
+});
+assert.equal(viewerVisibleJobDetail.job.job_id, jobId);
+await request(`/api/v1/jobs/${jobId}/heartbeat`, {
+  role: "viewer",
+  method: "POST",
+  body: workerBody(firstWorker, {
+    lease_token: winningClaim.lease_token,
+    progress: 25,
+  }),
+  expected: 403,
+});
 
 const repeatedClaim = await request("/api/v1/jobs/claim", {
   role: "worker",
@@ -212,6 +300,16 @@ const idleStopWorker = await request("/api/v1/jobs/claim", {
 });
 assert.equal(idleStopWorker.job_available, false);
 assert.equal(idleStopWorker.stop_requested, false);
+await request(`/api/v1/workers/${stopWorker}/stop`, {
+  role: "worker",
+  method: "POST",
+  expected: 403,
+});
+await request(`/api/v1/workers/${stopWorker}/stop`, {
+  role: "viewer",
+  method: "POST",
+  expected: 403,
+});
 await request(`/api/v1/workers/${stopWorker}/stop`, {
   role: "manager",
   method: "POST",
@@ -359,6 +457,16 @@ const deletionClaim = await request("/api/v1/jobs/claim", {
 });
 assert.equal(deletionClaim.job_available, true);
 assert.equal(deletionClaim.job.job_id, replacementJobId);
+await request(`/api/v1/jobs/${replacementJobId}`, {
+  role: "worker",
+  method: "DELETE",
+  expected: 403,
+});
+await request(`/api/v1/jobs/${replacementJobId}`, {
+  role: "viewer",
+  method: "DELETE",
+  expected: 403,
+});
 const renderingDeleteRejected = await request(
   `/api/v1/jobs/${replacementJobId}`,
   {

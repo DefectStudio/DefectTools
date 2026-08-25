@@ -36,8 +36,9 @@ Never commit `.dev.vars`, `.env`, or production tokens.
 
 ## Production deployment
 
-1. Configure `SUBMIT_TOKEN`, `WORKER_TOKEN`, and `MANAGER_TOKEN` as encrypted
-   Worker secrets.
+1. Configure `SUBMIT_TOKEN`, `WORKER_TOKEN`, `MANAGER_TOKEN`, and
+   `VIEWER_TOKEN` as encrypted Worker secrets. The viewer credential is shipped
+   with the desktop tool and must remain read-only.
 2. Run `npm run migrate:remote`.
 3. Run `npm run deploy:dry-run`.
 4. Run `npm run deploy`.

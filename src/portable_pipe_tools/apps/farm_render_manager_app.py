@@ -202,6 +202,28 @@ class FarmRenderManagerApp:
             if dispatcher_connection is not None
             else None
         )
+        if self.dispatcher_client is not None:
+            self.dispatcher_read_client = self.dispatcher_client
+        else:
+            try:
+                dispatcher_read_connection = load_dispatcher_connection("worker")
+            except Exception:
+                dispatcher_read_connection = None
+            self.dispatcher_read_client = (
+                DispatcherClient(dispatcher_read_connection)
+                if dispatcher_read_connection is not None
+                else None
+            )
+            if self.dispatcher_read_client is None:
+                try:
+                    dispatcher_read_connection = load_dispatcher_connection("viewer")
+                except Exception:
+                    dispatcher_read_connection = None
+                self.dispatcher_read_client = (
+                    DispatcherClient(dispatcher_read_connection)
+                    if dispatcher_read_connection is not None
+                    else None
+                )
         self.project_var = tk.StringVar(value=PROJECT_CHOICES[0])
         self.auto_refresh_var = tk.BooleanVar(
             value=load_saved_auto_refresh_enabled(self.settings_path)
@@ -1071,15 +1093,19 @@ class FarmRenderManagerApp:
         self,
         repository_path: Path,
     ) -> tuple[list[RenderJob], list[WorkerRecord]]:
-        dispatcher_client = getattr(self, "dispatcher_client", None)
-        if dispatcher_client is None:
+        dispatcher_read_client = getattr(
+            self,
+            "dispatcher_read_client",
+            getattr(self, "dispatcher_client", None),
+        )
+        if dispatcher_read_client is None:
             return (
                 get_all_render_jobs(repository_path),
                 list_render_workers(repository_path),
             )
-        jobs = get_cloud_render_jobs(dispatcher_client, repository_path)
+        jobs = get_cloud_render_jobs(dispatcher_read_client, repository_path)
         workers = get_cloud_render_workers(
-            dispatcher_client,
+            dispatcher_read_client,
             repository_path,
             jobs,
         )
@@ -1617,11 +1643,16 @@ class FarmRenderManagerApp:
         job = self._jobs_by_item.get(selection[0])
         if job is None:
             return
-        if job.control_source == "cloud" and self.dispatcher_client is not None:
+        dispatcher_read_client = getattr(
+            self,
+            "dispatcher_read_client",
+            getattr(self, "dispatcher_client", None),
+        )
+        if job.control_source == "cloud" and dispatcher_read_client is not None:
             try:
                 job = hydrate_cloud_render_job(
                     job,
-                    self.dispatcher_client,
+                    dispatcher_read_client,
                     self.repository_path or Path("."),
                 )
             except Exception as error:

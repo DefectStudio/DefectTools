@@ -1,6 +1,6 @@
 import { HttpError } from "./http";
 
-export type AuthRole = "submit" | "worker" | "manager";
+export type AuthRole = "submit" | "worker" | "manager" | "viewer";
 
 function bearerToken(request: Request): string | null {
   const authorization = request.headers.get("authorization") ?? "";
@@ -32,6 +32,7 @@ export function requireRole(
     ["manager", env.MANAGER_TOKEN],
     ["submit", env.SUBMIT_TOKEN],
     ["worker", env.WORKER_TOKEN],
+    ["viewer", env.VIEWER_TOKEN],
   ];
   for (const [role, expected] of configuredTokens) {
     if (roles.includes(role) && timingSafeEqualText(candidate, expected)) {

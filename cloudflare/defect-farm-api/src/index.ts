@@ -67,7 +67,12 @@ async function handleRequest(
   }
 
   if (request.method === "GET" && path === `${API_ROOT}/auth/check`) {
-    const role = requireRole(request, env, ["submit", "worker", "manager"]);
+    const role = requireRole(request, env, [
+      "submit",
+      "worker",
+      "manager",
+      "viewer",
+    ]);
     return jsonResponse({ ok: true, role }, 200, id);
   }
 
@@ -97,7 +102,7 @@ async function handleRequest(
   }
 
   if (request.method === "GET" && path === `${API_ROOT}/jobs`) {
-    requireRole(request, env, ["manager"]);
+    requireRole(request, env, ["worker", "manager", "viewer"]);
     const listing = await listJobs(env, url.searchParams);
     return jsonResponse({ ok: true, ...listing }, 200, id);
   }
@@ -129,7 +134,7 @@ async function handleRequest(
   }
 
   if (request.method === "GET" && path === `${API_ROOT}/workers`) {
-    requireRole(request, env, ["manager"]);
+    requireRole(request, env, ["worker", "manager", "viewer"]);
     return jsonResponse({ ok: true, workers: await listWorkers(env) }, 200, id);
   }
 
@@ -246,12 +251,12 @@ async function handleRequest(
 
   const jobDetail = new RegExp(`^${API_ROOT}/jobs/([^/]+)$`).exec(path);
   if (jobDetail && (request.method === "GET" || request.method === "DELETE")) {
-    requireRole(request, env, ["manager"]);
     const jobId = safeIdentifier(
       decodedPathSegment(jobDetail[1] ?? ""),
       "job_id",
     );
     if (request.method === "DELETE") {
+      requireRole(request, env, ["manager"]);
       const result = await deleteJob(env, jobId);
       return jsonResponse(
         {
@@ -265,6 +270,7 @@ async function handleRequest(
         id,
       );
     }
+    requireRole(request, env, ["worker", "manager", "viewer"]);
     return jsonResponse({ ok: true, ...(await getJob(env, jobId)) }, 200, id);
   }
 

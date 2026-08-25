@@ -14,6 +14,7 @@ from portable_pipe_tools.apps.farm_render_manager_app import (
     format_submitted_pacific,
 )
 from portable_pipe_tools.render_farm.render_time import format_render_time
+from portable_pipe_tools.render_farm.cloud_dispatch import DispatcherConnection
 from portable_pipe_tools.render_farm.manager_settings import (
     load_saved_auto_refresh_interval_minutes,
     save_auto_refresh_enabled,
@@ -64,6 +65,99 @@ class FarmRenderManagerAppTests(unittest.TestCase):
             "2026-08-10  |  21:59",
             format_submitted_pacific("2026-08-11T04:59:16.486"),
         )
+
+    def test_worker_key_enables_read_only_cloud_manager_access(self) -> None:
+        worker_connection = DispatcherConnection(
+            api_url="https://dispatcher.example.test",
+            role="worker",
+            token="worker-token",
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "manager.json"
+            save_auto_refresh_enabled(False, settings_path)
+            with patch(
+                "portable_pipe_tools.apps.farm_render_manager_app."
+                "load_dispatcher_connection",
+                side_effect=lambda role: (
+                    worker_connection if role == "worker" else None
+                ),
+            ):
+                app = FarmRenderManagerApp(
+                    settings_path=settings_path,
+                    prompt_on_startup=False,
+                )
+            app.root.withdraw()
+
+            try:
+                self.assertIsNone(app.dispatcher_client)
+                self.assertIsNotNone(app.dispatcher_read_client)
+                assert app.dispatcher_read_client is not None
+                self.assertEqual(
+                    "worker",
+                    app.dispatcher_read_client.connection.role,
+                )
+                with (
+                    patch(
+                        "portable_pipe_tools.apps.farm_render_manager_app."
+                        "get_cloud_render_jobs",
+                        return_value=[],
+                    ) as get_cloud_jobs,
+                    patch(
+                        "portable_pipe_tools.apps.farm_render_manager_app."
+                        "get_cloud_render_workers",
+                        return_value=[],
+                    ) as get_cloud_workers,
+                ):
+                    jobs, workers = app._load_manager_snapshot(
+                        Path(temporary_directory)
+                    )
+
+                self.assertEqual([], jobs)
+                self.assertEqual([], workers)
+                get_cloud_jobs.assert_called_once_with(
+                    app.dispatcher_read_client,
+                    Path(temporary_directory),
+                )
+                get_cloud_workers.assert_called_once_with(
+                    app.dispatcher_read_client,
+                    Path(temporary_directory),
+                    [],
+                )
+            finally:
+                app._on_close()
+
+    def test_builtin_viewer_enables_cloud_manager_without_saved_keys(self) -> None:
+        viewer_connection = DispatcherConnection(
+            api_url="https://dispatcher.example.test",
+            role="viewer",
+            token="viewer-token",
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings_path = Path(temporary_directory) / "manager.json"
+            save_auto_refresh_enabled(False, settings_path)
+            with patch(
+                "portable_pipe_tools.apps.farm_render_manager_app."
+                "load_dispatcher_connection",
+                side_effect=lambda role: (
+                    viewer_connection if role == "viewer" else None
+                ),
+            ):
+                app = FarmRenderManagerApp(
+                    settings_path=settings_path,
+                    prompt_on_startup=False,
+                )
+            app.root.withdraw()
+
+            try:
+                self.assertIsNone(app.dispatcher_client)
+                self.assertIsNotNone(app.dispatcher_read_client)
+                assert app.dispatcher_read_client is not None
+                self.assertEqual(
+                    "viewer",
+                    app.dispatcher_read_client.connection.role,
+                )
+            finally:
+                app._on_close()
 
     def test_submitted_time_is_formatted_in_pacific_standard_time(self) -> None:
         self.assertEqual(

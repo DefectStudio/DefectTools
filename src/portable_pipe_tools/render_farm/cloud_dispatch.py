@@ -20,12 +20,16 @@ from portable_pipe_tools.render_farm.queue import (
 )
 
 
-DispatcherRole = Literal["submit", "worker", "manager"]
+DispatcherRole = Literal["submit", "worker", "manager", "viewer"]
 CLOUD_SETTINGS_SCHEMA_VERSION = 1
 CLOUD_SETTINGS_FILENAME = "cloud_connection.json"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 20.0
 DEFAULT_RETRY_DELAYS_SECONDS = (0.25, 1.0)
 USER_AGENT = "DefectRenderFarm/1.0"
+BUILTIN_VIEWER_API_URL = (
+    "https://defect-farm-api.twilight-tooth-7b7c.workers.dev"
+)
+BUILTIN_VIEWER_TOKEN = "defect_viewer_v1_ec3027609d1c5e4934ab5bf574f6cf231b02547d6d968ce45bc53092dc9499f8"
 
 
 class DispatcherError(RuntimeError):
@@ -158,12 +162,15 @@ def load_dispatcher_connection(
 ) -> DispatcherConnection | None:
     settings = load_cloud_settings(settings_path)
     api_url = str(
-        os.environ.get("DEFECT_FARM_API_URL") or settings.get("api_url") or ""
+        os.environ.get("DEFECT_FARM_API_URL")
+        or settings.get("api_url")
+        or (BUILTIN_VIEWER_API_URL if role == "viewer" else "")
     ).strip()
     token_environment_name = f"DEFECT_FARM_{role.upper()}_TOKEN"
     token = str(
         os.environ.get(token_environment_name)
         or settings.get(f"{role}_token")
+        or (BUILTIN_VIEWER_TOKEN if role == "viewer" else "")
         or ""
     ).strip()
     if not api_url and not token and not required:
@@ -294,7 +301,7 @@ class DispatcherClient:
     def check_auth(self) -> DispatcherRole:
         response = self._request("GET", "/api/v1/auth/check")
         role = response.get("role")
-        if role not in {"submit", "worker", "manager"}:
+        if role not in {"submit", "worker", "manager", "viewer"}:
             raise DispatcherError("Dispatcher authentication response was invalid.")
         return role
 
