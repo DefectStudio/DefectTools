@@ -11,6 +11,7 @@ from portable_pipe_tools.render_farm.unreal_runner import (
     COMMAND_LINE_PIPELINE_CLASS,
     DEFAULT_RENDER_TIMEOUT_SECONDS,
     HOST_EXECUTOR_CLASS,
+    NIAGARA_TICK_FLUSH_WORKAROUND_COMMANDS,
     PYTHON_EXECUTOR_CLASS,
     _interpret_unreal_result,
     _format_timeout_duration,
@@ -84,6 +85,10 @@ class UnrealRunnerTests(unittest.TestCase):
         )
         self.assertIn(
             f"-RenderFarmJob={self.claimed_folder / JOB_FILENAME}",
+            command,
+        )
+        self.assertIn(
+            f"-ExecCmds={NIAGARA_TICK_FLUSH_WORKAROUND_COMMANDS}",
             command,
         )
         self.assertIn("-RenderFarmValidateOnly=true", command)
