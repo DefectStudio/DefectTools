@@ -42,10 +42,6 @@ HOST_EXECUTOR_CLASS = (
 COMMAND_LINE_PIPELINE_CLASS = (
     "/Script/MovieRenderPipelineCore.MoviePipeline"
 )
-NIAGARA_TICK_FLUSH_WORKAROUND_COMMANDS = (
-    "fx.Niagara.Batcher.TickFlush.MaxQueuedFrames 100000,"
-    "fx.Niagara.Batcher.TickFlush.MaxPendingTicks 100000"
-)
 
 _ENGINE_VERSION_RE = re.compile(r"(?<!\d)(\d+\.\d+)(?!\d)")
 _COMMIT_RE = re.compile(r"[0-9a-fA-F]{40,64}")
@@ -235,11 +231,6 @@ def build_unreal_command(
         f"-RenderFarmJob={job_path}",
         "-unattended",
         "-RenderOffscreen",
-        # UE-392456: Slow EXR finalization can accumulate enough Niagara GPU
-        # ticks to enter an unsafe dummy-view flush path. Apply the workaround
-        # for the lifetime of the farm process so it remains active through
-        # Movie Render Graph finalization.
-        f"-ExecCmds={NIAGARA_TICK_FLUSH_WORKAROUND_COMMANDS}",
         "-NoSplash",
         "-NoLoadingScreen",
         "-NoScreenMessages",
