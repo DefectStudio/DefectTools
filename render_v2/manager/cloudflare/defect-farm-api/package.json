@@ -1,0 +1,23 @@
+{
+  "name": "defect-farm-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "npm run types:check && tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "dev": "wrangler dev",
+    "migrate:local": "wrangler d1 migrations apply defect-farm-v2-local --local",
+    "test:reset-local": "wrangler d1 execute defect-farm-v2-local --local --file scripts/reset-local-test.sql",
+    "test:smoke": "node scripts/smoke-test.mjs",
+    "test:projects": "node scripts/test-projects.mjs",
+    "types": "wrangler types",
+    "types:check": "wrangler types --check"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "typescript": "latest",
+    "wrangler": "latest"
+  }
+}

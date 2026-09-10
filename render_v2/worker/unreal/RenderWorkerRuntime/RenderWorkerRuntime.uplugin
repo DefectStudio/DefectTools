@@ -1,0 +1,15 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.2.0",
+  "FriendlyName": "Render Worker Runtime",
+  "Description": "Minimal Python runtime for managed Render Worker projects.",
+  "Category": "Rendering",
+  "CanContainContent": true,
+  "EnabledByDefault": true,
+  "SupportedTargetPlatforms": ["Win64"],
+  "Plugins": [
+    {"Name": "PythonScriptPlugin", "Enabled": true},
+    {"Name": "MovieRenderPipeline", "Enabled": true}
+  ]
+}

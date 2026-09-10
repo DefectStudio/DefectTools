@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "projects": [
+    {
+      "project_id": "bishop",
+      "revision": 2,
+      "repository": "https://github.com/DefectStudio/s3bishop.git",
+      "branch": "main",
+      "uproject": "s3bishop.uproject",
+      "lfs": true,
+      "submodules": false,
+      "shot_aliases": {"ZZZ850": "ZZZ_000_0850"},
+      "render": {
+        "sequence": "/Game/_S3Bishop/Sequences/{prefix}/{shot}.{shot}",
+        "graph": "/Game/_S3Bishop/RenderSettings/beauty_HDsRGB.beauty_HDsRGB",
+        "shot_data": "/Game/_S3Bishop/Sequences/{prefix}/{shot}/{shot}_Data.{shot}_Data",
+        "level_property": "AssociatedLevelPathString"
+      }
+    }
+  ]
+}

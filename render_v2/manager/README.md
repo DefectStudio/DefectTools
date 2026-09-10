@@ -2,9 +2,9 @@
 
 Portable external Python tools for animation pipeline work outside Unreal Engine.
 
-**Render Farm V2:** Both V2 apps now live in this repository under `render_v2`.
-Use `run_manager_v2.bat` and `run_worker_v2.bat` at the repository root.
-See [V2 setup and tests](render_v2/README.md). Original V1 launchers remain available.
+**Current location:** Manager V2 is now part of Defect Tools at `render_v2/manager`.
+See [consolidated setup](../README.md); it supersedes the older separate-repository
+paths in this copied documentation.
 
 Initial goals:
 - Manage show folder creation
@@ -243,3 +243,12 @@ tools\render_worker.bat "F:\Defect Dropbox\defect\s3bishop\renderFarm" --worker-
 
 See [docs/render_farm_prototype.md](docs/render_farm_prototype.md) for the queue
 contract, real-render behavior, manual failure test, and deferred features.
+# Render Farm Manager V2 — independent development copy
+
+V1 stays in `F:/Defect Tools`. This repository contains the separate V2 manager and local dispatcher. The V2 worker stays in `F:/RenderWorker`.
+
+Run `run_v2_backend.bat`, then `run_manager_v2.bat`. The manager opens against an independent local V2 database on port 8795. See [V1/V2 separation](docs/v1-v2-separation.md) and [project registry](docs/render-farm-project-registry.md).
+
+No V2 changes are deployed to V1 production. This local repository has no remote. Configure newly provisioned resources before any future hosted V2 rollout; never reuse V1's endpoint or database.
+
+The remaining documentation below is inherited from the tools extraction and is not a V2 installation workflow.

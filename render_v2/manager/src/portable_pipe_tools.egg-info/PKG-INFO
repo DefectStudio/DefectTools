@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: portable-pipe-tools
+Version: 0.1.0
+Summary: Portable external Python tools for animation pipeline workflows.
+Requires-Python: >=3.11

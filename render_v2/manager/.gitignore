@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+.venv_build/
+venv/
+.env
+*.log
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# Local user config / secrets
+local_config/
+*.local.json
+*_token*.json
+
+# Local tool save files
+LocalSaveFiles/*
+!LocalSaveFiles/.gitkeep
+SaveFiles/*
+!SaveFiles/.gitkeep

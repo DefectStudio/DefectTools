@@ -1,0 +1,2 @@
+# The parent tools repo ignores specs; retain the worker's build recipe.
+!worker/packaging/*.spec
