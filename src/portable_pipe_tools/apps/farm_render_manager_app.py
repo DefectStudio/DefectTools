@@ -74,6 +74,7 @@ from portable_pipe_tools.apps.farm_render_manager_icon import (
     apply_farm_render_manager_icon,
     configure_windows_app_identity,
 )
+from portable_pipe_tools.apps.project_registry_app import ProjectRegistryWindow
 
 
 WINDOW_BACKGROUND = "#252629"
@@ -251,6 +252,8 @@ class FarmRenderManagerApp:
             value="Repository: Not connected"
         )
         self.repository_path: Path | None = None
+        self._project_registry_window = None
+        self._registered_project_ids: list[str] = []
         self.view_mode = JOBS_VIEW
         self.all_jobs: list[RenderJob] = []
         self.all_workers: list[WorkerRecord] = []
@@ -477,7 +480,7 @@ class FarmRenderManagerApp:
             ("File", ("Change Dropbox Folder...", "Exit")),
             ("Edit", ("Select All", "Clear Selection")),
             ("View", ("Refresh", "Reset Layout")),
-            ("Tools", ("Options...",)),
+            ("Tools", ("Projects...", "Options...")),
             ("Help", ("About Farm Render Manager",)),
         ):
             menu = tk.Menu(menu_bar, tearoff=False, **menu_options)
@@ -489,6 +492,8 @@ class FarmRenderManagerApp:
                         label=item_name,
                         command=self._browse_repository_folder,
                     )
+                elif item_name == "Projects...":
+                    menu.add_command(label=item_name, command=self._open_project_registry)
                 elif item_name == "Select All":
                     menu.add_command(
                         label=item_name,
@@ -664,7 +669,28 @@ class FarmRenderManagerApp:
             textvariable=self.repository_status_var,
             style="RepositoryDisconnected.TLabel",
         )
-        self.repository_status_label.grid(row=0, column=9, sticky="e")
+        self.repository_status_label.grid(row=0, column=10, sticky="e")
+        self.projects_button = ttk.Button(toolbar, text="Projects…", style="Deadline.TButton",
+                                          command=self._open_project_registry)
+        self.projects_button.grid(row=0, column=9, padx=(0, 10), sticky="e")
+
+    def _open_project_registry(self) -> None:
+        window = self._project_registry_window
+        if window is not None and window.winfo_exists():
+            window.lift()
+            return
+        client = self.dispatcher_client or self.dispatcher_read_client
+        if client is None:
+            messagebox.showinfo("Project registry", "Configure a Cloud Dispatcher connection first.", parent=self.root)
+            return
+        self._project_registry_window = ProjectRegistryWindow(
+            self.root, client=client, can_manage=self.dispatcher_client is not None,
+            on_change=self._registry_projects_changed,
+        )
+
+    def _registry_projects_changed(self, projects) -> None:
+        self._registered_project_ids = [project["project_id"] for project in projects]
+        self.set_projects(self.project_combo.cget("values"))
 
     def _create_panel(
         self,
@@ -966,6 +992,7 @@ class FarmRenderManagerApp:
         """Replace the project filter choices while preserving All Projects."""
         choices = [PROJECT_CHOICES[0]]
         choices.extend(project for project in projects if project not in choices)
+        choices.extend(project for project in getattr(self, "_registered_project_ids", []) if project not in choices)
         self.project_combo.configure(values=tuple(choices))
         if self.project_var.get() not in choices:
             self.project_var.set(PROJECT_CHOICES[0])

@@ -25,9 +25,10 @@ import {
   workerStopRequested,
 } from "./jobs";
 import type { JsonRecord } from "./types";
+import { createProject, listProjects, updateProject } from "./projects";
 
 const SERVICE_NAME = "defect-farm-api";
-const SERVICE_VERSION = "0.5.0";
+const SERVICE_VERSION = "0.6.0";
 const API_ROOT = "/api/v1";
 
 function requestId(request: Request): string {
@@ -74,6 +75,23 @@ async function handleRequest(
       "viewer",
     ]);
     return jsonResponse({ ok: true, role }, 200, id);
+  }
+
+  if (request.method === "GET" && path === `${API_ROOT}/projects`) {
+    const includeInactive = url.searchParams.get("include_inactive") === "true";
+    requireRole(request, env, includeInactive ? ["manager"] : ["manager", "worker", "viewer", "submit"]);
+    return jsonResponse({ ok: true, projects: await listProjects(env, includeInactive) }, 200, id);
+  }
+  if (request.method === "POST" && path === `${API_ROOT}/projects`) {
+    requireRole(request, env, ["manager"]);
+    const result = await createProject(env, await readJsonObject(request));
+    return jsonResponse({ ok: true, ...result }, result.created ? 201 : 200, id);
+  }
+  const projectPath = new RegExp(`^${API_ROOT}/projects/([^/]+)$`).exec(path);
+  if (request.method === "PUT" && projectPath) {
+    requireRole(request, env, ["manager"]);
+    const project = await updateProject(env, decodedPathSegment(projectPath[1] ?? ""), await readJsonObject(request));
+    return jsonResponse({ ok: true, project }, 200, id);
   }
 
   if (request.method === "POST" && path === `${API_ROOT}/jobs`) {

@@ -12,6 +12,7 @@
     "migrate:remote": "wrangler d1 migrations apply defect-farm-production --remote",
     "test:reset-local": "wrangler d1 execute defect-farm-production --local --file scripts/reset-local-test.sql",
     "test:smoke": "node scripts/smoke-test.mjs",
+    "test:projects": "node scripts/test-projects.mjs",
     "types": "wrangler types",
     "types:check": "wrangler types --check"
   },

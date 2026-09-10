@@ -510,6 +510,32 @@ class DispatcherClient:
             body=replacement_job,
         )
 
+    def list_projects(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+        response = self._request("GET", "/api/v1/projects",
+                                 query={"include_inactive": "true" if include_inactive else None})
+        projects = response.get("projects")
+        if not isinstance(projects, list) or not all(isinstance(project, dict) for project in projects):
+            raise DispatcherError("Dispatcher returned an invalid project list.")
+        return projects
+
+    def create_project(self, project_id: str, display_name: str, *, active: bool = True) -> dict[str, Any]:
+        response = self._request("POST", "/api/v1/projects", body={
+            "project_id": project_id, "display_name": display_name, "active": active,
+        })
+        project = response.get("project")
+        if not isinstance(project, dict):
+            raise DispatcherError("Dispatcher returned an invalid project.")
+        return project
+
+    def update_project(self, project_id: str, display_name: str, *, active: bool, revision: int) -> dict[str, Any]:
+        response = self._request("PUT", f"/api/v1/projects/{quote(project_id, safe='')}", body={
+            "display_name": display_name, "active": active, "revision": revision,
+        })
+        project = response.get("project")
+        if not isinstance(project, dict):
+            raise DispatcherError("Dispatcher returned an invalid project.")
+        return project
+
     def list_workers(self) -> list[dict[str, Any]]:
         response = self._request("GET", "/api/v1/workers")
         workers = response.get("workers")
