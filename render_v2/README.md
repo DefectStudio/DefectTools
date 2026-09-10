@@ -33,9 +33,10 @@ Worker EXE tooling remains at `worker/build_worker.bat`; its existing entry poin
 is the direct-job pilot, not the newer GUI review. Consolidation does not change
 rendering behavior or rebuild the EXE.
 
-**Latest worker milestone:** [Registered local rendering](worker/docs/registered-local-rendering.md)
-is now connected to the GUI and validated with Bishop ZZZ850. Automatic farm
-leasing remains disabled; the packaged EXE has not yet been switched to this GUI.
+**Latest worker milestone:** [Registered queue claiming](worker/docs/registered-queue-claiming.md)
+connects Start Worker to filesystem claims and eligible V2 cloud leases. Bishop
+ZZZ850 passed the full local cloud claim/render/complete path. The packaged EXE
+has not yet been switched to this GUI.
 
 Consolidation validation: 320 manager tests and 175 worker tests passed through
 the combined root launcher. The copied V2 dispatcher's type checks also passed.

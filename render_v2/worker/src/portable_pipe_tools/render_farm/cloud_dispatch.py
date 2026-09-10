@@ -102,7 +102,7 @@ def get_default_cloud_settings_path() -> Path:
         base = Path(local_app_data)
     else:
         base = Path.home() / "AppData" / "Local"
-    return base / "DefectStudio" / "RenderFarm" / CLOUD_SETTINGS_FILENAME
+    return base / "DefectStudio" / "RenderFarmV2" / CLOUD_SETTINGS_FILENAME
 
 
 def load_cloud_settings(settings_path: Path | None = None) -> dict[str, Any]:
@@ -325,6 +325,7 @@ class DispatcherClient:
         app_version: str | None = None,
         capabilities: dict[str, Any] | None = None,
         claim_request_id: str | None = None,
+        eligible_project_ids: list[str] | None = None,
     ) -> CloudClaimResult:
         response = self._request(
             "POST",
@@ -334,6 +335,7 @@ class DispatcherClient:
                 "claim_request_id": claim_request_id or str(uuid4()),
                 "app_version": app_version,
                 "capabilities": capabilities,
+                **({"eligible_project_ids": eligible_project_ids} if eligible_project_ids is not None else {}),
             },
         )
         stop_requested = bool(response.get("stop_requested"))

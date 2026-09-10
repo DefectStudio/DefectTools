@@ -294,6 +294,7 @@ def is_worker_blacklisted(
 def list_job_candidates(
     paths: QueuePaths,
     worker_name: str | None = None,
+    eligible_project_ids: list[str] | None = None,
 ) -> list[JobCandidate]:
     candidates: list[JobCandidate] = []
     queue_entries = retry_transient_windows_lock(
@@ -317,6 +318,10 @@ def list_job_candidates(
         try:
             job_path = folder / JOB_FILENAME
             job = read_json_object(job_path)
+            if eligible_project_ids is not None and str(job.get("project_id") or job.get("project") or "").casefold() not in {
+                name.casefold() for name in eligible_project_ids
+            }:
+                continue
             if (
                 worker_name is not None
                 and str(job.get(DISPATCHER_COORDINATION_FIELD) or "").casefold()
@@ -337,6 +342,8 @@ def list_job_candidates(
             if isinstance(raw_submitted_utc, str) and raw_submitted_utc:
                 submitted_utc = raw_submitted_utc
         except (OSError, ValueError):
+            if eligible_project_ids is not None:
+                continue  # Cannot establish this package's project eligibility.
             # Broken packages sort last, but are still claimed and failed so they
             # cannot poison the queue forever.
             pass
@@ -352,11 +359,11 @@ def list_job_candidates(
     return sorted(candidates, key=JobCandidate.sort_key)
 
 
-def claim_next_job(paths: QueuePaths, worker_name: str) -> Path | None:
+def claim_next_job(paths: QueuePaths, worker_name: str, eligible_project_ids: list[str] | None = None) -> Path | None:
     """Claim one job using a same-filesystem directory rename."""
     safe_worker_name = safe_name(worker_name, "WORKER")
 
-    for candidate in list_job_candidates(paths, safe_worker_name):
+    for candidate in list_job_candidates(paths, safe_worker_name, eligible_project_ids):
         claimed_folder = paths.is_rendering / f"{candidate.folder.name}__{safe_worker_name}"
         if path_exists_with_retry(claimed_folder):
             raise FileExistsError(
@@ -375,6 +382,11 @@ def claim_next_job(paths: QueuePaths, worker_name: str) -> Path | None:
         try:
             claimed_job_path = claimed_folder / JOB_FILENAME
             claimed_job = read_json_object(claimed_job_path)
+            if eligible_project_ids is not None and str(claimed_job.get("project_id") or claimed_job.get("project") or "").casefold() not in {
+                name.casefold() for name in eligible_project_ids
+            }:
+                rename_path_with_retry(claimed_folder, candidate.folder)
+                continue
             if is_worker_blacklisted(
                 claimed_job,
                 safe_worker_name,

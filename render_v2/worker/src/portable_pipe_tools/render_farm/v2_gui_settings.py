@@ -15,6 +15,18 @@ def _read_settings(path: Path) -> dict:
         return {}
 
 
+def load_listener_preferences(settings_path: Path) -> dict:
+    value = _read_settings(settings_path).get("listener", {})
+    return value if isinstance(value, dict) else {}
+
+
+def save_listener_preferences(settings_path: Path, **preferences) -> None:
+    settings = _read_settings(settings_path)
+    settings["listener"] = preferences
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(settings_path, settings)
+
+
 def load_or_detect_unreal_editor(settings_path: Path | None = None) -> str:
     path = settings_path or default_settings_path()
     settings = _read_settings(path)

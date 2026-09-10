@@ -102,7 +102,7 @@ def get_default_cloud_settings_path() -> Path:
         base = Path(local_app_data)
     else:
         base = Path.home() / "AppData" / "Local"
-    return base / "DefectStudio" / "RenderFarm" / CLOUD_SETTINGS_FILENAME
+    return base / "DefectStudio" / "RenderFarmV2" / CLOUD_SETTINGS_FILENAME
 
 
 def load_cloud_settings(settings_path: Path | None = None) -> dict[str, Any]:

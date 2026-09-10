@@ -191,6 +191,8 @@ def run_once(
     dispatcher_capabilities: dict[str, Any] | None = None,
     dispatcher_heartbeat_interval_seconds: float = 60.0,
     cloud_spool_root: str | Path | None = None,
+    eligible_project_ids: list[str] | None = None,
+    job_paths_resolver: Callable[[dict], tuple[Path, Path]] | None = None,
 ) -> WorkerResult | None:
     if minimum_stage_seconds < 0:
         raise ValueError("minimum_stage_seconds cannot be negative")
@@ -224,6 +226,7 @@ def run_once(
         cloud_lease = None
 
     def reconcile_and_list_candidates():
+        nonlocal shared_farm_root, local_uproject
         nonlocal cloud_lease
         nonlocal cloud_dispatcher_stop_requested
         reconciled_folders = reconcile_completed_jobs(paths)
@@ -258,6 +261,7 @@ def run_once(
                 worker,
                 app_version=dispatcher_app_version,
                 capabilities=capabilities,
+                **({"eligible_project_ids": eligible_project_ids} if eligible_project_ids is not None else {}),
             )
             if claim.stop_requested:
                 LOGGER.info("Cloud Dispatcher requested that worker %s stop.", worker)
@@ -270,6 +274,17 @@ def run_once(
             if claim.lease is None:
                 return []
             cloud_lease = claim.lease
+            if eligible_project_ids is not None and str(cloud_lease.job.get("project_id") or cloud_lease.job.get("project") or "").casefold() not in {
+                name.casefold() for name in eligible_project_ids
+            }:
+                release_cloud_lease("Claim returned a project not registered on this worker")
+                raise ValueError("Dispatcher returned an ineligible project; the claim was released.")
+            if job_paths_resolver is not None:
+                try:
+                    shared_farm_root, local_uproject = job_paths_resolver(cloud_lease.job)
+                except Exception:
+                    release_cloud_lease("Registered local project is no longer available")
+                    raise
             try:
                 queued_folder = materialize_cloud_job_package(
                     paths,
@@ -302,7 +317,7 @@ def run_once(
                     ),
                 )
             ]
-        return list_job_candidates(paths, worker)
+        return list_job_candidates(paths, worker, eligible_project_ids) if eligible_project_ids is not None else list_job_candidates(paths, worker)
 
     queued_candidates = _run_stage(
         stage=WorkerStage.WAITING,
@@ -363,7 +378,7 @@ def run_once(
         claimed_folder = (
             claim_job_by_id(paths, worker, cloud_lease.job_id)
             if cloud_lease is not None
-            else claim_next_job(paths, worker)
+            else (claim_next_job(paths, worker, eligible_project_ids) if eligible_project_ids is not None else claim_next_job(paths, worker))
         )
         if claimed_folder is None:
             release_cloud_lease(

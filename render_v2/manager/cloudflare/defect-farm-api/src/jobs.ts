@@ -564,6 +564,20 @@ export async function claimJob(
   data: JsonRecord,
 ): Promise<ClaimJobResult> {
   const worker = parseWorkerRequest(data);
+  const requestedProjects = data.eligible_project_ids;
+  if (requestedProjects !== undefined && (!Array.isArray(requestedProjects) || requestedProjects.length > 128 ||
+      requestedProjects.some(value => typeof value !== "string" || !value.trim() || value.length > 255))) {
+    throw new HttpError(400, "invalid_projects", "eligible_project_ids must be an array of up to 128 nonempty project names");
+  }
+  const eligibleProjects = requestedProjects === undefined ? null : (requestedProjects as string[]).map(value => value.toLowerCase());
+  const eligibleJson = eligibleProjects === null ? null : JSON.stringify(eligibleProjects);
+  function checkExistingProject(row: JobRow): void {
+    const payload = parseStoredRecord(row.payload_json);
+    const project = String(payload?.project_id || row.project).toLowerCase();
+    if (eligibleProjects !== null && !eligibleProjects.includes(project)) {
+      throw new HttpError(409, "active_project_unavailable", "Release the existing lease or restore its project registration before claiming another job");
+    }
+  }
   const claimRequestId = safeIdentifier(
     requiredString(data, "claim_request_id", 128),
     "claim_request_id",
@@ -579,6 +593,7 @@ export async function claimJob(
     .bind(claimRequestId, worker.workerId)
     .first<JobRow>();
   if (priorClaim) {
+    checkExistingProject(priorClaim);
     return {
       claimed: {
         row: priorClaim,
@@ -600,6 +615,7 @@ export async function claimJob(
     .bind(worker.workerId)
     .first<JobRow>();
   if (activeWorkerClaim) {
+    checkExistingProject(activeWorkerClaim);
     return {
       claimed: {
         row: activeWorkerClaim,
@@ -629,6 +645,9 @@ export async function claimJob(
        SELECT candidate.id
        FROM jobs AS candidate
        WHERE candidate.status = 'queued'
+         AND (?4 IS NULL OR lower(coalesce(nullif(json_extract(candidate.payload_json, '$.project_id'), ''), candidate.project)) IN (
+           SELECT value FROM json_each(?4)
+         ))
          AND NOT EXISTS (
            SELECT 1 FROM job_blacklist AS blocked
            WHERE blocked.job_id = candidate.id
@@ -646,7 +665,7 @@ export async function claimJob(
        AND status = 'queued'
      RETURNING *`,
   )
-    .bind(worker.workerId, claimRequestId, leaseSeconds)
+    .bind(worker.workerId, claimRequestId, leaseSeconds, eligibleJson)
     .first<JobRow>();
 
   if (!row) {

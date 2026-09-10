@@ -1,5 +1,8 @@
 # Render Worker
 
+**Automatic claiming is connected:** Start Worker polls registered shows using
+filesystem claims or V2 cloud leases. See [registered queue claiming](docs/registered-queue-claiming.md).
+
 **Registered local rendering is now available:** select a saved project and use
 **Render job file…**. See [setup and Bishop validation](docs/registered-local-rendering.md).
 

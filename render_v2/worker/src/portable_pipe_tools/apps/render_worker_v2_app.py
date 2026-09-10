@@ -50,9 +50,12 @@ from portable_pipe_tools.render_farm.cloud_queue import (
 from portable_pipe_tools.app_runtime import default_settings_path
 from portable_pipe_tools.apps.worker_project_list import WorkerProjectList
 from portable_pipe_tools.render_farm.registered_render import render_registered_job
+from portable_pipe_tools.render_farm.registered_claims import RegisteredQueueWorker
 from portable_pipe_tools.render_farm.v2_gui_settings import (
     load_or_detect_unreal_editor,
     save_unreal_editor_preference,
+    load_listener_preferences,
+    save_listener_preferences,
 )
 from portable_pipe_tools.render_farm.test_job import create_test_job
 from portable_pipe_tools.render_farm.settings import (
@@ -192,12 +195,12 @@ class RenderWorkerV2App:
     def __init__(self, *, settings_path: Path | None = None) -> None:
         self.settings_path = settings_path or default_settings_path()
         self.root = tk.Tk()
-        self.root.title("Render Worker V2 — Registered Projects")
+        self.root.title("Render Worker V2 — Automatic Claims")
         self.root.geometry("1080x980")
         self.root.minsize(900, 850)
 
         self.farm_root_var = tk.StringVar(value=load_saved_render_farm_root())
-        self.worker_name_var = tk.StringVar(value=default_worker_name())
+        self.worker_name_var = tk.StringVar(value=default_worker_name() + "-V2")
         self.simulate_result_var = tk.StringVar(value="success")
         try:
             cloud_worker_configured = (
@@ -229,6 +232,14 @@ class RenderWorkerV2App:
         self._registered_render_active = False
         self._registered_render_cancel = Event()
         self._close_after_registered_render = False
+        preferences = load_listener_preferences(self.settings_path)
+        for key, variable in (("worker_name", self.worker_name_var),
+                              ("poll_interval_seconds", self.poll_interval_var),
+                              ("render_timeout_hours", self.render_timeout_hours_var)):
+            if key in preferences:
+                variable.set(str(preferences[key]))
+        if type(preferences.get("use_cloud_dispatcher")) is bool:
+            self.use_cloud_dispatcher_var.set(preferences["use_cloud_dispatcher"])
         self.current_stage_var = tk.StringVar(
             value=WORKER_STAGE_LABELS[WorkerStage.STOPPED]
         )
@@ -989,11 +1000,14 @@ class RenderWorkerV2App:
             return
 
         try:
-            farm_root = self._get_farm_root()
-            local_uproject = self._get_local_uproject()
-            local_show_file_server_path = (
-                self._get_derived_show_file_server_path(farm_root)
-            )
+            self._save_engine_field()
+            self._registered_queue_worker = RegisteredQueueWorker(
+                self.settings_path, self._get_worker_name(),
+                dispatcher_client=self._get_dispatcher_client(), progress=self._log)
+            first_project = self._registered_queue_worker.projects[0]
+            farm_root = Path(first_project.render_farm_root)
+            local_uproject = Path(first_project.local_uproject)
+            local_show_file_server_path = farm_root.parent
             configuration = ListenerConfiguration(
                 farm_root=farm_root,
                 worker_name=self._get_worker_name(),
@@ -1009,6 +1023,14 @@ class RenderWorkerV2App:
             return
 
         local_project_message = str(configuration.local_uproject)
+        try:
+            save_listener_preferences(self.settings_path, worker_name=configuration.worker_name,
+                                      poll_interval_seconds=configuration.poll_interval_seconds,
+                                      render_timeout_hours=configuration.render_timeout_seconds / SECONDS_PER_HOUR,
+                                      use_cloud_dispatcher=configuration.dispatcher_client is not None)
+        except (OSError, ValueError) as error:
+            self._show_input_error(error)
+            return
         coordination_message = (
             "Cloudflare D1 Dispatcher (atomic leases)"
             if configuration.dispatcher_client is not None
@@ -1018,30 +1040,9 @@ class RenderWorkerV2App:
             configuration.poll_interval_seconds,
             DEFAULT_MAXIMUM_IDLE_POLL_INTERVAL_SECONDS,
         )
-        if require_confirmation:
-            confirmed = messagebox.askyesno(
-                "Start Automatic Render Worker",
-                "The worker will continuously claim and render real Unreal jobs "
-                f"until stopped.\n\nWhen the queue is empty it starts by checking "
-                f"after {configuration.poll_interval_seconds} seconds, then doubles "
-                f"the delay up to {maximum_idle_poll_interval} seconds with slight "
-                "timing jitter. Finding a job resets it immediately. Stop Worker will "
-                "interrupt an already-claimed render, requeue it, and then stop.\n\n"
-                "Each Unreal render will automatically stop and requeue after "
-                f"{format_render_timeout_hours(configuration.render_timeout_seconds / SECONDS_PER_HOUR)}.\n\n"
-                "Before every job, "
-                "the worker requires a clean Git checkout and pulls the latest "
-                "upstream branch using git pull --ff-only.\n\n"
-                f"Local Unreal project:\n{local_project_message}\n\n"
-                "Show path derived from Render Farm folder:\n"
-                f"{configuration.local_show_file_server_path}\n\n"
-                f"Job coordination: {coordination_message}\n\n"
-                "Start the worker?",
-                parent=self.root,
-            )
-            if not confirmed:
-                self._log("Automatic worker start cancelled.")
-                return
+        self._log("Claiming only registered, available shows: " + ", ".join(
+            project.project_id for project in self._registered_queue_worker.projects))
+        self._log("Registered queue renders use local files without project Git updates.")
 
         heartbeat_root = (
             get_default_cloud_spool_root(configuration.worker_name)
@@ -1125,7 +1126,6 @@ class RenderWorkerV2App:
         self._log(f"Job coordination: {coordination_message}")
         if configuration.dispatcher_client is not None:
             self._log(f"Worker-local D1 job spool: {heartbeat_root}")
-        self._schedule_periodic_update_check()
         self._schedule_listener_check_now()
 
     def _stop_worker(self) -> None:
@@ -1241,25 +1241,11 @@ class RenderWorkerV2App:
 
         started = self._run_background(
             label="Automatic worker job check",
-            work=lambda: run_once(
-                farm_root=configuration.farm_root,
-                worker_name=configuration.worker_name,
-                simulate_success=False,
-                minimum_stage_seconds=DEFAULT_MINIMUM_STAGE_SECONDS,
+            work=lambda: self._registered_queue_worker.run_next(
                 stage_callback=self._stage_queue.put,
-                render_with_unreal=True,
-                unreal_editor_cmd=configuration.unreal_editor_cmd,
-                local_uproject=configuration.local_uproject,
                 render_timeout_seconds=configuration.render_timeout_seconds,
-                should_stop_before_claim=stop_requested,
-                should_cancel_render=stop_requested,
+                stopped=stop_requested,
                 job_callback=self._job_queue.put,
-                dispatcher_client=configuration.dispatcher_client,
-                dispatcher_app_version="render-worker-gui",
-                dispatcher_capabilities={
-                    "git_branch": self._worker_git_branch,
-                    "git_commit": self._worker_git_commit,
-                },
             ),
             on_success=self._listener_job_check_finished,
             on_error=self._listener_job_check_errored,
@@ -1678,11 +1664,12 @@ class RenderWorkerV2App:
         # Retain the V1 controls for review without starting the V1 farm backend.
         for button in self._action_buttons:
             button.configure(state="disabled")
-        self.start_worker_button.configure(state="disabled")
+        self.start_worker_button.configure(state=button_state)
         self.render_one_button.configure(state=button_state)
         self.project_list.set_editing_enabled(not configuration_locked)
-        self.stop_worker_button.configure(state="normal" if self._registered_render_active
-                                           and not self._registered_render_cancel.is_set() else "disabled")
+        can_stop = ((self._registered_render_active and not self._registered_render_cancel.is_set())
+                    or (self._listener_state.active and not self._listener_state.stop_requested))
+        self.stop_worker_button.configure(state="normal" if can_stop else "disabled")
 
     def _clear_log(self) -> None:
         self.log_text.configure(state="normal")

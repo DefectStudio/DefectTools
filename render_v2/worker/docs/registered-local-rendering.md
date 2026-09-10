@@ -1,5 +1,9 @@
 # Render a registered local project
 
+Update: [worker-initiated queue claiming](registered-queue-claiming.md) is now
+implemented alongside the manual job-file action described here. That newer
+milestone supersedes the cloud-integration limitation below.
+
 Run `run_worker_v2.bat` from the Defect Tools root. Add a Dropbox show and its
 local `.uproject`, choose the worker's UnrealEditor-Cmd.exe, then select the
 project in the list and click **Render job file…**. Choose a Movie Render Graph

@@ -3,11 +3,12 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from portable_pipe_tools.apps.render_worker_v2_app import RenderWorkerV2App
 from portable_pipe_tools.render_farm.project_registration import ProjectRegistration
-from portable_pipe_tools.render_farm.v2_gui_settings import save_registered_projects, save_unreal_editor_preference
+from portable_pipe_tools.render_farm.v2_gui_settings import save_registered_projects, save_unreal_editor_preference, load_listener_preferences
 
 
 MODULE = "portable_pipe_tools.apps.render_worker_v2_app"
@@ -47,7 +48,7 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         self.assertEqual(self.settings, render.call_args.args[0])
         self.assertTrue(self.app.project_list.editing_enabled)
         self.assertEqual("normal", str(self.app.render_one_button.cget("state")))
-        self.assertEqual("disabled", str(self.app.start_worker_button.cget("state")))
+        self.assertEqual("normal", str(self.app.start_worker_button.cget("state")))
         self.assertEqual("Render complete", self.app.status_var.get())
 
     def test_stop_cancels_active_render_and_preserves_registration(self):
@@ -69,3 +70,35 @@ class RegisteredRenderGuiTests(unittest.TestCase):
             self.wait_finished()
         self.assertFalse(self.app._registered_render_active)
         self.assertEqual("Cancelled", self.app.status_var.get())
+
+    def test_start_polls_registered_projects_without_legacy_paths_or_git_updater(self):
+        engine = self.path / "UnrealEditor-Cmd.exe"
+        engine.write_bytes(b"test")
+        self.app.unreal_editor_cmd_var.set(str(engine))
+        self.app.worker_name_var.set("V2-Test")
+        self.app.farm_root_var.set("invalid unused legacy path")
+        self.app.use_cloud_dispatcher_var.set(False)
+        service = Mock()
+        service.projects = self.app.project_list.projects
+        service.run_next.return_value = None
+        heartbeat = Mock()
+        heartbeat.poll_remote_stop.return_value = False
+        heartbeat.remote_stop_event.is_set.return_value = False
+        heartbeat.pop_errors.return_value = []
+        with patch(MODULE + ".RegisteredQueueWorker", return_value=service) as factory, \
+             patch(MODULE + ".WorkerHeartbeat", return_value=heartbeat), \
+             patch.object(self.app, "_schedule_periodic_update_check") as updater:
+            self.app._start_worker()
+            self.assertTrue(self.app._listener_state.active)
+            self.assertFalse(self.app.project_list.editing_enabled)
+            deadline = time.monotonic() + 3
+            while (not service.run_next.called or self.app._busy) and time.monotonic() < deadline:
+                self.app.root.update()
+                time.sleep(0.01)
+            service.run_next.assert_called_once()
+            factory.assert_called_once()
+            updater.assert_not_called()
+            self.app._stop_worker()
+            self.assertFalse(self.app._listener_state.active)
+        self.assertTrue(self.app.project_list.editing_enabled)
+        self.assertEqual("V2-Test", load_listener_preferences(self.settings)["worker_name"])

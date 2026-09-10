@@ -28,7 +28,7 @@ import type { JsonRecord } from "./types";
 import { createProject, listProjects, updateProject } from "./projects";
 
 const SERVICE_NAME = "defect-farm-api-v2";
-const SERVICE_VERSION = "0.6.0";
+const SERVICE_VERSION = "0.7.0";
 const API_ROOT = "/api/v1";
 
 function requestId(request: Request): string {
