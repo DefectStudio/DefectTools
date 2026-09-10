@@ -17,6 +17,7 @@ class ManagerDropboxTests(unittest.TestCase):
             FarmRenderManagerApp._update_project_choices(app)
             self.assertEqual(["Development"], list(app.set_projects.call_args.args[0]))
             app.dispatcher_client.assert_not_called()
-            (root / "s3bishop/renderFarm").mkdir(parents=True)
+            (root / "s3bishop").mkdir()
             FarmRenderManagerApp._update_project_choices(app)
             self.assertEqual(["Development", "s3bishop"], list(app.set_projects.call_args.args[0]))
+            self.assertFalse((root / "s3bishop/renderFarm").exists())

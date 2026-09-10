@@ -48,7 +48,7 @@ class ProjectDialog(tk.Toplevel):
         self.entries["name"].configure(state="readonly")
         self.entries["render_farm_root"].configure(state="readonly")
         ttk.Button(body, text="Browse...", command=self._browse_project).grid(row=2, column=2, padx=(8, 0))
-        ttk.Label(body, text="Project names come from Dropbox show folders containing renderFarm. Choose the local Unreal project manually.",
+        ttk.Label(body, text="Project names come from folders directly under the selected Dropbox root. Choose the local Unreal project manually.",
                   wraplength=650).grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 12))
         self.download_checkbox = ttk.Checkbutton(body, text="Allow project downloads", variable=self.downloads,
                                                command=self._download_state)

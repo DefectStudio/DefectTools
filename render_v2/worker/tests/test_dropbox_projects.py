@@ -6,7 +6,7 @@ from portable_pipe_tools.render_farm.dropbox_projects import list_dropbox_projec
 
 
 class DropboxProjectTests(unittest.TestCase):
-    def test_only_immediate_shows_with_farm_preserve_exact_folder_names(self):
+    def test_all_immediate_folders_preserve_exact_names_without_creating_farms(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for folder in ("Development/renderFarm", "s3bishop/RenderFarm",
@@ -14,7 +14,9 @@ class DropboxProjectTests(unittest.TestCase):
                 (root / folder).mkdir(parents=True)
             (root / "readme.txt").write_text("ignored")
             projects = list_dropbox_projects(root)
-            self.assertEqual(["Development", "s3bishop", "Show With Spaces"], list(projects))
+            self.assertEqual(["Development", "Other", "s3bishop", "Show With Spaces"], list(projects))
+            self.assertEqual(root / "Other/renderFarm", projects["Other"])
+            self.assertFalse(projects["Other"].exists())
             self.assertEqual(root / "s3bishop/RenderFarm", projects["s3bishop"])
             self.assertEqual([], list((root / "Development/renderFarm").iterdir()))
 
@@ -24,4 +26,3 @@ class DropboxProjectTests(unittest.TestCase):
             self.assertEqual({}, list_dropbox_projects(root))
             with self.assertRaisesRegex(FileNotFoundError, "unavailable"):
                 list_dropbox_projects(root / "missing")
-

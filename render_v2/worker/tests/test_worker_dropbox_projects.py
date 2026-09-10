@@ -52,6 +52,21 @@ class WorkerDropboxTests(unittest.TestCase):
         self.assertTrue(self.farm.is_dir())
         self.assertTrue(self.uproject.is_file())
 
+    def test_show_without_render_farm_can_be_selected_and_saved(self):
+        show = self.path / "Dropbox/New Show"
+        show.mkdir()
+        self.widget.add()
+        dialog = self.widget.dialog
+        self.assertIn("New Show", dialog.entries["project_id"].cget("values"))
+        dialog.fields["project_id"].set("New Show")
+        dialog._select_show()
+        dialog.fields["local_uproject"].set(str(self.uproject))
+        dialog.save()
+        project = load_registered_projects(self.settings)[0]
+        self.assertEqual("New Show", project.project_id)
+        self.assertEqual(str(show / "renderFarm"), project.render_farm_root)
+        self.assertFalse((show / "renderFarm").exists())
+
     def test_offline_catalog_preserves_existing_registration_and_allows_edit(self):
         self.add_development()
         self.widget.dropbox_root.set(str(self.path / "unavailable"))
