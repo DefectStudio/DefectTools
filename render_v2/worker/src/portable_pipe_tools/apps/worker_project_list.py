@@ -124,6 +124,7 @@ class WorkerProjectList(ttk.LabelFrame):
         self.on_change = on_change
         self.projects = load_registered_projects(self.settings_path)
         self.dialog = None
+        self.editing_enabled = True
         self.dropbox_root = tk.StringVar(self, value=load_dropbox_root(self.settings_path))
         self.catalog_status = tk.StringVar(self)
         self.columnconfigure(0, weight=1)
@@ -160,6 +161,8 @@ class WorkerProjectList(ttk.LabelFrame):
         self._refresh_catalog()
 
     def _browse_dropbox(self):
+        if not self.editing_enabled:
+            return
         selected = filedialog.askdirectory(parent=self, title="Choose Dropbox folder containing the show folders")
         if selected:
             try:
@@ -195,9 +198,21 @@ class WorkerProjectList(ttk.LabelFrame):
         self._selection_changed()
 
     def _selection_changed(self, event=None):
-        self.remove_button.configure(state="normal" if self.tree.selection() else "disabled")
+        self.remove_button.configure(state="normal" if self.editing_enabled and self.tree.selection() else "disabled")
+
+    def set_editing_enabled(self, enabled):
+        self.editing_enabled = enabled
+        def update_buttons(parent):
+            for child in parent.winfo_children():
+                if isinstance(child, ttk.Button):
+                    child.configure(state="normal" if enabled else "disabled")
+                update_buttons(child)
+        update_buttons(self)
+        self._selection_changed()
 
     def _open_dialog(self, project=None):
+        if not self.editing_enabled:
+            return
         if self.dialog is not None and self.dialog.winfo_exists():
             self.dialog.lift()
             return
@@ -220,6 +235,8 @@ class WorkerProjectList(ttk.LabelFrame):
             self.edit()
 
     def save_project(self, project, original_id=None):
+        if not self.editing_enabled:
+            raise ValueError("Wait for the active render to finish before editing projects.")
         if any(item.project_id.casefold() == project.project_id.casefold()
                and item.project_id != original_id for item in self.projects):
             raise ValueError("A project with that ID is already registered on this worker.")
@@ -232,6 +249,8 @@ class WorkerProjectList(ttk.LabelFrame):
         self.on_change(f"Saved project: {project.name}")
 
     def remove(self):
+        if not self.editing_enabled:
+            return
         selected = self.tree.selection()
         if not selected:
             return

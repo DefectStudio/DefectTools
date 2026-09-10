@@ -28,14 +28,23 @@ def install_runtime(checkout: Path, *, project_directory: Path | None = None) ->
     target.mkdir(parents=True, exist_ok=True)
     marker.write_text("Managed by Render Worker V2\n", encoding="utf-8")
     shutil.copytree(source, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    exclude_path = subprocess.run(["git", "rev-parse", "--git-path", "info/exclude"], cwd=checkout,
-                                  capture_output=True, text=True, check=True,
-                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
+    # Copied projects are supported too; Git is optional and never fetches here.
+    if shutil.which("git") is None:
+        return
+    git_result = subprocess.run(["git", "rev-parse", "--git-path", "info/exclude"], cwd=checkout,
+                               capture_output=True, text=True,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if git_result.returncode != 0:
+        return
+    exclude_path = git_result.stdout.strip()
     exclude = Path(exclude_path)
     if not exclude.is_absolute():
         exclude = checkout / exclude
     contents = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
-    pattern = "/" + target.relative_to(checkout).as_posix() + "/"
+    git_root = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=checkout,
+                              capture_output=True, text=True, check=True,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
+    pattern = "/" + target.resolve().relative_to(Path(git_root).resolve()).as_posix() + "/"
     if pattern not in contents.splitlines():
         exclude.parent.mkdir(parents=True, exist_ok=True)
         with exclude.open("a", encoding="utf-8") as stream:

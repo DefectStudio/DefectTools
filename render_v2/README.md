@@ -9,7 +9,7 @@ source and launchers at the repository root remain available.
 ## Launch from the Defect Tools root
 
 - `run_manager_v2.bat`: Manager V2 GUI.
-- `run_worker_v2.bat`: Worker V2 GUI review (farm actions remain disabled).
+- `run_worker_v2.bat`: Worker V2 GUI with registered local rendering.
 - `run_v2_backend.bat`: isolated local V2 dispatcher on port 8795.
 
 Python 3.11 or newer with Tk is required for the source GUIs. Install Node.js for
@@ -32,6 +32,10 @@ Run `test_render_v2.bat --no-pause` for both Python suites. API checks run with
 Worker EXE tooling remains at `worker/build_worker.bat`; its existing entry point
 is the direct-job pilot, not the newer GUI review. Consolidation does not change
 rendering behavior or rebuild the EXE.
+
+**Latest worker milestone:** [Registered local rendering](worker/docs/registered-local-rendering.md)
+is now connected to the GUI and validated with Bishop ZZZ850. Automatic farm
+leasing remains disabled; the packaged EXE has not yet been switched to this GUI.
 
 Consolidation validation: 320 manager tests and 175 worker tests passed through
 the combined root launcher. The copied V2 dispatcher's type checks also passed.

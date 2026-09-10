@@ -1,8 +1,4 @@
-"""V1 interface copied as the V2 layout-review starting point.
-
-This preview keeps V1's layout and animations. The V2 engine preference persists;
-farm actions and other settings writes remain inactive during GUI design.
-"""
+"""V2 GUI for registered local renders; automatic farm leasing is still pending."""
 
 from __future__ import annotations
 
@@ -13,7 +9,7 @@ import logging
 import os
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Thread
+from threading import Event, Thread
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
@@ -53,6 +49,7 @@ from portable_pipe_tools.render_farm.cloud_queue import (
 )
 from portable_pipe_tools.app_runtime import default_settings_path
 from portable_pipe_tools.apps.worker_project_list import WorkerProjectList
+from portable_pipe_tools.render_farm.registered_render import render_registered_job
 from portable_pipe_tools.render_farm.v2_gui_settings import (
     load_or_detect_unreal_editor,
     save_unreal_editor_preference,
@@ -195,7 +192,7 @@ class RenderWorkerV2App:
     def __init__(self, *, settings_path: Path | None = None) -> None:
         self.settings_path = settings_path or default_settings_path()
         self.root = tk.Tk()
-        self.root.title("Render Worker V2 — Layout Review")
+        self.root.title("Render Worker V2 — Registered Projects")
         self.root.geometry("1080x980")
         self.root.minsize(900, 850)
 
@@ -228,7 +225,10 @@ class RenderWorkerV2App:
         self.local_uproject_var = tk.StringVar(
             value=load_saved_local_uproject()
         )
-        self.status_var = tk.StringVar(value="Stopped — V1 layout copied for V2 review")
+        self.status_var = tk.StringVar(value="Ready — select a registered project to render")
+        self._registered_render_active = False
+        self._registered_render_cancel = Event()
+        self._close_after_registered_render = False
         self.current_stage_var = tk.StringVar(
             value=WORKER_STAGE_LABELS[WorkerStage.STOPPED]
         )
@@ -281,11 +281,10 @@ class RenderWorkerV2App:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._schedule_queue_poll()
         self._refresh_control_states()
-        self._log("V2 layout review: engine selection is saved; farm actions are inactive.")
+        self._log("V2 local rendering: select a registered project, then Render job file…")
         self._log(
-            "Choose this computer's Dropbox show RenderFarm folder. Cloud jobs "
-            "come from D1; this folder is used to derive the existing Dropbox "
-            "render-output location."
+            "Registered renders use the saved local project and engine without Git updates. "
+            "Each run writes to WorkerV2Renders under that show's Dropbox folder."
         )
         if self.farm_root_var.get():
             self._log(f"Loaded saved RenderFarm folder: {self.farm_root_var.get()}")
@@ -304,8 +303,7 @@ class RenderWorkerV2App:
                 )
         else:
             self._log(
-                "Select this computer's local Unreal project before rendering "
-                "real farm jobs."
+                "Add each local Unreal project in Projects on this worker."
             )
         self._log(
             f"Project animation sprites: {DEFAULT_ANIMATION_SPRITE_FOLDER}"
@@ -553,8 +551,8 @@ class RenderWorkerV2App:
 
         self.render_one_button = ttk.Button(
             button_row,
-            text="Render One Job with Unreal",
-            command=self._render_one_job_with_unreal,
+            text="Render job file…",
+            command=self._render_registered_job,
         )
         self.render_one_button.pack(side="left", padx=(0, 8))
 
@@ -1131,7 +1129,65 @@ class RenderWorkerV2App:
         self._schedule_listener_check_now()
 
     def _stop_worker(self) -> None:
-        self._request_worker_stop(remotely=False)
+        if self._registered_render_active:
+            self._registered_render_cancel.set()
+            self.status_var.set("Stopping local render…")
+            self.stop_worker_button.configure(state="disabled")
+        else:
+            self._request_worker_stop(remotely=False)
+
+    def _render_registered_job(self) -> None:
+        if self._busy:
+            return
+        if self.project_list.dialog is not None and self.project_list.dialog.winfo_exists():
+            self.project_list.dialog.lift()
+            return
+        selected = self.project_list.tree.selection()
+        if not selected:
+            messagebox.showinfo("Select a project", "Select a registered project in the list first.", parent=self.root)
+            return
+        path = filedialog.askopenfilename(parent=self.root, title="Choose the shot's job.json",
+                                          initialdir=str(self.settings_path.parent),
+                                          filetypes=[("Render job", "*.json")])
+        if not path:
+            return
+        try:
+            self._save_engine_field()
+            timeout = self._get_render_timeout_seconds()
+        except (OSError, ValueError) as error:
+            self._show_input_error(error)
+            return
+        self._registered_render_cancel.clear()
+        self._registered_render_active = True
+        self.current_job_var.set(f"{selected[0]} — {Path(path).name}")
+        self._set_worker_stage(WorkerStage.RENDERING)
+        self._run_background(
+            "Registered local render",
+            lambda: render_registered_job(self.settings_path, selected[0], Path(path),
+                                           timeout_seconds=timeout, progress=self._log,
+                                           cancelled=self._registered_render_cancel.is_set),
+            self._registered_render_finished,
+            on_error=self._registered_render_failed,
+        )
+
+    def _registered_render_finished(self, result) -> None:
+        self._registered_render_active = False
+        self.status_var.set("Render complete" if result["success"] else result.get("reason", "Render failed"))
+        self._log(f"{'SUCCESS' if result['success'] else 'FAILED'}: {result.get('reason', '')}")
+        self._log(f"Run folder: {result['run_root']}")
+        self._clear_current_job()
+        self._refresh_control_states()
+        if self._close_after_registered_render:
+            self.root.after_idle(self._on_close)
+
+    def _registered_render_failed(self, error) -> None:
+        self._registered_render_active = False
+        self.status_var.set(f"Local render stopped: {error}")
+        self._refresh_control_states()
+        if self._close_after_registered_render:
+            self.root.after_idle(self._on_close)
+        else:
+            messagebox.showerror("Local render", str(error), parent=self.root)
 
     def _request_worker_stop(self, *, remotely: bool) -> None:
         if not self._listener_state.active:
@@ -1623,7 +1679,10 @@ class RenderWorkerV2App:
         for button in self._action_buttons:
             button.configure(state="disabled")
         self.start_worker_button.configure(state="disabled")
-        self.stop_worker_button.configure(state="disabled")
+        self.render_one_button.configure(state=button_state)
+        self.project_list.set_editing_enabled(not configuration_locked)
+        self.stop_worker_button.configure(state="normal" if self._registered_render_active
+                                           and not self._registered_render_cancel.is_set() else "disabled")
 
     def _clear_log(self) -> None:
         self.log_text.configure(state="normal")
@@ -1781,6 +1840,10 @@ class RenderWorkerV2App:
 
     def _on_close(self) -> None:
         self._save_engine_field()
+        if self._registered_render_active:
+            self._close_after_registered_render = True
+            self._stop_worker()
+            return
         if self._listener_state.active:
             if self._worker_heartbeat is not None:
                 self._worker_heartbeat.request_stop()

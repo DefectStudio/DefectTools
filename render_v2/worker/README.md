@@ -1,5 +1,8 @@
 # Render Worker
 
+**Registered local rendering is now available:** select a saved project and use
+**Render job file…**. See [setup and Bishop validation](docs/registered-local-rendering.md).
+
 Worker V2 now lives in the Defect Tools repository at `render_v2/worker`.
 See [consolidated setup](../README.md); it supersedes older separate-repository
 paths below. Use the root `run_worker_v2.bat` for the current GUI review with
