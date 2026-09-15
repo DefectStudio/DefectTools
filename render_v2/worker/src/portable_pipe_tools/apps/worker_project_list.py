@@ -127,6 +127,7 @@ class WorkerProjectList(ttk.Frame):
         self.dialog = None
         self.editing_enabled = True
         self.root_editing_enabled = True
+        self.projects_available = True
         self.dropbox_root = tk.StringVar(self, value=load_dropbox_root(self.settings_path))
         self.catalog_status = tk.StringVar(self)
         style = ttk.Style(self)
@@ -236,15 +237,18 @@ class WorkerProjectList(ttk.Frame):
     def _selection_changed(self, event=None):
         self.remove_button.configure(state="normal" if self.editing_enabled and self.tree.selection() else "disabled")
 
-    def set_editing_enabled(self, enabled):
+    def set_editing_enabled(self, enabled, *, projects_available=None):
         self.root_editing_enabled = enabled
+        if projects_available is not None:
+            self.projects_available = projects_available
         root_is_set = bool(self.dropbox_root.get().strip())
-        for widget in (self.projects_frame, self.root_refresh_button):
-            if root_is_set:
+        for widget, visible in ((self.projects_frame, root_is_set and self.projects_available),
+                                (self.root_refresh_button, root_is_set)):
+            if visible:
                 widget.grid()
             else:
                 widget.grid_remove()
-        self.editing_enabled = enabled and root_is_set
+        self.editing_enabled = enabled and root_is_set and self.projects_available
         def update_buttons(parent):
             for child in parent.winfo_children():
                 if isinstance(child, ttk.Button):

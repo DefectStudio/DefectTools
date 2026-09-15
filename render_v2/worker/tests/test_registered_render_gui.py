@@ -20,7 +20,7 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.path = Path(temporary.name)
         self.settings = self.path / "worker.json"
-        save_unreal_editor_preference("", self.settings)
+        save_unreal_editor_preference(str(self.path / "UnrealEditor-Cmd.exe"), self.settings)
         save_dropbox_root(str(self.path), self.settings)
         registration = ProjectRegistration.from_dict(dict(project_id="Show", name="Show",
             local_uproject=str(self.path / "Show.uproject"), render_farm_root=str(self.path / "Show/renderFarm")))

@@ -36,11 +36,14 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.assertTrue(widget.tree.instate(["disabled"]))
         self.assert_setup_visibility(False)
 
-    def assert_setup_visibility(self, visible):
-        self.assertEqual("grid" if visible else "", self.app.worker_name_entry.winfo_manager())
-        self.assertEqual("grid" if visible else "", self.app.unreal_editor_cmd_entry.winfo_manager())
+    def assert_setup_visibility(self, visible, root_is_set=None):
+        if root_is_set is None:
+            root_is_set = visible
+        self.assertEqual("grid" if root_is_set else "", self.app.worker_name_entry.winfo_manager())
+        self.assertEqual("grid" if root_is_set else "", self.app.engine_setup_frame.winfo_manager())
         self.assertEqual("grid" if visible else "", self.app.project_list.projects_frame.winfo_manager())
-        self.assertEqual("grid" if visible else "", self.app.project_list.root_refresh_button.winfo_manager())
+        self.assertEqual("grid" if root_is_set else "", self.app.project_list.root_refresh_button.winfo_manager())
+        self.assertEqual("grid" if visible else "", self.app.farm_root_entry.winfo_manager())
         self.assertEqual("pack" if visible else "", self.app.start_worker_button.master.winfo_manager())
         self.assertEqual("pack" if visible else "", self.app.animation_image_label.master.winfo_manager())
         self.assertEqual("pack" if visible else "", self.app.log_text.master.winfo_manager())
@@ -66,6 +69,12 @@ class WorkerFirstSetupTests(unittest.TestCase):
         with patch(MODULE + ".filedialog.askdirectory", return_value=str(root)):
             self.app.project_list._browse_dropbox()
         self.assertEqual(str(root), load_dropbox_root(self.settings))
+        self.assert_setup_visibility(False, root_is_set=True)
+        self.assertEqual("normal", str(self.app.unreal_editor_cmd_browse_button.cget("state")))
+        engine = self.path / "UnrealEditor-Cmd.exe"
+        engine.touch()
+        with patch("portable_pipe_tools.apps.render_worker_v2_app.filedialog.askopenfilename", return_value=str(engine)):
+            self.app._browse_unreal_editor_cmd()
         self.assertTrue(self.app.project_list.editing_enabled)
         self.assertEqual("normal", str(self.app.worker_name_entry.cget("state")))
         self.assertEqual("normal", str(self.app.start_worker_button.cget("state")))
@@ -87,6 +96,45 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.assert_setup_visibility(False)
         self.app.project_list.dropbox_root.set(str(root))
         self.assert_setup_visibility(True)
+
+    def test_unset_engine_keeps_lower_controls_hidden_and_actions_unavailable(self):
+        self.app.project_list.dropbox_root.set(str(self.path))
+        self.assert_setup_visibility(False, root_is_set=True)
+        self.app.root.deiconify()
+        self.app.root.update()
+        self.assertTrue(self.app.unreal_editor_cmd_entry.winfo_viewable())
+        self.assertTrue(self.app.unreal_editor_cmd_browse_button.winfo_viewable())
+        self.assertFalse(self.app.project_list.tree.winfo_viewable())
+        self.app.root.withdraw()
+        with patch("portable_pipe_tools.apps.render_worker_v2_app.filedialog.askopenfilename", return_value=""):
+            self.app._browse_unreal_editor_cmd()
+        self.assert_setup_visibility(False, root_is_set=True)
+        self.assertFalse(self.app.project_list.editing_enabled)
+        self.app.project_list.add()
+        self.app._start_worker()
+        self.app._render_registered_job()
+        self.app._configure_connection()
+        self.app._check_setup()
+        self.assertIsNone(self.app.project_list.dialog)
+        self.assertFalse(self.app._listener_state.active)
+        self.assertFalse(self.app._busy)
+
+    def test_typing_and_clearing_engine_updates_visibility_and_saves_blank(self):
+        with patch(MODULE + ".filedialog.askdirectory", return_value=str(self.path)):
+            self.app.project_list._browse_dropbox()
+        self.app.unreal_editor_cmd_var.set(str(self.path / "UnrealEditor-Cmd.exe"))
+        self.assert_setup_visibility(True)
+        self.app.root.update_idletasks()
+        self.assertLess(self.app.unreal_editor_cmd_entry.winfo_rooty(),
+                        self.app.project_list.projects_frame.winfo_rooty())
+        self.app.unreal_editor_cmd_var.set("   ")
+        self.assert_setup_visibility(False, root_is_set=True)
+        self.assertEqual("normal", str(self.app.unreal_editor_cmd_entry.cget("state")))
+        self.app._save_engine_field()
+        self.app._shutdown_application(0)
+        self.app = RenderWorkerV2App(settings_path=self.settings)
+        self.app.root.withdraw()
+        self.assert_setup_visibility(False, root_is_set=True)
 
     def test_cancel_or_invalid_folder_keeps_setup_locked(self):
         for selected in ("", str(self.path / "missing")):

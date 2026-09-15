@@ -60,6 +60,8 @@ def self_test(report_path: Path) -> int:
             os.environ["LOCALAPPDATA"] = str(base / "user-data")
             settings = base / "settings/worker_v2.json"
             save_unreal_editor_preference("", settings)
+            engine = base / "UnrealEditor-Cmd.exe"
+            engine.touch()
             show = base / "Dropbox/Test Show"
             show.mkdir(parents=True)
             project = base / "Local Project/Test.uproject"
@@ -73,6 +75,14 @@ def self_test(report_path: Path) -> int:
                 if app._listener_state.active or app._busy:
                     raise RuntimeError("Startup unexpectedly started work")
                 if launch == 0:
+                    if app.project_list.projects_frame.winfo_manager():
+                        raise RuntimeError("Project list appeared before selecting an engine")
+                    if not app.engine_setup_frame.winfo_manager():
+                        raise RuntimeError("Engine selection is hidden after Dropbox setup")
+                    app.unreal_editor_cmd_var.set(str(engine))
+                    app._save_engine_field()
+                    if not app.project_list.projects_frame.winfo_manager():
+                        raise RuntimeError("Engine selection did not reveal the project list")
                     if app.project_list.projects:
                         raise RuntimeError("Fresh configuration included registrations")
                     app.project_list.add()
@@ -89,7 +99,8 @@ def self_test(report_path: Path) -> int:
                 else:
                     if [p.project_id for p in app.project_list.projects] != ["Test Show"]:
                         raise RuntimeError("Registrations did not survive restart")
-                    if app.worker_name_var.get() != "Portable-Test-Worker" or app.unreal_editor_cmd_var.get():
+                    if (app.worker_name_var.get() != "Portable-Test-Worker"
+                            or app.unreal_editor_cmd_var.get() != str(engine)):
                         raise RuntimeError("Worker preferences did not survive restart")
                     if app.project_list.projects[0].allow_downloads:
                         raise RuntimeError("Downloads should be off by default")

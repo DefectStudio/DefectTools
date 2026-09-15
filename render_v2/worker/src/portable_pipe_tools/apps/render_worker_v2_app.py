@@ -286,6 +286,7 @@ class RenderWorkerV2App:
         WORKER_LOGGER.setLevel(logging.INFO)
 
         self._build_ui()
+        self.unreal_editor_cmd_var.trace_add("write", lambda *_: self._refresh_control_states())
         self.unreal_editor_cmd_entry.bind("<FocusOut>", self._save_engine_field)
         self.unreal_editor_cmd_entry.bind("<Return>", self._save_engine_field)
         detected_show_root = self._refresh_derived_show_file_server_path()
@@ -412,31 +413,6 @@ class RenderWorkerV2App:
             text="Used only by the Simulate One Job button.",
         ).grid(row=6, column=2, sticky="w", padx=(8, 0), pady=4)
 
-        ttk.Label(setup_frame, text="UnrealEditor-Cmd.exe").grid(
-            row=3,
-            column=0,
-            sticky="w",
-            padx=(0, 8),
-            pady=4,
-        )
-        self.unreal_editor_cmd_entry = ttk.Entry(
-            setup_frame,
-            textvariable=self.unreal_editor_cmd_var,
-        )
-        self.unreal_editor_cmd_entry.grid(row=3, column=1, sticky="ew", pady=4)
-        self.unreal_editor_cmd_browse_button = ttk.Button(
-            setup_frame,
-            text="Browse...",
-            command=self._browse_unreal_editor_cmd,
-        )
-        self.unreal_editor_cmd_browse_button.grid(
-            row=3,
-            column=2,
-            sticky="w",
-            padx=(8, 0),
-            pady=4,
-        )
-
         ttk.Label(setup_frame, text="Local Unreal Project (.uproject)").grid(
             row=2,
             column=0,
@@ -528,7 +504,8 @@ class RenderWorkerV2App:
                                              command=self._configure_connection)
         self.connection_button.grid(row=7, column=2, sticky="w", padx=(8, 0), pady=4)
 
-        # Insert directly below Worker Name, keeping the other V1 fields in order.
+        worker_name_fields = setup_frame.grid_slaves(row=0)
+        # Keep Dropbox and engine selection ahead of the project list.
         for widget in setup_frame.grid_slaves():
             row = int(widget.grid_info()["row"])
             if row >= 1:
@@ -536,7 +513,20 @@ class RenderWorkerV2App:
         self.project_list = WorkerProjectList(setup_frame, settings_path=self.settings_path,
                                               on_change=self._log, on_root_change=self._refresh_control_states)
         self.project_list.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 10))
-        self._setup_fields = [widget for widget in setup_frame.grid_slaves() if widget is not self.project_list]
+        self.engine_setup_frame = ttk.Frame(self.project_list, padding=(8, 0))
+        self.engine_setup_frame.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.engine_setup_frame.columnconfigure(1, weight=1)
+        ttk.Label(self.engine_setup_frame, text="UnrealEditor-Cmd.exe").grid(
+            row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        self.unreal_editor_cmd_entry = ttk.Entry(self.engine_setup_frame, textvariable=self.unreal_editor_cmd_var)
+        self.unreal_editor_cmd_entry.grid(row=0, column=1, sticky="ew", pady=4)
+        self.unreal_editor_cmd_browse_button = ttk.Button(
+            self.engine_setup_frame, text="Browse...", command=self._browse_unreal_editor_cmd)
+        self.unreal_editor_cmd_browse_button.grid(row=0, column=2, sticky="w", padx=(8, 0), pady=4)
+        self.project_list.projects_frame.grid_configure(row=2)
+        self._root_setup_fields = worker_name_fields + [self.engine_setup_frame]
+        self._setup_fields = [widget for widget in setup_frame.grid_slaves()
+                              if widget is not self.project_list and widget not in worker_name_fields]
 
         button_row = ttk.Frame(outer)
         button_row.pack(fill="x", pady=(12, 8))
@@ -673,11 +663,18 @@ class RenderWorkerV2App:
                                  (button_row, activity_frame, log_header, log_frame)]
         self._setup_is_visible = None
 
-    def _set_setup_visibility(self, visible: bool) -> None:
-        if self._setup_is_visible == visible:
+    def _set_setup_visibility(self, root_is_set: bool, engine_is_set: bool) -> None:
+        state = (root_is_set, engine_is_set)
+        if self._setup_is_visible == state:
             return
         previous = self._setup_is_visible
-        self._setup_is_visible = visible
+        self._setup_is_visible = state
+        visible = root_is_set and engine_is_set
+        for widget in self._root_setup_fields:
+            if root_is_set:
+                widget.grid()
+            else:
+                widget.grid_remove()
         for widget in self._setup_fields:
             if visible:
                 widget.grid()
@@ -690,11 +687,11 @@ class RenderWorkerV2App:
                 widget.pack_forget()
         if visible:
             self.root.minsize(900, 850)
-            if previous is False:
+            if previous is not None and not all(previous):
                 self.root.geometry("1080x980")
         else:
             self.root.minsize(900, 200)
-            self.root.geometry("1080x240")
+            self.root.geometry("1080x300" if root_is_set else "1080x240")
 
     def run(self) -> int:
         self.root.mainloop()
@@ -969,7 +966,7 @@ class RenderWorkerV2App:
                                   use_cloud_dispatcher=self.use_cloud_dispatcher_var.get())
 
     def _configure_connection(self):
-        if self._busy or self._listener_state.active or not self.project_list.dropbox_root.get().strip():
+        if self._busy or self._listener_state.active or not self._setup_prerequisites_set():
             return
         def saved():
             self.use_cloud_dispatcher_var.set(True)
@@ -978,7 +975,7 @@ class RenderWorkerV2App:
         WorkerConnectionDialog(self.root, on_save=saved)
 
     def _check_setup(self):
-        if self._busy or self._listener_state.active or not self.project_list.dropbox_root.get().strip():
+        if self._busy or self._listener_state.active or not self._setup_prerequisites_set():
             return
         try:
             self._save_engine_field()
@@ -1055,7 +1052,7 @@ class RenderWorkerV2App:
         return hours * SECONDS_PER_HOUR
 
     def _start_worker(self, *, require_confirmation: bool = True) -> None:
-        if not self.project_list.dropbox_root.get().strip():
+        if not self._setup_prerequisites_set():
             return
         if not self._startup_update_complete or self._restart_pending:
             self._log(
@@ -1208,7 +1205,7 @@ class RenderWorkerV2App:
             self._request_worker_stop(remotely=False)
 
     def _render_registered_job(self) -> None:
-        if not self.project_list.dropbox_root.get().strip():
+        if not self._setup_prerequisites_set():
             return
         if self._busy:
             return
@@ -1698,6 +1695,9 @@ class RenderWorkerV2App:
         self.status_var.set(status)
         self._refresh_control_states()
 
+    def _setup_prerequisites_set(self) -> bool:
+        return bool(self.project_list.dropbox_root.get().strip() and self.unreal_editor_cmd_var.get().strip())
+
     def _refresh_control_states(self) -> None:
         update_gate_locked = (
             not self._startup_update_complete or self._restart_pending
@@ -1706,8 +1706,10 @@ class RenderWorkerV2App:
             update_gate_locked or self._busy or self._listener_state.active
         )
         root_is_set = bool(self.project_list.dropbox_root.get().strip())
-        self._set_setup_visibility(root_is_set)
-        configuration_locked = operation_locked or not root_is_set
+        engine_is_set = bool(self.unreal_editor_cmd_var.get().strip())
+        self._set_setup_visibility(root_is_set, engine_is_set)
+        configuration_locked = operation_locked or not (root_is_set and engine_is_set)
+        prerequisite_state = "disabled" if operation_locked or not root_is_set else "normal"
         button_state = "disabled" if configuration_locked else "normal"
         entry_state = "disabled" if configuration_locked else "normal"
         combo_state = "disabled" if configuration_locked else "readonly"
@@ -1727,28 +1729,31 @@ class RenderWorkerV2App:
         )
         self.browse_button.configure(state=button_state)
         self.farm_root_entry.configure(state=entry_state)
-        self.worker_name_entry.configure(state=entry_state)
+        self.worker_name_entry.configure(state=prerequisite_state)
         self.simulate_result_combo.configure(state=combo_state)
         self.poll_interval_spinbox.configure(state=entry_state)
         self.render_timeout_spinbox.configure(state=entry_state)
-        self.unreal_editor_cmd_entry.configure(state=entry_state)
-        self.unreal_editor_cmd_browse_button.configure(state=button_state)
+        self.unreal_editor_cmd_entry.configure(state=prerequisite_state)
+        self.unreal_editor_cmd_browse_button.configure(state=prerequisite_state)
         self.local_uproject_entry.configure(state=entry_state)
         self.local_uproject_browse_button.configure(state=button_state)
         self.cloud_dispatcher_checkbutton.configure(state=button_state)
         self.connection_button.configure(state=button_state)
         self.check_setup_button.configure(state=button_state)
-        self.clear_log_button.configure(state="normal" if root_is_set else "disabled")
+        self.clear_log_button.configure(state="normal" if root_is_set and engine_is_set else "disabled")
 
         # Retain the V1 controls for review without starting the V1 farm backend.
         for button in self._action_buttons:
             button.configure(state="disabled")
         self.start_worker_button.configure(state=button_state)
         self.render_one_button.configure(state=button_state)
-        self.project_list.set_editing_enabled(not operation_locked)
+        self.project_list.set_editing_enabled(not operation_locked, projects_available=engine_is_set)
         if not root_is_set:
             self.status_var.set("First, choose the Dropbox project root using Browse.")
-        elif self.status_var.get() == "First, choose the Dropbox project root using Browse.":
+        elif not engine_is_set:
+            self.status_var.set("Next, choose UnrealEditor-Cmd.exe using Browse, or enter its path.")
+        elif self.status_var.get() in ("First, choose the Dropbox project root using Browse.",
+                                       "Next, choose UnrealEditor-Cmd.exe using Browse, or enter its path."):
             self.status_var.set("Add your local projects, then Check Setup.")
         can_stop = ((self._registered_render_active and not self._registered_render_cancel.is_set())
                     or (self._listener_state.active and not self._listener_state.stop_requested))
