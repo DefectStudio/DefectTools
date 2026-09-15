@@ -129,12 +129,28 @@ class WorkerProjectList(ttk.Frame):
         self.root_editing_enabled = True
         self.dropbox_root = tk.StringVar(self, value=load_dropbox_root(self.settings_path))
         self.catalog_status = tk.StringVar(self)
+        style = ttk.Style(self)
+        # Vista's native Treeview field has no color options. Replace only this
+        # widget's field element so its disabled background is actually drawn.
+        if "WorkerProjects.field" not in style.element_names():
+            style.element_create("WorkerProjects.field", "from", "clam", "Treeview.field")
+        tree_layout = style.layout("Treeview")
+        tree_layout[0] = ("WorkerProjects.field", tree_layout[0][1])
+        style.layout("WorkerProjects.Treeview", tree_layout)
+        selection_background = style.lookup("Treeview", "background", ("selected",)) or "#0078d7"
+        selection_foreground = style.lookup("Treeview", "foreground", ("selected",)) or "#ffffff"
+        style.configure("WorkerProjects.Treeview", background="#ffffff", fieldbackground="#ffffff")
+        style.map("WorkerProjects.Treeview",
+                  background=[("disabled", "#e2e2e2"), ("selected", selection_background)],
+                  fieldbackground=[("disabled", "#e2e2e2"), ("!disabled", "#ffffff")],
+                  foreground=[("disabled", "#858585"), ("selected", selection_foreground)])
+        style.map("WorkerProjects.Treeview.Heading", foreground=[("disabled", "#858585")])
         self.columnconfigure(0, weight=1)
         self.projects_frame = ttk.LabelFrame(self, text="Projects on this worker", padding=8)
         self.projects_frame.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.projects_frame.columnconfigure(0, weight=1)
         self.tree = ttk.Treeview(self.projects_frame, columns=("name", "project", "downloads", "status"),
-                                 show="headings", selectmode="browse", height=4)
+                                 show="headings", selectmode="browse", height=4, style="WorkerProjects.Treeview")
         for key, title, width in [("name", "Project", 150), ("project", "Local Unreal project", 380),
                                   ("downloads", "Downloads", 85), ("status", "Location status", 175)]:
             self.tree.heading(key, text=title)
@@ -155,7 +171,11 @@ class WorkerProjectList(ttk.Frame):
         source.grid(row=0, column=0, sticky="ew")
         source.columnconfigure(1, weight=1)
         ttk.Label(source, text="Dropbox project root").grid(row=0, column=0, padx=(0, 8))
-        self.root_entry = ttk.Entry(source, textvariable=self.dropbox_root, state="readonly")
+        # A native ttk read-only field can ignore fieldbackground on Windows.
+        self.root_entry = tk.Entry(source, textvariable=self.dropbox_root, state="readonly",
+                                   background="#ffffff", readonlybackground="#ffffff", foreground="#202020",
+                                   disabledbackground="#e2e2e2", disabledforeground="#858585",
+                                   font="TkDefaultFont", relief="sunken", borderwidth=1)
         self.root_entry.grid(row=0, column=1, sticky="ew")
         self.root_browse_button = ttk.Button(source, text="Browse...", command=self._browse_dropbox)
         self.root_browse_button.grid(row=0, column=2, padx=6)
