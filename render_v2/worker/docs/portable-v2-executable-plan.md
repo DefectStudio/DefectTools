@@ -2,6 +2,8 @@
 
 Source assessment and proposed implementation plan — September 15, 2026.
 
+Implementation update: the portable V2 preview is now built. See [release setup and limits](portable-worker-v2.md) and [validation evidence](portable-worker-v2-validation.md). The original assessment below records the starting state.
+
 ## Answer
 
 Yes: the current code supports the foundation for a portable Windows executable. It is not yet the finished V2 distribution. The existing PyInstaller build launches the older `ProjectWorkerApp` pilot, while the registered-project GUI and automatic claiming live in `RenderWorkerV2App`. Running the existing build unchanged would package the wrong interface and workflow.
@@ -59,4 +61,4 @@ The company needs a reachable, separately provisioned V2 dispatcher if cloud mod
 
 Automatic start after login, restart after a crash, unattended updates and project downloading are separate features. The first executable should preserve settings across manual replacement. Add unattended behavior explicitly after the basic copied-artifact render passes.
 
-No executable was built during this assessment. The proposed next implementation step is to replace the pilot packaging entry point with the current V2 GUI and verify its frozen startup.
+The initial assessment did not build an executable. Its implementation now uses a separate `packaging/v2_entry.py` and `RenderWorkerV2.spec`, retaining the old pilot files as historical artifacts. Second-machine acceptance and the explicitly separate unattended/security work remain outstanding.

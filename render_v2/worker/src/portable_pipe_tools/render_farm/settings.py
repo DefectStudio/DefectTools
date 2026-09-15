@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from portable_pipe_tools.app_runtime import settings_directory
 
 from portable_pipe_tools.render_farm.queue import (
     create_directory_with_retry,
@@ -14,8 +15,7 @@ SETTINGS_FILENAME = "render_worker_local_save.json"
 
 
 def get_default_settings_path() -> Path:
-    repository_root = Path(__file__).resolve().parents[3]
-    return repository_root / "LocalSaveFiles" / SETTINGS_FILENAME
+    return settings_directory() / SETTINGS_FILENAME
 
 
 def load_local_settings(settings_path: Path | None = None) -> dict:

@@ -1,5 +1,9 @@
 # Windows EXE
 
+> Historical pilot documentation. The current registered-project worker is
+> `RenderWorkerV2.exe`; use [Portable Worker V2](portable-worker-v2.md).
+> Its default build does not use the catalog, project discovery, or downloads described below.
+
 `dist/RenderWorker.exe` is a portable Windows x64 application containing Python, Tkinter, the worker application, the default project catalog, and the Unreal runtime scripts. Copy the EXE to a folder and double-click it. No Python installation, pip command, source checkout, or administrator access is needed to launch the worker.
 
 ## First-time setup

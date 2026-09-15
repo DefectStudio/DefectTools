@@ -11,9 +11,9 @@ SPRITE_FRAME_SIZE = 48
 SPRITE_DISPLAY_SCALE = 2
 SPRITE_FRAME_INTERVAL_MS = 140
 
-DEFAULT_ANIMATION_SPRITE_FOLDER = (
-    Path(__file__).resolve().parents[3] / "spriteImages"
-)
+from portable_pipe_tools.app_runtime import resource_root
+
+DEFAULT_ANIMATION_SPRITE_FOLDER = resource_root() / "spriteImages"
 
 STAGE_SPRITE_FILENAMES: dict[WorkerStage, str] = {
     WorkerStage.STOPPED: "Base_Death.png",

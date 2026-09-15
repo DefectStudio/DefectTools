@@ -65,7 +65,10 @@ class DispatcherConnection:
         normalized_url = self.api_url.strip().rstrip("/")
         if urlparse(normalized_url).hostname == "defect-farm-api.twilight-tooth-7b7c.workers.dev":
             raise DispatcherConfigurationError("V2 cannot connect to the V1 production dispatcher. Configure a separate V2 service.")
-        if not normalized_url.startswith(("https://", "http://127.0.0.1", "http://localhost")):
+        parsed = urlparse(normalized_url)
+        if (not parsed.hostname or parsed.username or parsed.password or
+                not (parsed.scheme == "https" or
+                     parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"})):
             raise DispatcherConfigurationError(
                 "Dispatcher URL must use HTTPS (localhost HTTP is allowed for tests)."
             )

@@ -1,4 +1,4 @@
-"""V2 GUI for registered local renders; automatic farm leasing is still pending."""
+"""V2 GUI for registered local rendering and worker-initiated queue claims."""
 
 from __future__ import annotations
 
@@ -49,6 +49,8 @@ from portable_pipe_tools.render_farm.cloud_queue import (
 )
 from portable_pipe_tools.app_runtime import default_settings_path
 from portable_pipe_tools.apps.worker_project_list import WorkerProjectList
+from portable_pipe_tools.apps.worker_connection_dialog import WorkerConnectionDialog
+from portable_pipe_tools.render_farm.worker_setup import check_worker_setup
 from portable_pipe_tools.render_farm.registered_render import render_registered_job
 from portable_pipe_tools.render_farm.registered_claims import RegisteredQueueWorker
 from portable_pipe_tools.render_farm.v2_gui_settings import (
@@ -228,7 +230,7 @@ class RenderWorkerV2App:
         self.local_uproject_var = tk.StringVar(
             value=load_saved_local_uproject()
         )
-        self.status_var = tk.StringVar(value="Ready — select a registered project to render")
+        self.status_var = tk.StringVar(value="Configure projects and connection, then Check Setup")
         self._registered_render_active = False
         self._registered_render_cancel = Event()
         self._close_after_registered_render = False
@@ -522,10 +524,9 @@ class RenderWorkerV2App:
             sticky="w",
             pady=4,
         )
-        ttk.Label(
-            setup_frame,
-            text="D1 grants the lease; Dropbox continues carrying packages and outputs.",
-        ).grid(row=7, column=2, sticky="w", padx=(8, 0), pady=4)
+        self.connection_button = ttk.Button(setup_frame, text="Configure Connection…",
+                                             command=self._configure_connection)
+        self.connection_button.grid(row=7, column=2, sticky="w", padx=(8, 0), pady=4)
 
         # Insert directly below Worker Name, keeping the other V1 fields in order.
         for widget in setup_frame.grid_slaves():
@@ -594,6 +595,12 @@ class RenderWorkerV2App:
             self.process_one_button,
             self.render_one_button,
         )
+
+        # These inherited demo actions are not part of the distributed worker.
+        for button in (self.initialize_button, self.create_test_job_button, self.process_one_button):
+            button.pack_forget()
+        self.check_setup_button = ttk.Button(button_row, text="Check Setup", command=self._check_setup)
+        self.check_setup_button.pack(side="left", padx=(0, 8), before=self.render_one_button)
 
         activity_frame = ttk.LabelFrame(outer, text="Worker Activity", padding=8)
         activity_frame.pack(fill="x", pady=(2, 10))
@@ -925,6 +932,39 @@ class RenderWorkerV2App:
         connection = load_dispatcher_connection("worker", required=True)
         assert connection is not None
         return DispatcherClient(connection)
+
+    def _save_worker_preferences(self):
+        save_listener_preferences(self.settings_path, worker_name=self._get_worker_name(),
+                                  poll_interval_seconds=self._get_poll_interval_seconds(),
+                                  render_timeout_hours=self._get_render_timeout_seconds() / SECONDS_PER_HOUR,
+                                  use_cloud_dispatcher=self.use_cloud_dispatcher_var.get())
+
+    def _configure_connection(self):
+        if self._busy or self._listener_state.active:
+            return
+        def saved():
+            self.use_cloud_dispatcher_var.set(True)
+            self._save_worker_preferences()
+            self._log("V2 worker connection saved. Use Check Setup to verify access.")
+        WorkerConnectionDialog(self.root, on_save=saved)
+
+    def _check_setup(self):
+        if self._busy or self._listener_state.active:
+            return
+        try:
+            self._save_engine_field()
+            self._save_worker_preferences()
+            dispatcher = self._get_dispatcher_client()
+        except Exception as error:
+            self._show_input_error(error)
+            return
+        def completed(report):
+            self.status_var.set("Setup checks passed" if report.ok else "Setup needs attention")
+            self._log(report.describe())
+            show = messagebox.showinfo if report.ok else messagebox.showwarning
+            show("Worker Setup", report.describe(), parent=self.root)
+        self._run_background("Checking setup", lambda: check_worker_setup(self.settings_path, dispatcher=dispatcher),
+                             completed)
 
     def _get_unreal_editor_cmd(self) -> Path:
         raw_path = self.unreal_editor_cmd_var.get().strip()
@@ -1660,6 +1700,8 @@ class RenderWorkerV2App:
         self.local_uproject_entry.configure(state=entry_state)
         self.local_uproject_browse_button.configure(state=button_state)
         self.cloud_dispatcher_checkbutton.configure(state=button_state)
+        self.connection_button.configure(state=button_state)
+        self.check_setup_button.configure(state=button_state)
 
         # Retain the V1 controls for review without starting the V1 farm backend.
         for button in self._action_buttons:
@@ -1826,6 +1868,11 @@ class RenderWorkerV2App:
         )
 
     def _on_close(self) -> None:
+        try:
+            self._save_worker_preferences()
+        except (OSError, ValueError) as error:
+            self._show_input_error(error)
+            return
         self._save_engine_field()
         if self._registered_render_active:
             self._close_after_registered_render = True

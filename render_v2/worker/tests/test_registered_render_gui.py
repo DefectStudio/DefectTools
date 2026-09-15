@@ -51,6 +51,19 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         self.assertEqual("normal", str(self.app.start_worker_button.cget("state")))
         self.assertEqual("Render complete", self.app.status_var.get())
 
+    def test_setup_check_is_async_and_does_not_start_listener(self):
+        from portable_pipe_tools.render_farm.worker_setup import SetupReport
+        self.app.use_cloud_dispatcher_var.set(False)
+        with patch(MODULE + ".check_worker_setup", return_value=SetupReport(projects=["Show"])) as check, \
+             patch(MODULE + ".messagebox.showinfo"), patch(MODULE + ".RegisteredQueueWorker") as worker:
+            self.app._check_setup()
+            self.assertFalse(self.app.project_list.editing_enabled)
+            self.wait_finished()
+            self.assertEqual("Setup checks passed", self.app.status_var.get())
+            check.assert_called_once_with(self.settings, dispatcher=None)
+            worker.assert_not_called()
+            self.assertFalse(self.app._listener_state.active)
+
     def test_stop_cancels_active_render_and_preserves_registration(self):
         started = threading.Event()
         def render(*args, cancelled, **kwargs):

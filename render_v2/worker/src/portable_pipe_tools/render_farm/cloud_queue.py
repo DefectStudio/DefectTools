@@ -54,7 +54,7 @@ def get_default_cloud_spool_root(worker_name: str) -> Path:
     spool_base = (
         Path(override).expanduser()
         if override
-        else base / "DefectStudio" / "RenderFarm" / DEFAULT_LOCAL_SPOOL_FOLDER_NAME
+        else base / "DefectStudio" / "RenderFarmV2" / DEFAULT_LOCAL_SPOOL_FOLDER_NAME
     )
     return spool_base / safe_name(worker_name, "WORKER")
 

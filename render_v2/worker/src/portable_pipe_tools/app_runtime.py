@@ -21,7 +21,7 @@ def resource_root() -> Path:
 def settings_directory() -> Path:
     if is_frozen():
         local = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local")))
-        return local / "DefectRenderWorker"
+        return local / "DefectStudio/RenderWorkerV2"
     return resource_root() / "LocalSaveFiles"
 
 
@@ -41,7 +41,7 @@ def default_workspace() -> Path:
     return (Path.home() if is_frozen() else resource_root().parent) / "RenderWorkerWorkspace"
 
 
-def prepare_external_programs() -> None:
+def prepare_external_programs(*, discover_git: bool = True) -> None:
     """Call after importing app dependencies, before launching Git or Unreal."""
     if is_frozen() and os.name == "nt":
         import ctypes
@@ -51,7 +51,7 @@ def prepare_external_programs() -> None:
         paths = [entry for entry in os.environ.get("PATH", "").split(os.pathsep)
                  if entry and not Path(entry).resolve().is_relative_to(bundle)]
         os.environ["PATH"] = os.pathsep.join(paths)
-    if shutil.which("git") or os.name != "nt":
+    if not discover_git or shutil.which("git") or os.name != "nt":
         return
     import winreg
     candidates = []

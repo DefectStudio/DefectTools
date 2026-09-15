@@ -1,5 +1,9 @@
 # Render Worker
 
+**Portable V2 executable:** build with `build_worker.bat`; the current GUI is packaged
+as `dist/single/RenderWorkerV2.exe`. See [portable setup and validation](docs/portable-worker-v2.md).
+The older pilot EXE/catalog instructions below are historical.
+
 **Automatic claiming is connected:** Start Worker polls registered shows using
 filesystem claims or V2 cloud leases. See [registered queue claiming](docs/registered-queue-claiming.md).
 
