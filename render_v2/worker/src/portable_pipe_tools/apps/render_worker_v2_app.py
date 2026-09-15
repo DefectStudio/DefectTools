@@ -6,7 +6,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 import logging
-import os
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
@@ -23,8 +22,6 @@ from portable_pipe_tools.render_farm.animations import (
     inspect_sprite_sheet,
 )
 from portable_pipe_tools.render_farm.queue import (
-    QueuePaths,
-    create_queue_folders,
     default_worker_name,
     safe_name,
 )
@@ -60,17 +57,11 @@ from portable_pipe_tools.render_farm.v2_gui_settings import (
     load_listener_preferences,
     save_listener_preferences,
 )
-from portable_pipe_tools.render_farm.test_job import create_test_job
 from portable_pipe_tools.render_farm.settings import (
     load_saved_local_uproject,
     load_saved_poll_interval_seconds,
     load_saved_render_timeout_hours,
     load_saved_render_farm_root,
-    save_local_uproject,
-    save_poll_interval_seconds,
-    save_render_timeout_hours,
-    save_render_farm_root,
-    save_unreal_editor_cmd,
 )
 from portable_pipe_tools.render_farm.unreal_runner import (
     DEFAULT_RENDER_TIMEOUT_SECONDS,
@@ -204,13 +195,13 @@ class RenderWorkerV2App:
 
         self.farm_root_var = tk.StringVar(value=load_saved_render_farm_root())
         self.worker_name_var = tk.StringVar(value=default_worker_name() + "-V2")
-        self.simulate_result_var = tk.StringVar(value="success")
         try:
             cloud_worker_configured = (
                 load_dispatcher_connection("worker") is not None
             )
         except Exception:
             cloud_worker_configured = False
+        # Preserve the saved coordination mode after removing its legacy UI toggle.
         self.use_cloud_dispatcher_var = tk.BooleanVar(
             value=cloud_worker_configured
         )
@@ -359,26 +350,6 @@ class RenderWorkerV2App:
         )
         self.worker_name_entry.grid(row=0, column=1, sticky="ew", pady=4)
 
-        ttk.Label(setup_frame, text="Simulation Result").grid(
-            row=6,
-            column=0,
-            sticky="w",
-            padx=(0, 8),
-            pady=4,
-        )
-        self.simulate_result_combo = ttk.Combobox(
-            setup_frame,
-            textvariable=self.simulate_result_var,
-            values=("success", "failure"),
-            state="readonly",
-            width=16,
-        )
-        self.simulate_result_combo.grid(row=6, column=1, sticky="w", pady=4)
-        ttk.Label(
-            setup_frame,
-            text="Used only by the Simulate One Job button.",
-        ).grid(row=6, column=2, sticky="w", padx=(8, 0), pady=4)
-
         ttk.Label(setup_frame, text="Initial Idle Poll (seconds)").grid(
             row=4,
             column=0,
@@ -423,28 +394,6 @@ class RenderWorkerV2App:
             text="Stops and requeues an overlong Unreal render; default is 2 hours.",
         ).grid(row=5, column=2, sticky="w", padx=(8, 0), pady=4)
 
-        ttk.Label(setup_frame, text="Job Coordination").grid(
-            row=7,
-            column=0,
-            sticky="w",
-            padx=(0, 8),
-            pady=4,
-        )
-        self.cloud_dispatcher_checkbutton = ttk.Checkbutton(
-            setup_frame,
-            text="Use Cloud Dispatcher",
-            variable=self.use_cloud_dispatcher_var,
-        )
-        self.cloud_dispatcher_checkbutton.grid(
-            row=7,
-            column=1,
-            sticky="w",
-            pady=4,
-        )
-        self.connection_button = ttk.Button(setup_frame, text="Configure Connection…",
-                                             command=self._configure_connection)
-        self.connection_button.grid(row=7, column=2, sticky="w", padx=(8, 0), pady=4)
-
         worker_name_fields = setup_frame.grid_slaves(row=0)
         # Keep Dropbox and engine selection ahead of the project list.
         for widget in setup_frame.grid_slaves():
@@ -475,27 +424,6 @@ class RenderWorkerV2App:
         button_row = ttk.Frame(outer)
         button_row.pack(fill="x", pady=(12, 8))
 
-        self.initialize_button = ttk.Button(
-            button_row,
-            text="Initialize Queue",
-            command=self._initialize_queue,
-        )
-        self.initialize_button.pack(side="left", padx=(0, 8))
-
-        self.create_test_job_button = ttk.Button(
-            button_row,
-            text="Create Test Job",
-            command=self._create_test_job,
-        )
-        self.create_test_job_button.pack(side="left", padx=(0, 8))
-
-        self.process_one_button = ttk.Button(
-            button_row,
-            text="Simulate One Job",
-            command=self._process_one_job,
-        )
-        self.process_one_button.pack(side="left", padx=(0, 8))
-
         self.render_one_button = ttk.Button(
             button_row,
             text="Render job file…",
@@ -525,18 +453,11 @@ class RenderWorkerV2App:
         )
         self.clear_log_button.pack(side="right")
 
-        self._action_buttons = (
-            self.initialize_button,
-            self.create_test_job_button,
-            self.process_one_button,
-            self.render_one_button,
-        )
-
-        # These inherited demo actions are not part of the distributed worker.
-        for button in (self.initialize_button, self.create_test_job_button, self.process_one_button):
-            button.pack_forget()
         self.check_setup_button = ttk.Button(button_row, text="Check Setup", command=self._check_setup)
         self.check_setup_button.pack(side="left", padx=(0, 8), before=self.render_one_button)
+        self.connection_button = ttk.Button(button_row, text="Configure Connection…",
+                                            command=self._configure_connection)
+        self.connection_button.pack(side="left", padx=(0, 8), before=self.check_setup_button)
 
         activity_frame = ttk.LabelFrame(outer, text="Worker Activity", padding=8)
         activity_frame.pack(fill="x", pady=(2, 10))
@@ -1388,65 +1309,6 @@ class RenderWorkerV2App:
         if heartbeat is not None:
             heartbeat.stop(remove_files=True)
 
-    def _initialize_queue(self) -> None:
-        try:
-            farm_root = self._get_farm_root()
-        except Exception as error:
-            self._show_input_error(error)
-            return
-
-        self._remember_farm_root(farm_root)
-        self._run_background(
-            label="Initialize queue",
-            work=lambda: create_queue_folders(farm_root),
-            on_success=self._queue_initialized,
-        )
-
-    def _queue_initialized(self, paths: QueuePaths) -> None:
-        self._log(f"Queue folders ready: {paths.root}")
-        for folder in paths.all_queue_folders():
-            self._log(f"  {folder.name}")
-        self._log(f"  {paths.workers.name}")
-
-    def _create_test_job(self) -> None:
-        try:
-            farm_root = self._get_farm_root()
-        except Exception as error:
-            self._show_input_error(error)
-            return
-
-        self._remember_farm_root(farm_root)
-        self._run_background(
-            label="Create test job",
-            work=lambda: create_test_job(farm_root),
-            on_success=lambda queued_folder: self._log(
-                f"Published test job: {queued_folder}"
-            ),
-        )
-
-    def _process_one_job(self) -> None:
-        try:
-            farm_root = self._get_farm_root()
-            worker_name = self._get_worker_name()
-        except Exception as error:
-            self._show_input_error(error)
-            return
-
-        simulate_success = self.simulate_result_var.get() == "success"
-        self._remember_farm_root(farm_root)
-        self._run_background(
-            label="Process one job",
-            work=lambda: run_once(
-                farm_root=farm_root,
-                worker_name=worker_name,
-                simulate_success=simulate_success,
-                minimum_stage_seconds=DEFAULT_MINIMUM_STAGE_SECONDS,
-                stage_callback=self._stage_queue.put,
-                job_callback=self._job_queue.put,
-            ),
-            on_success=self._job_processed,
-        )
-
     def _render_one_job_with_unreal(self) -> None:
         if not self._startup_update_complete or self._restart_pending:
             self._log(
@@ -1680,10 +1542,6 @@ class RenderWorkerV2App:
         prerequisite_state = "disabled" if operation_locked or not root_is_set else "normal"
         button_state = "disabled" if configuration_locked else "normal"
         entry_state = "disabled" if configuration_locked else "normal"
-        combo_state = "disabled" if configuration_locked else "readonly"
-
-        for button in self._action_buttons:
-            button.configure(state=button_state)
         self.start_worker_button.configure(state=button_state)
         self.stop_worker_button.configure(
             state=(
@@ -1696,21 +1554,15 @@ class RenderWorkerV2App:
             )
         )
         self.worker_name_entry.configure(state=prerequisite_state)
-        self.simulate_result_combo.configure(state=combo_state)
         self.poll_interval_spinbox.configure(state=entry_state)
         self.render_timeout_spinbox.configure(state=entry_state)
         self.unreal_editor_cmd_entry.configure(state=prerequisite_state)
         self.unreal_editor_cmd_browse_button.configure(state=prerequisite_state)
         self.unreal_editor_cmd_scan_button.configure(state=prerequisite_state)
-        self.cloud_dispatcher_checkbutton.configure(state=button_state)
         self.connection_button.configure(state=button_state)
         self.check_setup_button.configure(state=button_state)
         self.clear_log_button.configure(state="normal" if root_is_set and engine_is_set else "disabled")
 
-        # Retain the V1 controls for review without starting the V1 farm backend.
-        for button in self._action_buttons:
-            button.configure(state="disabled")
-        self.start_worker_button.configure(state=button_state)
         self.render_one_button.configure(state=button_state)
         self.project_list.set_editing_enabled(not operation_locked, projects_available=engine_is_set)
         if not root_is_set:
