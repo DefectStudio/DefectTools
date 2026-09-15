@@ -13,6 +13,10 @@ from threading import Thread
 import time
 from typing import Any
 
+from portable_pipe_tools.render_farm.engine_discovery import (
+    find_installed_unreal_editor,
+    path_engine_matches_versions,
+)
 from portable_pipe_tools.render_farm.git_sync import GIT_PULL_LOG_FILENAME
 from portable_pipe_tools.render_farm.local_paths import (
     prepare_worker_output_mapping,
@@ -117,28 +121,29 @@ def resolve_unreal_editor_cmd(
 
     uproject = _as_path(local_uproject or str(job.get("uproject") or ""))
     uproject_data = _load_uproject(uproject)
-    program_files = Path(os.environ.get("ProgramFiles") or r"C:\Program Files")
-    for version in _engine_version_candidates(job, uproject_data):
-        candidate = (
-            program_files
-            / "Epic Games"
-            / f"UE_{version}"
-            / "Engine"
-            / "Binaries"
-            / "Win64"
-            / "UnrealEditor-Cmd.exe"
-        )
-        if candidate.is_file():
-            return candidate
+    association = str(uproject_data.get("EngineAssociation") or "").strip()
+    requested_versions = _engine_version_candidates(job, uproject_data)
+    candidate = find_installed_unreal_editor(
+        requested_versions, association=association
+    )
+    if candidate is not None:
+        return candidate
 
-    path_match = shutil.which("UnrealEditor-Cmd.exe")
-    if path_match:
+    # PATH cannot establish the identity of a named/custom project build.
+    custom_association = association and not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", association)
+    path_match = None if custom_association else shutil.which("UnrealEditor-Cmd.exe")
+    if path_match and (
+        not requested_versions
+        or path_engine_matches_versions(_as_path(path_match), requested_versions)
+    ):
         return _as_path(path_match)
 
     versions = ", ".join(_engine_version_candidates(job, uproject_data)) or "unknown"
     raise FileNotFoundError(
         "Could not locate UnrealEditor-Cmd.exe automatically for engine version(s) "
-        f"{versions}. Configure it explicitly in the Render Worker."
+        f"{versions} (project association: {association or 'unspecified'}). "
+        "Checked standard locations, Epic Launcher installations, and registered builds. "
+        "Configure it explicitly in the Render Worker."
     )
 
 
