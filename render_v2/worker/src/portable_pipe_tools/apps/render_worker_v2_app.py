@@ -346,41 +346,6 @@ class RenderWorkerV2App:
         setup_frame.pack(fill="x")
         setup_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(setup_frame, text="Show Render Farm Base Folder").grid(
-            row=1,
-            column=0,
-            sticky="w",
-            padx=(0, 8),
-            pady=4,
-        )
-        self.farm_root_entry = ttk.Entry(
-            setup_frame,
-            textvariable=self.farm_root_var,
-        )
-        self.farm_root_entry.grid(row=1, column=1, sticky="ew", pady=4)
-        self.farm_root_entry.bind(
-            "<FocusOut>",
-            lambda _event: self._refresh_derived_show_file_server_path(),
-        )
-        self.farm_root_entry.bind(
-            "<Return>",
-            lambda _event: self._refresh_derived_show_file_server_path(
-                log_result=True
-            ),
-        )
-        self.browse_button = ttk.Button(
-            setup_frame,
-            text="Browse...",
-            command=self._browse_farm_root,
-        )
-        self.browse_button.grid(
-            row=1,
-            column=2,
-            sticky="w",
-            padx=(8, 0),
-            pady=4,
-        )
-
         ttk.Label(setup_frame, text="Worker Name").grid(
             row=0,
             column=0,
@@ -413,31 +378,6 @@ class RenderWorkerV2App:
             setup_frame,
             text="Used only by the Simulate One Job button.",
         ).grid(row=6, column=2, sticky="w", padx=(8, 0), pady=4)
-
-        ttk.Label(setup_frame, text="Local Unreal Project (.uproject)").grid(
-            row=2,
-            column=0,
-            sticky="w",
-            padx=(0, 8),
-            pady=4,
-        )
-        self.local_uproject_entry = ttk.Entry(
-            setup_frame,
-            textvariable=self.local_uproject_var,
-        )
-        self.local_uproject_entry.grid(row=2, column=1, sticky="ew", pady=4)
-        self.local_uproject_browse_button = ttk.Button(
-            setup_frame,
-            text="Browse...",
-            command=self._browse_local_uproject,
-        )
-        self.local_uproject_browse_button.grid(
-            row=2,
-            column=2,
-            sticky="w",
-            padx=(8, 0),
-            pady=4,
-        )
 
         ttk.Label(setup_frame, text="Initial Idle Poll (seconds)").grid(
             row=4,
@@ -1755,8 +1695,6 @@ class RenderWorkerV2App:
                 else "disabled"
             )
         )
-        self.browse_button.configure(state=button_state)
-        self.farm_root_entry.configure(state=entry_state)
         self.worker_name_entry.configure(state=prerequisite_state)
         self.simulate_result_combo.configure(state=combo_state)
         self.poll_interval_spinbox.configure(state=entry_state)
@@ -1764,8 +1702,6 @@ class RenderWorkerV2App:
         self.unreal_editor_cmd_entry.configure(state=prerequisite_state)
         self.unreal_editor_cmd_browse_button.configure(state=prerequisite_state)
         self.unreal_editor_cmd_scan_button.configure(state=prerequisite_state)
-        self.local_uproject_entry.configure(state=entry_state)
-        self.local_uproject_browse_button.configure(state=button_state)
         self.cloud_dispatcher_checkbutton.configure(state=button_state)
         self.connection_button.configure(state=button_state)
         self.check_setup_button.configure(state=button_state)

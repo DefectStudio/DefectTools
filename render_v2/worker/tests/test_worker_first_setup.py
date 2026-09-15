@@ -22,8 +22,7 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.addCleanup(lambda: self.app._shutdown_application(0))
 
     def assert_setup_locked(self):
-        for name in ("worker_name_entry", "farm_root_entry", "browse_button", "local_uproject_entry",
-                     "local_uproject_browse_button", "unreal_editor_cmd_entry", "unreal_editor_cmd_browse_button",
+        for name in ("worker_name_entry", "unreal_editor_cmd_entry", "unreal_editor_cmd_browse_button",
                      "unreal_editor_cmd_scan_button",
                      "poll_interval_spinbox", "render_timeout_spinbox", "simulate_result_combo",
                      "cloud_dispatcher_checkbutton", "connection_button", "check_setup_button",
@@ -45,7 +44,7 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.assertEqual("grid" if root_is_set else "", self.app.engine_setup_frame.winfo_manager())
         self.assertEqual("grid" if visible else "", self.app.project_list.projects_frame.winfo_manager())
         self.assertEqual("grid" if root_is_set else "", self.app.project_list.root_refresh_button.winfo_manager())
-        self.assertEqual("grid" if visible else "", self.app.farm_root_entry.winfo_manager())
+        self.assertEqual("grid" if visible else "", self.app.poll_interval_spinbox.winfo_manager())
         self.assertEqual("pack" if visible else "", self.app.start_worker_button.master.winfo_manager())
         self.assertEqual("pack" if visible else "", self.app.animation_image_label.master.winfo_manager())
         self.assertEqual("pack" if visible else "", self.app.log_text.master.winfo_manager())
