@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "defect-farm-api-v2",
+  "account_id": "57c8a8e0c603fb4158012bb92d20543c",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {"enabled": true, "head_sampling_rate": 1},
+  "vars": {"ENVIRONMENT": "v2-production", "API_VERSION": "v1", "LEASE_SECONDS": "300"},
+  "secrets": {"required": ["SUBMIT_TOKEN", "WORKER_TOKEN", "MANAGER_TOKEN", "VIEWER_TOKEN"]},
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "defect-farm-v2-production",
+    "database_id": "2d3669f5-5114-4a50-9a9c-69463f9e7b48",
+    "migrations_dir": "migrations"
+  }]
+}

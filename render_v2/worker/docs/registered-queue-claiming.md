@@ -37,8 +37,9 @@ do not run in this local-registration workflow.
 The packaged worker reads its embedded company V2 profile. Source development
 uses `%LOCALAPPDATA%/DefectStudio/RenderFarmV2/cloud_connection.json`, separate
 from V1 credentials. No SQL schema migration is needed for eligibility. The local
-V2 dispatcher is v0.7.0 on port 8795. See [the hosted rollout plan](company-sql-deployment.md)
-for the separate company service; localhost builds are for local development only.
+V2 dispatcher is v0.7.0 on port 8795. The released EXE now uses the separate
+hosted V2 company service. See [deployment details](company-sql-deployment.md);
+localhost builds are for local development only.
 
 ## Historical validation — September 10, 2026 (filesystem mode since removed)
 
@@ -58,9 +59,9 @@ for the separate company service; localhost builds are for local development onl
   are beneath its `shows/s3bishop/Validation` directory. These are ignored files.
 
 The test dispatcher/database on 8796 was isolated from the normal local V2
-database on 8795 and from V1 production. The normal local backend now runs from
-the consolidated repository. The updated GUI is left stopped, configured for
-that local V2 backend; nothing was deployed to production.
+database on 8795 and from V1 production. That validation used the local V2
+backend and performed no production deployment. The subsequent September 15
+hosted V2 deployment is documented separately above.
 
 To repeat the API eligibility checks, start an isolated local dispatcher, then
 run `node scripts/test-project-claims.mjs` in the V2 API directory. It defaults

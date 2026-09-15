@@ -33,7 +33,7 @@ powershell -NoProfile -File tools\build_worker.ps1 -Mode folder
 powershell -NoProfile -File tools\build_worker.ps1 -Mode single
 ```
 
-The build installs pinned dependencies into the worker's `.venv`. The folder build is under `dist/folder/RenderWorkerV2`; the distributable single EXE is `dist/single/RenderWorkerV2.exe`. Supply `-CompanyConnection PATH` to select the administrator's V2 service JSON profile; the default is this build machine's V2 connection settings. Only `api_url` and `worker_token` are included. Manager, submitter and database administration credentials are excluded. Keep the profile and generated build output out of Git. A localhost profile produces a local-development build, not a company-wide release.
+The build installs pinned dependencies into the worker's `.venv`. The folder build is under `dist/folder/RenderWorkerV2`; the distributable single EXE is `dist/single/RenderWorkerV2.exe`. Supply `-CompanyConnection PATH` to select the administrator's V2 service JSON profile; the default is `%LOCALAPPDATA%/DefectStudio/RenderFarmV2/company-worker.json`. Only `api_url` and `worker_token` are included. Manager, submitter and database administration credentials are excluded. Keep the profile and generated build output out of Git. A localhost profile produces a local-development build, not a company-wide release.
 
 ## Validate the exact artifact
 
@@ -47,4 +47,4 @@ For controlled diagnostics, `RenderWorkerV2.exe render ...` forwards to the regi
 
 ## Release limits
 
-This preview is unsigned. It must still be checked under the destination computers' Windows security policies and endpoint protection. No signing certificate, remote V2 deployment or production migration is included. Same-machine tests with a fresh settings directory and restricted PATH are useful evidence but are not a second-machine acceptance test. The security audit's server-side project authorization and unique machine credentials remain separate hardening tasks.
+This preview is unsigned. The separate hosted V2 SQL service was deployed on September 15; see [deployment details](company-sql-deployment.md). No V1 migrations were applied. Same-machine tests with a fresh settings directory and restricted PATH are useful evidence but are not a second-machine acceptance test. The security audit's server-side project authorization and unique machine credentials remain separate hardening tasks.

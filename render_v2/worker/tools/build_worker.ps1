@@ -1,6 +1,6 @@
 param(
     [ValidateSet('folder', 'single')][string]$Mode = 'single',
-    [string]$CompanyConnection = (Join-Path $env:LOCALAPPDATA 'DefectStudio\RenderFarmV2\cloud_connection.json')
+    [string]$CompanyConnection = (Join-Path $env:LOCALAPPDATA 'DefectStudio\RenderFarmV2\company-worker.json')
 )
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot

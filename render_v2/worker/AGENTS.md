@@ -1,6 +1,6 @@
 # Render Worker V2
 
-- The user consolidated both V2 apps into Defect Tools on September 10. Worker V2 lives here in `render_v2/worker`; Manager V2 lives in sibling `../manager`. Preserve repository-root V1 source and launchers. V2 uses a separate local dispatcher/database; never deploy V2 migrations or code into V1 production resources. The known V1 dispatcher URL is rejected by this V2 client.
+- The user consolidated both V2 apps into Defect Tools on September 10. Worker V2 lives here in `render_v2/worker`; Manager V2 lives in sibling `../manager`. Preserve repository-root V1 source and launchers. On September 15 the user approved and deployed the separate hosted V2 service `defect-farm-api-v2.twilight-tooth-7b7c.workers.dev` and database `defect-farm-v2-production`; see `docs/company-sql-deployment.md`. Never deploy V2 migrations or code into V1 production resources. The known V1 dispatcher URL is rejected by this V2 client.
 
 This directory is the home of Worker V2 development inside the shared repository. See `../README.md`. The old `F:/RenderWorker` checkout is a historical copy.
 
