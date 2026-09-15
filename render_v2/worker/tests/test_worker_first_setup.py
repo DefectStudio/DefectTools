@@ -1,10 +1,11 @@
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 from portable_pipe_tools.apps.render_worker_v2_app import RenderWorkerV2App
-from portable_pipe_tools.render_farm.v2_gui_settings import load_dropbox_root, save_unreal_editor_preference
+from portable_pipe_tools.render_farm.v2_gui_settings import load_dropbox_root, load_or_detect_unreal_editor, save_unreal_editor_preference
 
 MODULE = "portable_pipe_tools.apps.worker_project_list"
 
@@ -23,6 +24,7 @@ class WorkerFirstSetupTests(unittest.TestCase):
     def assert_setup_locked(self):
         for name in ("worker_name_entry", "farm_root_entry", "browse_button", "local_uproject_entry",
                      "local_uproject_browse_button", "unreal_editor_cmd_entry", "unreal_editor_cmd_browse_button",
+                     "unreal_editor_cmd_scan_button",
                      "poll_interval_spinbox", "render_timeout_spinbox", "simulate_result_combo",
                      "cloud_dispatcher_checkbutton", "connection_button", "check_setup_button",
                      "start_worker_button", "render_one_button", "stop_worker_button", "clear_log_button"):
@@ -150,3 +152,46 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.app._set_busy(False, "Ready")
         self.assertEqual("normal", str(self.app.project_list.root_browse_button.cget("state")))
         self.assert_setup_locked()
+
+    def wait_for_scan(self):
+        deadline = time.monotonic() + 4
+        while self.app._busy and time.monotonic() < deadline:
+            self.app.root.update()
+            time.sleep(0.01)
+        self.assertFalse(self.app._busy)
+
+    def test_scan_uses_existing_detector_and_saves_result(self):
+        self.app.project_list.dropbox_root.set(str(self.path))
+        detected = self.path / "UnrealEditor-Cmd.exe"
+        with patch("portable_pipe_tools.apps.render_worker_v2_app.find_installed_unreal_editor", return_value=detected) as scan:
+            self.app.unreal_editor_cmd_scan_button.invoke()
+            self.assertEqual("disabled", str(self.app.unreal_editor_cmd_scan_button.cget("state")))
+            self.wait_for_scan()
+            scan.assert_called_once_with(["5.8"])
+        self.assertEqual(str(detected), self.app.unreal_editor_cmd_var.get())
+        self.assertEqual(str(detected), load_or_detect_unreal_editor(self.settings))
+        self.assert_setup_visibility(True)
+        self.assertEqual("normal", str(self.app.unreal_editor_cmd_scan_button.cget("state")))
+
+    def test_unsuccessful_scan_preserves_existing_selection_and_allows_retry(self):
+        self.app.project_list.dropbox_root.set(str(self.path))
+        for current in ("", str(self.path / "Custom/UnrealEditor-Cmd.exe")):
+            self.app.unreal_editor_cmd_var.set(current)
+            with patch("portable_pipe_tools.apps.render_worker_v2_app.find_installed_unreal_editor", return_value=None):
+                self.app.unreal_editor_cmd_scan_button.invoke()
+                self.wait_for_scan()
+            self.assertEqual(current, self.app.unreal_editor_cmd_var.get())
+            self.assert_setup_visibility(bool(current), root_is_set=True)
+            self.assertIn("No Unreal Engine 5.8", self.app.status_var.get())
+            self.assertEqual("normal", str(self.app.unreal_editor_cmd_scan_button.cget("state")))
+
+    def test_scan_is_blocked_until_root_and_recovers_from_errors(self):
+        with patch("portable_pipe_tools.apps.render_worker_v2_app.find_installed_unreal_editor", side_effect=OSError("Scan unavailable")) as scan:
+            self.app._scan_unreal_editor_cmd()
+            scan.assert_not_called()
+            self.app.project_list.dropbox_root.set(str(self.path))
+            self.app.unreal_editor_cmd_scan_button.invoke()
+            self.wait_for_scan()
+        self.assertIn("scan failed", self.app.status_var.get())
+        self.assert_setup_visibility(False, root_is_set=True)
+        self.assertEqual("normal", str(self.app.unreal_editor_cmd_scan_button.cget("state")))

@@ -51,6 +51,7 @@ from portable_pipe_tools.app_runtime import default_settings_path
 from portable_pipe_tools.apps.worker_project_list import WorkerProjectList
 from portable_pipe_tools.apps.worker_connection_dialog import WorkerConnectionDialog
 from portable_pipe_tools.render_farm.worker_setup import check_worker_setup
+from portable_pipe_tools.render_farm.engine_discovery import find_installed_unreal_editor
 from portable_pipe_tools.render_farm.registered_render import render_registered_job
 from portable_pipe_tools.render_farm.registered_claims import RegisteredQueueWorker
 from portable_pipe_tools.render_farm.v2_gui_settings import (
@@ -523,6 +524,9 @@ class RenderWorkerV2App:
         self.unreal_editor_cmd_browse_button = ttk.Button(
             self.engine_setup_frame, text="Browse...", command=self._browse_unreal_editor_cmd)
         self.unreal_editor_cmd_browse_button.grid(row=0, column=2, sticky="w", padx=(8, 0), pady=4)
+        self.unreal_editor_cmd_scan_button = ttk.Button(
+            self.engine_setup_frame, text="Scan", command=self._scan_unreal_editor_cmd)
+        self.unreal_editor_cmd_scan_button.grid(row=0, column=3, sticky="w", padx=(8, 0), pady=4)
         self.project_list.projects_frame.grid_configure(row=2)
         self._root_setup_fields = worker_name_fields + [self.engine_setup_frame]
         self._setup_fields = [widget for widget in setup_frame.grid_slaves()
@@ -901,6 +905,30 @@ class RenderWorkerV2App:
             self._remember_farm_root(Path(selected))
             self._log(f"Selected show RenderFarm base folder: {selected}")
             self._refresh_derived_show_file_server_path(log_result=True)
+
+    def _scan_unreal_editor_cmd(self) -> None:
+        if (self._busy or self._listener_state.active or not self._startup_update_complete
+                or self._restart_pending or not self.project_list.dropbox_root.get().strip()):
+            return
+
+        def completed(detected: Path | None) -> None:
+            if detected is None:
+                message = "No Unreal Engine 5.8 installation found. Use Browse to select UnrealEditor-Cmd.exe."
+                self.status_var.set(message)
+                self._log(message)
+                return
+            self.unreal_editor_cmd_var.set(str(detected))
+            self.status_var.set("Unreal Engine 5.8 detected. Add your local projects, then Check Setup.")
+            self._remember_unreal_editor_cmd(detected)
+            self._log(f"Detected Unreal command-line executable: {detected}")
+
+        def failed(error: Exception) -> None:
+            self.status_var.set(f"Unreal engine scan failed: {error}. Use Browse or try Scan again.")
+
+        if self._run_background("Scanning for Unreal Engine 5.8",
+                                work=lambda: find_installed_unreal_editor(["5.8"]),
+                                on_success=completed, on_error=failed):
+            self.status_var.set("Scanning for Unreal Engine 5.8...")
 
     def _browse_unreal_editor_cmd(self) -> None:
         current_value = self.unreal_editor_cmd_var.get().strip()
@@ -1735,6 +1763,7 @@ class RenderWorkerV2App:
         self.render_timeout_spinbox.configure(state=entry_state)
         self.unreal_editor_cmd_entry.configure(state=prerequisite_state)
         self.unreal_editor_cmd_browse_button.configure(state=prerequisite_state)
+        self.unreal_editor_cmd_scan_button.configure(state=prerequisite_state)
         self.local_uproject_entry.configure(state=entry_state)
         self.local_uproject_browse_button.configure(state=button_state)
         self.cloud_dispatcher_checkbutton.configure(state=button_state)
@@ -1751,9 +1780,9 @@ class RenderWorkerV2App:
         if not root_is_set:
             self.status_var.set("First, choose the Dropbox project root using Browse.")
         elif not engine_is_set:
-            self.status_var.set("Next, choose UnrealEditor-Cmd.exe using Browse, or enter its path.")
+            self.status_var.set("Next, use Scan or Browse to choose UnrealEditor-Cmd.exe, or enter its path.")
         elif self.status_var.get() in ("First, choose the Dropbox project root using Browse.",
-                                       "Next, choose UnrealEditor-Cmd.exe using Browse, or enter its path."):
+                                       "Next, use Scan or Browse to choose UnrealEditor-Cmd.exe, or enter its path."):
             self.status_var.set("Add your local projects, then Check Setup.")
         can_stop = ((self._registered_render_active and not self._registered_render_cancel.is_set())
                     or (self._listener_state.active and not self._listener_state.stop_requested))

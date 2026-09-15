@@ -14,6 +14,8 @@ Copy `RenderWorkerV2.exe` to a folder on the target computer and double-click it
 4. Click **Check Setup**. It checks local paths, basic write access, available engine-version metadata, disk-space warnings, managed plugin conflicts and worker authentication when cloud mode is selected. It never claims a job or installs a plugin. Full asset/GPU compatibility is verified by an actual render.
 5. Click **Start Worker** to begin claiming, or select a registration and use **Render job file…** for a direct test. **Stop Worker** requests cancellation using the existing listener/render behavior.
 
+The **Scan** button beside the executable's **Browse** button reruns the same UE 5.8 detection used on first launch. A successful scan fills and saves the executable path and reveals the remaining controls. An unsuccessful scan preserves the current selection and reports that no matching engine was found. Scanning runs in the background; automatic startup detection remains a one-time step.
+
 Unreal's runtime plugin is installed into the explicitly registered project at render time; that project and the queue/output locations must be writable. The diagnostics use short-lived temporary write probes in those configured folders. Project downloading is not implemented by this GUI and remains off by default; do not treat the existing checkbox as a completed download feature.
 
 ## Persistent state and replacing the EXE
