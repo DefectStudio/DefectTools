@@ -534,7 +534,7 @@ class RenderWorkerV2App:
             if row >= 1:
                 widget.grid_configure(row=row + 1)
         self.project_list = WorkerProjectList(setup_frame, settings_path=self.settings_path,
-                                              on_change=self._log)
+                                              on_change=self._log, on_root_change=self._refresh_control_states)
         self.project_list.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 10))
 
         button_row = ttk.Frame(outer)
@@ -583,11 +583,12 @@ class RenderWorkerV2App:
         )
         self.stop_worker_button.pack(side="left", padx=(0, 8))
 
-        ttk.Button(
+        self.clear_log_button = ttk.Button(
             button_row,
             text="Clear Log",
             command=self._clear_log,
-        ).pack(side="right")
+        )
+        self.clear_log_button.pack(side="right")
 
         self._action_buttons = (
             self.initialize_button,
@@ -940,7 +941,7 @@ class RenderWorkerV2App:
                                   use_cloud_dispatcher=self.use_cloud_dispatcher_var.get())
 
     def _configure_connection(self):
-        if self._busy or self._listener_state.active:
+        if self._busy or self._listener_state.active or not self.project_list.dropbox_root.get().strip():
             return
         def saved():
             self.use_cloud_dispatcher_var.set(True)
@@ -949,7 +950,7 @@ class RenderWorkerV2App:
         WorkerConnectionDialog(self.root, on_save=saved)
 
     def _check_setup(self):
-        if self._busy or self._listener_state.active:
+        if self._busy or self._listener_state.active or not self.project_list.dropbox_root.get().strip():
             return
         try:
             self._save_engine_field()
@@ -1026,6 +1027,8 @@ class RenderWorkerV2App:
         return hours * SECONDS_PER_HOUR
 
     def _start_worker(self, *, require_confirmation: bool = True) -> None:
+        if not self.project_list.dropbox_root.get().strip():
+            return
         if not self._startup_update_complete or self._restart_pending:
             self._log(
                 "Start Worker ignored: the Render Worker update check has not "
@@ -1177,6 +1180,8 @@ class RenderWorkerV2App:
             self._request_worker_stop(remotely=False)
 
     def _render_registered_job(self) -> None:
+        if not self.project_list.dropbox_root.get().strip():
+            return
         if self._busy:
             return
         if self.project_list.dialog is not None and self.project_list.dialog.winfo_exists():
@@ -1669,9 +1674,11 @@ class RenderWorkerV2App:
         update_gate_locked = (
             not self._startup_update_complete or self._restart_pending
         )
-        configuration_locked = (
+        operation_locked = (
             update_gate_locked or self._busy or self._listener_state.active
         )
+        root_is_set = bool(self.project_list.dropbox_root.get().strip())
+        configuration_locked = operation_locked or not root_is_set
         button_state = "disabled" if configuration_locked else "normal"
         entry_state = "disabled" if configuration_locked else "normal"
         combo_state = "disabled" if configuration_locked else "readonly"
@@ -1702,13 +1709,18 @@ class RenderWorkerV2App:
         self.cloud_dispatcher_checkbutton.configure(state=button_state)
         self.connection_button.configure(state=button_state)
         self.check_setup_button.configure(state=button_state)
+        self.clear_log_button.configure(state="normal" if root_is_set else "disabled")
 
         # Retain the V1 controls for review without starting the V1 farm backend.
         for button in self._action_buttons:
             button.configure(state="disabled")
         self.start_worker_button.configure(state=button_state)
         self.render_one_button.configure(state=button_state)
-        self.project_list.set_editing_enabled(not configuration_locked)
+        self.project_list.set_editing_enabled(not operation_locked)
+        if not root_is_set:
+            self.status_var.set("First, choose the Dropbox project root using Browse.")
+        elif self.status_var.get() == "First, choose the Dropbox project root using Browse.":
+            self.status_var.set("Add your local projects, then Check Setup.")
         can_stop = ((self._registered_render_active and not self._registered_render_cancel.is_set())
                     or (self._listener_state.active and not self._listener_state.stop_requested))
         self.stop_worker_button.configure(state="normal" if can_stop else "disabled")

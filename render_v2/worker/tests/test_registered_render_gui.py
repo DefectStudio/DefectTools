@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 from portable_pipe_tools.apps.render_worker_v2_app import RenderWorkerV2App
 from portable_pipe_tools.render_farm.project_registration import ProjectRegistration
-from portable_pipe_tools.render_farm.v2_gui_settings import save_registered_projects, save_unreal_editor_preference, load_listener_preferences
+from portable_pipe_tools.render_farm.v2_gui_settings import save_registered_projects, save_unreal_editor_preference, load_listener_preferences, save_dropbox_root
 
 
 MODULE = "portable_pipe_tools.apps.render_worker_v2_app"
@@ -21,6 +21,7 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         self.path = Path(temporary.name)
         self.settings = self.path / "worker.json"
         save_unreal_editor_preference("", self.settings)
+        save_dropbox_root(str(self.path), self.settings)
         registration = ProjectRegistration.from_dict(dict(project_id="Show", name="Show",
             local_uproject=str(self.path / "Show.uproject"), render_farm_root=str(self.path / "Show/renderFarm")))
         save_registered_projects([registration], self.settings)

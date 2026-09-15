@@ -118,13 +118,15 @@ class ProjectDialog(tk.Toplevel):
 
 
 class WorkerProjectList(ttk.Frame):
-    def __init__(self, parent, *, settings_path, on_change=lambda message: None):
+    def __init__(self, parent, *, settings_path, on_change=lambda message: None, on_root_change=lambda: None):
         super().__init__(parent)
         self.settings_path = Path(settings_path)
         self.on_change = on_change
+        self.on_root_change = on_root_change
         self.projects = load_registered_projects(self.settings_path)
         self.dialog = None
         self.editing_enabled = True
+        self.root_editing_enabled = True
         self.dropbox_root = tk.StringVar(self, value=load_dropbox_root(self.settings_path))
         self.catalog_status = tk.StringVar(self)
         self.columnconfigure(0, weight=1)
@@ -153,18 +155,30 @@ class WorkerProjectList(ttk.Frame):
         source.grid(row=0, column=0, sticky="ew")
         source.columnconfigure(1, weight=1)
         ttk.Label(source, text="Dropbox project root").grid(row=0, column=0, padx=(0, 8))
-        ttk.Entry(source, textvariable=self.dropbox_root, state="readonly").grid(row=0, column=1, sticky="ew")
-        ttk.Button(source, text="Browse...", command=self._browse_dropbox).grid(row=0, column=2, padx=6)
-        ttk.Button(source, text="Refresh", command=self._refresh_catalog).grid(row=0, column=3)
+        self.root_entry = ttk.Entry(source, textvariable=self.dropbox_root, state="readonly")
+        self.root_entry.grid(row=0, column=1, sticky="ew")
+        self.root_browse_button = ttk.Button(source, text="Browse...", command=self._browse_dropbox)
+        self.root_browse_button.grid(row=0, column=2, padx=6)
+        self.root_refresh_button = ttk.Button(source, text="Refresh", command=self._refresh_catalog)
+        self.root_refresh_button.grid(row=0, column=3)
         ttk.Label(source, textvariable=self.catalog_status).grid(row=1, column=0, columnspan=4, sticky="w")
         self.tree.bind("<<TreeviewSelect>>", self._selection_changed)
         self.tree.bind("<Double-1>", self._double_click)
         self.tree.bind("<Return>", lambda event: self.edit())
+        self.tree.bind("<Button-1>", lambda event: None if self.editing_enabled else "break")
+        self.tree.bind("<KeyPress>", lambda event: None if self.editing_enabled else "break")
         self.refresh()
         self._refresh_catalog()
+        self.set_editing_enabled(True)
+        self.dropbox_root.trace_add("write", self._root_changed)
+
+    def _root_changed(self, *_):
+        self.set_editing_enabled(self.root_editing_enabled)
+        self._refresh_catalog()
+        self.on_root_change()
 
     def _browse_dropbox(self):
-        if not self.editing_enabled:
+        if not self.root_editing_enabled:
             return
         selected = filedialog.askdirectory(parent=self, title="Choose Dropbox folder containing the show folders")
         if selected:
@@ -175,13 +189,12 @@ class WorkerProjectList(ttk.Frame):
                 messagebox.showerror("Dropbox projects", str(error), parent=self)
                 return
             self.dropbox_root.set(selected)
-            self._refresh_catalog()
 
     def _refresh_catalog(self):
         self.dropbox_projects = {}
         try:
             if not self.dropbox_root.get():
-                raise ValueError("Choose the Dropbox project root to add projects.")
+                raise ValueError("First, click Browse to choose the Dropbox project root. Other controls unlock after selection.")
             self.dropbox_projects = list_dropbox_projects(self.dropbox_root.get())
             self.catalog_status.set(f"{len(self.dropbox_projects)} Dropbox projects available")
         except (OSError, ValueError) as error:
@@ -204,13 +217,19 @@ class WorkerProjectList(ttk.Frame):
         self.remove_button.configure(state="normal" if self.editing_enabled and self.tree.selection() else "disabled")
 
     def set_editing_enabled(self, enabled):
-        self.editing_enabled = enabled
+        self.root_editing_enabled = enabled
+        root_is_set = bool(self.dropbox_root.get().strip())
+        self.editing_enabled = enabled and root_is_set
         def update_buttons(parent):
             for child in parent.winfo_children():
                 if isinstance(child, ttk.Button):
-                    child.configure(state="normal" if enabled else "disabled")
+                    child.configure(state="normal" if self.editing_enabled else "disabled")
                 update_buttons(child)
-        update_buttons(self)
+        update_buttons(self.projects_frame)
+        self.tree.state(["!disabled" if self.editing_enabled else "disabled"])
+        self.root_entry.configure(state="readonly" if enabled else "disabled")
+        self.root_browse_button.configure(state="normal" if enabled else "disabled")
+        self.root_refresh_button.configure(state="normal" if enabled and root_is_set else "disabled")
         self._selection_changed()
 
     def _open_dialog(self, project=None):

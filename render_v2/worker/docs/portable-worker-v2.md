@@ -8,8 +8,8 @@ See [validation evidence and remaining acceptance tests](portable-worker-v2-vali
 
 Copy `RenderWorkerV2.exe` to a folder on the target computer and double-click it. Python, Git, pip and a Defect Tools checkout are not required for the registered-local-project workflow. Unreal and the required project assets/plugins must already be available. Run as the intended Windows user; the application does not request administrator elevation.
 
-1. Confirm the UnrealEditor-Cmd.exe field. Installed UE 5.8 is checked once on first use; browse manually if blank or incorrect.
-2. Select the Dropbox root containing your shows. Add each project with **+**, select its Dropbox show name, and browse to its local `.uproject`.
+1. Select the Dropbox root containing your shows using its **Browse** button. Until a root is set, all other setup and action controls are disabled. Choosing a folder unlocks them immediately; an existing saved root starts unlocked.
+2. Confirm the UnrealEditor-Cmd.exe field, then add each project with **+**, select its Dropbox show name, and browse to its local `.uproject`. Installed UE 5.8 is checked once on first use; browse manually if blank or incorrect.
 3. For cloud mode, use **Configure Connection…** to save the V2 URL and worker token supplied by the administrator. The URL is blank on a fresh setup; do not distribute the developer's localhost endpoint or credentials. For shared filesystem queues, leave **Use Cloud Dispatcher** unchecked.
 4. Click **Check Setup**. It checks local paths, basic write access, available engine-version metadata, disk-space warnings, managed plugin conflicts and worker authentication when cloud mode is selected. It never claims a job or installs a plugin. Full asset/GPU compatibility is verified by an actual render.
 5. Click **Start Worker** to begin claiming, or select a registration and use **Render job file…** for a direct test. **Stop Worker** requests cancellation using the existing listener/render behavior.
