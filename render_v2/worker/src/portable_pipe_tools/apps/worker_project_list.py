@@ -214,7 +214,7 @@ class WorkerProjectList(ttk.Frame):
         self.dropbox_projects = {}
         try:
             if not self.dropbox_root.get():
-                raise ValueError("First, click Browse to choose the Dropbox project root. Other controls unlock after selection.")
+                raise ValueError("First, click Browse to choose the Dropbox project root. Other controls appear after selection.")
             self.dropbox_projects = list_dropbox_projects(self.dropbox_root.get())
             self.catalog_status.set(f"{len(self.dropbox_projects)} Dropbox projects available")
         except (OSError, ValueError) as error:
@@ -239,6 +239,11 @@ class WorkerProjectList(ttk.Frame):
     def set_editing_enabled(self, enabled):
         self.root_editing_enabled = enabled
         root_is_set = bool(self.dropbox_root.get().strip())
+        for widget in (self.projects_frame, self.root_refresh_button):
+            if root_is_set:
+                widget.grid()
+            else:
+                widget.grid_remove()
         self.editing_enabled = enabled and root_is_set
         def update_buttons(parent):
             for child in parent.winfo_children():

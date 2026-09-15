@@ -536,6 +536,7 @@ class RenderWorkerV2App:
         self.project_list = WorkerProjectList(setup_frame, settings_path=self.settings_path,
                                               on_change=self._log, on_root_change=self._refresh_control_states)
         self.project_list.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 10))
+        self._setup_fields = [widget for widget in setup_frame.grid_slaves() if widget is not self.project_list]
 
         button_row = ttk.Frame(outer)
         button_row.pack(fill="x", pady=(12, 8))
@@ -665,8 +666,35 @@ class RenderWorkerV2App:
             xscrollcommand=x_scroll.set,
         )
 
-        ttk.Separator(outer, orient="horizontal").pack(fill="x", pady=(8, 4))
+        self._setup_footer = ttk.Separator(outer, orient="horizontal")
+        self._setup_footer.pack(fill="x", pady=(8, 4))
         ttk.Label(outer, textvariable=self.status_var).pack(anchor="w")
+        self._worker_sections = [(widget, widget.pack_info()) for widget in
+                                 (button_row, activity_frame, log_header, log_frame)]
+        self._setup_is_visible = None
+
+    def _set_setup_visibility(self, visible: bool) -> None:
+        if self._setup_is_visible == visible:
+            return
+        previous = self._setup_is_visible
+        self._setup_is_visible = visible
+        for widget in self._setup_fields:
+            if visible:
+                widget.grid()
+            else:
+                widget.grid_remove()
+        for widget, options in self._worker_sections:
+            if visible:
+                widget.pack(**options, before=self._setup_footer)
+            else:
+                widget.pack_forget()
+        if visible:
+            self.root.minsize(900, 850)
+            if previous is False:
+                self.root.geometry("1080x980")
+        else:
+            self.root.minsize(900, 200)
+            self.root.geometry("1080x240")
 
     def run(self) -> int:
         self.root.mainloop()
@@ -1678,6 +1706,7 @@ class RenderWorkerV2App:
             update_gate_locked or self._busy or self._listener_state.active
         )
         root_is_set = bool(self.project_list.dropbox_root.get().strip())
+        self._set_setup_visibility(root_is_set)
         configuration_locked = operation_locked or not root_is_set
         button_state = "disabled" if configuration_locked else "normal"
         entry_state = "disabled" if configuration_locked else "normal"

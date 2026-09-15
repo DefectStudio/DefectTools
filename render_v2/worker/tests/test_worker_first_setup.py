@@ -34,6 +34,18 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.assertEqual("disabled", str(widget.remove_button.cget("state")))
         self.assertEqual("disabled", str(widget.root_refresh_button.cget("state")))
         self.assertTrue(widget.tree.instate(["disabled"]))
+        self.assert_setup_visibility(False)
+
+    def assert_setup_visibility(self, visible):
+        self.assertEqual("grid" if visible else "", self.app.worker_name_entry.winfo_manager())
+        self.assertEqual("grid" if visible else "", self.app.unreal_editor_cmd_entry.winfo_manager())
+        self.assertEqual("grid" if visible else "", self.app.project_list.projects_frame.winfo_manager())
+        self.assertEqual("grid" if visible else "", self.app.project_list.root_refresh_button.winfo_manager())
+        self.assertEqual("pack" if visible else "", self.app.start_worker_button.master.winfo_manager())
+        self.assertEqual("pack" if visible else "", self.app.animation_image_label.master.winfo_manager())
+        self.assertEqual("pack" if visible else "", self.app.log_text.master.winfo_manager())
+        self.assertEqual("grid", self.app.project_list.root_entry.winfo_manager())
+        self.assertEqual("grid", self.app.project_list.root_browse_button.winfo_manager())
 
     def test_fresh_launch_only_allows_choosing_root(self):
         self.assert_setup_locked()
@@ -59,11 +71,22 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.assertEqual("normal", str(self.app.start_worker_button.cget("state")))
         self.assertEqual("normal", str(self.app.check_setup_button.cget("state")))
         self.assertIn("1 Dropbox", self.app.project_list.catalog_status.get())
+        self.assert_setup_visibility(True)
+        self.app._set_busy(True, "Checking")
+        self.assert_setup_visibility(True)
+        self.app._set_busy(False, "Ready")
         self.app._shutdown_application(0)
         self.app = RenderWorkerV2App(settings_path=self.settings)
         self.app.root.withdraw()
         self.assertTrue(self.app.project_list.editing_enabled)
         self.assertEqual("normal", str(self.app.worker_name_entry.cget("state")))
+        self.assert_setup_visibility(True)
+
+        # Removing the root returns to first setup, and selecting it again restores the layout.
+        self.app.project_list.dropbox_root.set("")
+        self.assert_setup_visibility(False)
+        self.app.project_list.dropbox_root.set(str(root))
+        self.assert_setup_visibility(True)
 
     def test_cancel_or_invalid_folder_keeps_setup_locked(self):
         for selected in ("", str(self.path / "missing")):
