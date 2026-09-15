@@ -5,7 +5,7 @@ from pathlib import Path
 from portable_pipe_tools.render_farm.project_render import install_runtime
 from portable_pipe_tools.render_farm.project_workspace import project_lock, PreparationError
 from portable_pipe_tools.render_farm.registered_render import local_project_lock, prepare_registered_job
-from portable_pipe_tools.render_farm.queue import create_queue_folders, list_job_candidates, read_json_object, safe_name
+from portable_pipe_tools.render_farm.queue import read_json_object, safe_name
 from portable_pipe_tools.render_farm.unreal_runner import execute_unreal_job, UnrealExecutionResult
 from portable_pipe_tools.render_farm.v2_gui_settings import load_registered_projects
 from portable_pipe_tools.render_farm.worker import run_once
@@ -17,6 +17,8 @@ class RegisteredQueueWorker:
         self.settings_path = Path(settings_path)
         self.worker_name = worker_name
         self.dispatcher = dispatcher_client
+        if self.dispatcher is None:
+            raise ValueError("V2 requires the company SQL dispatcher; filesystem job claiming is not supported.")
         self.progress = progress
         self.executor = executor or execute_unreal_job
         self.spool = self.settings_path.parent / "queue-spool" / safe_name(worker_name, "WORKER")
@@ -70,13 +72,11 @@ class RegisteredQueueWorker:
         projects = self.ready_projects()
         if not projects:
             self.progress("No registered local projects are currently available; no jobs claimed.")
-            if self.dispatcher is not None:
-                return run_once(farm_root=self.projects[0].render_farm_root, worker_name=self.worker_name,
-                                simulate_success=False, minimum_stage_seconds=0, dispatcher_client=self.dispatcher,
-                                cloud_spool_root=self.spool, eligible_project_ids=[],
-                                dispatcher_capabilities={"registered_projects": []},
-                                should_stop_before_claim=stopped)
-            return None
+            return run_once(farm_root=self.projects[0].render_farm_root, worker_name=self.worker_name,
+                            simulate_success=False, minimum_stage_seconds=0, dispatcher_client=self.dispatcher,
+                            cloud_spool_root=self.spool, eligible_project_ids=[],
+                            dispatcher_capabilities={"registered_projects": []},
+                            should_stop_before_claim=stopped)
         by_id = {p.project_id.casefold(): p for p in projects}
         def resolve_paths(job):
             project = by_id[str(job.get("project_id") or job.get("project") or "").casefold()]
@@ -88,27 +88,10 @@ class RegisteredQueueWorker:
                        should_stop_before_claim=stopped, should_cancel_render=stopped,
                        stage_callback=stage_callback, job_callback=job_callback,
                        render_timeout_seconds=render_timeout_seconds)
-        if self.dispatcher is not None:
-            return run_once(farm_root=projects[0].render_farm_root, dispatcher_client=self.dispatcher,
-                            dispatcher_app_version="render-worker-v2-registered",
-                            dispatcher_capabilities={"registered_projects": [p.project_id for p in projects],
-                                                     "sync_policy": "registered_local_only"},
-                            eligible_project_ids=[p.project_id for p in projects], job_paths_resolver=resolve_paths,
-                            cloud_spool_root=self.spool,
-                            dispatcher_heartbeat_interval_seconds=heartbeat_interval_seconds, **options)
-        # Compare the next eligible job from each explicitly registered show.
-        # V1's priority/age ordering and directory rename remain authoritative.
-        choices = []
-        for project in projects:
-            paths = create_queue_folders(project.render_farm_root)
-            candidates = list_job_candidates(paths, self.worker_name, [project.project_id])
-            if candidates:
-                choices.append((candidates[0].sort_key(), project))
-        for _, project in sorted(choices, key=lambda item: item[0]):
-            if stopped():
-                return None
-            result = run_once(farm_root=project.render_farm_root, local_uproject=project.local_uproject,
-                              eligible_project_ids=[project.project_id], **options)
-            if result is not None:
-                return result
-        return None
+        return run_once(farm_root=projects[0].render_farm_root, dispatcher_client=self.dispatcher,
+                        dispatcher_app_version="render-worker-v2-registered",
+                        dispatcher_capabilities={"registered_projects": [p.project_id for p in projects],
+                                                 "sync_policy": "registered_local_only"},
+                        eligible_project_ids=[p.project_id for p in projects], job_paths_resolver=resolve_paths,
+                        cloud_spool_root=self.spool,
+                        dispatcher_heartbeat_interval_seconds=heartbeat_interval_seconds, **options)

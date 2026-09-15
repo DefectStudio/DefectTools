@@ -19,6 +19,8 @@ from portable_pipe_tools.app_runtime import default_settings_path, is_frozen, pr
 from portable_pipe_tools.apps.render_worker_v2_app import RenderWorkerV2App
 from portable_pipe_tools.render_farm.cloud_dispatch import DispatcherClient, load_dispatcher_connection
 from portable_pipe_tools.render_farm.registered_claims import RegisteredQueueWorker
+from portable_pipe_tools.render_farm.company_connection import load_company_worker_connection
+from portable_pipe_tools.render_farm.worker_setup import check_worker_setup
 from portable_pipe_tools.render_farm.registered_render import main as render_main
 from portable_pipe_tools.render_farm.v2_gui_settings import save_unreal_editor_preference, save_dropbox_root
 from tkinter import messagebox
@@ -45,6 +47,8 @@ def self_test(report_path: Path) -> int:
     app = None
     original_local = os.environ.get("LOCALAPPDATA")
     try:
+        report["company_service_url"] = load_company_worker_connection().api_url
+        report["coordination"] = "sql"
         required = ["unreal/RenderWorkerRuntime/RenderWorkerRuntime.uplugin",
                     "unreal/RenderWorkerRuntime/Content/Python/init_unreal.py",
                     "unreal/RenderWorkerRuntime/Content/Python/render_worker_runtime_executor.py"]
@@ -94,7 +98,6 @@ def self_test(report_path: Path) -> int:
                     if not app.project_list.projects:
                         raise RuntimeError("GUI registration could not be saved")
                     app.worker_name_var.set("Portable-Test-Worker")
-                    app.use_cloud_dispatcher_var.set(False)
                     app._save_worker_preferences()
                 else:
                     if [p.project_id for p in app.project_list.projects] != ["Test Show"]:
@@ -135,17 +138,34 @@ def self_test(report_path: Path) -> int:
     return 0 if report["success"] else 1
 
 
+def check_setup(argv):
+    parser = argparse.ArgumentParser(description="Check local projects and company SQL access without claiming jobs.")
+    parser.add_argument("--settings", type=Path, default=default_settings_path())
+    parser.add_argument("--report", type=Path, required=True)
+    args = parser.parse_args(argv)
+    report = {"success": False, "version": VERSION, "coordination": "sql"}
+    try:
+        connection = load_company_worker_connection()
+        checked = check_worker_setup(args.settings, dispatcher=DispatcherClient(connection))
+        report.update(asdict(checked), success=checked.ok, company_service_url=connection.api_url)
+    except Exception as error:
+        report["errors"] = [str(error)]
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    args.report.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return 0 if report["success"] else 1
+
+
 def claim_once(argv):
     parser = argparse.ArgumentParser(description="Claim and render at most one job from registered projects.")
     parser.add_argument("--settings", type=Path, default=default_settings_path())
     parser.add_argument("--worker", required=True)
-    parser.add_argument("--cloud", action="store_true")
+    parser.add_argument("--cloud", action="store_true", help=argparse.SUPPRESS)  # Legacy spelling; SQL is always required.
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=7200)
     args = parser.parse_args(argv)
     report = {"success": False, "version": VERSION}
     try:
-        dispatcher = DispatcherClient(load_dispatcher_connection("worker", required=True)) if args.cloud else None
+        dispatcher = DispatcherClient(load_company_worker_connection())
         service = RegisteredQueueWorker(args.settings, args.worker, dispatcher_client=dispatcher, progress=logging.info)
         result = service.run_next(render_timeout_seconds=args.timeout)
         report.update(success=result is not None and result.status == "complete",
@@ -177,8 +197,10 @@ def main(argv=None):
             return render_main(argv[1:])
         if argv and argv[0] == "claim-once":
             return claim_once(argv[1:])
+        if argv and argv[0] == "check-setup":
+            return check_setup(argv[1:])
         if argv:
-            raise ValueError("Supported commands: --self-test REPORT, render, claim-once; omit arguments to open the GUI.")
+            raise ValueError("Supported commands: --self-test REPORT, check-setup, render, claim-once; omit arguments to open the GUI.")
         logging.info("Starting Render Worker V2 %s", VERSION)
         return RenderWorkerV2App().run()
     except Exception as error:

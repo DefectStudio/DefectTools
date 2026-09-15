@@ -24,7 +24,7 @@ class WorkerFirstSetupTests(unittest.TestCase):
     def assert_setup_locked(self):
         for name in ("worker_name_entry", "unreal_editor_cmd_entry", "unreal_editor_cmd_browse_button",
                      "unreal_editor_cmd_scan_button",
-                     "poll_interval_spinbox", "render_timeout_spinbox", "connection_button", "check_setup_button",
+                     "poll_interval_spinbox", "render_timeout_spinbox", "check_setup_button",
                      "start_worker_button", "render_one_button", "stop_worker_button", "clear_log_button"):
             with self.subTest(control=name):
                 self.assertEqual("disabled", str(getattr(self.app, name).cget("state")))
@@ -57,7 +57,6 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.app.project_list.add()
         self.app._start_worker()
         self.app._render_registered_job()
-        self.app._configure_connection()
         self.app._check_setup()
         self.assertIsNone(self.app.project_list.dialog)
         self.assertFalse(self.app._listener_state.active)
@@ -113,7 +112,6 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.app.project_list.add()
         self.app._start_worker()
         self.app._render_registered_job()
-        self.app._configure_connection()
         self.app._check_setup()
         self.assertIsNone(self.app.project_list.dialog)
         self.assertFalse(self.app._listener_state.active)

@@ -87,5 +87,5 @@ def check_worker_setup(settings_path: Path, *, dispatcher=None) -> SetupReport:
         except Exception as error:
             report.errors.append(f"Dispatcher connection failed: {error}")
     else:
-        report.warnings.append("Filesystem queue selected; ensure all participating machines share these queue folders.")
+        report.errors.append("The company V2 SQL service connection is required; filesystem coordination is not supported.")
     return report

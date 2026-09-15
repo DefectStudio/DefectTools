@@ -1,25 +1,21 @@
 # Worker-initiated claiming in V2
 
-Run the root `run_worker_v2.bat`, configure the engine and project registrations,
-choose **Use Cloud Dispatcher** as appropriate, and click **Start Worker**.
+Run the V2 worker, configure the engine and project registrations, and click **Start Worker**.
+V2 uses only its company SQL dispatcher; there is no coordination-mode switch or
+connection button. The internal EXE includes the company service profile.
 The worker stays stopped on application launch. Its name defaults to the machine
-name plus `-V2`; name, coordination choice, polling interval, and render timeout
+name plus `-V2`; name, polling interval, and render timeout
 persist after starting. **Stop Worker** interrupts the current render and stops
 polling. The existing retry/blacklist behavior handles unsuccessful jobs.
 
-## Filesystem mode
+## Dropbox is storage, not coordination
 
-The worker scans only explicitly registered shows' `renderFarm/01_NeedsRendering`
-folders. It skips packages belonging to other shows and registrations whose
-local project or renderFarm folder is unavailable. Across these shows it compares
-the next eligible jobs using V1's priority/age ordering, then claims through V1's
-directory rename into `02_IsRendering`. The manager does not select or push jobs.
+Dropbox provides the show catalog, shared files and output/log destinations.
+The V2 worker never scans `01_NeedsRendering` or renames folders to claim work.
+Missing SQL configuration or a service outage is an error, not a filesystem
+fallback. Historical filesystem helpers remain only for legacy compatibility tests.
 
-These are the configured filesystem queues: selecting the same renderFarm root
-as V1 means competing for that same queue. Development validation uses isolated
-test directories; no listener was started against the team's Dropbox queues.
-
-## Cloud mode
+## SQL claims
 
 The worker requests `/api/v1/jobs/claim`, including an explicit
 `eligible_project_ids` list and `capabilities.registered_projects`. The V2
@@ -38,13 +34,13 @@ first registration. It uses the minimal managed Unreal runtime and a project
 lock. Project downloads, repository discovery, fetch, pull, and branch switching
 do not run in this local-registration workflow.
 
-V2 cloud connection settings are stored under
-`%LOCALAPPDATA%/DefectStudio/RenderFarmV2/cloud_connection.json`, separate from
-V1's `RenderFarm` credentials. No SQL schema migration is needed for eligibility.
-The local V2 dispatcher is v0.7.0, started by root `run_v2_backend.bat` on port
-8795. Hosted V2 deployment and packaging/startup recovery remain future work.
+The packaged worker reads its embedded company V2 profile. Source development
+uses `%LOCALAPPDATA%/DefectStudio/RenderFarmV2/cloud_connection.json`, separate
+from V1 credentials. No SQL schema migration is needed for eligibility. The local
+V2 dispatcher is v0.7.0 on port 8795. See [the hosted rollout plan](company-sql-deployment.md)
+for the separate company service; localhost builds are for local development only.
 
-## Validation — September 10, 2026
+## Historical validation — September 10, 2026 (filesystem mode since removed)
 
 - Filesystem integration: eligible priority selection across two shows,
   unregistered and unavailable projects left queued, Stop before claim,

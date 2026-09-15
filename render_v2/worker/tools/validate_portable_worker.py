@@ -48,6 +48,7 @@ def main():
         registration = next(p for p in original["registered_projects"] if p["project_id"].casefold() == "s3bishop")
         show = output / "shows/s3bishop"
         farm = show / "renderFarm"
+        farm.mkdir(parents=True)
         identifier = "bishop_exe_validation_" + uuid4().hex[:12]
         job = json.loads(args.bishop_job.read_text())
         render_output = show / "Validation" / identifier / "output"
@@ -63,11 +64,18 @@ def main():
         settings = output / "render-settings.json"
         registration = dict(registration, render_farm_root=str(farm), allow_downloads=False)
         write_json(settings, dict(unreal_editor_cmd=original["unreal_editor_cmd"], registered_projects=[registration]))
-        write_json(farm / "01_NeedsRendering" / identifier / "job.json", job)
-        result = subprocess.run([str(exe), "claim-once", "--settings", str(settings), "--worker", "BISHOP-EXE-VALIDATION",
-                                 "--timeout", "1800", "--report", str(output / "render-result.json")],
+        job_path = output / "bishop-job.json"
+        write_json(job_path, job)
+        direct_output = show / "DirectValidation"
+        result = subprocess.run([str(exe), "render", "--settings", str(settings), "--project", "s3bishop",
+                                 "--job", str(job_path), "--output-root", str(direct_output), "--timeout", "1800"],
                                 cwd=os.environ["SystemRoot"], env=env, timeout=1860)
-        summary["render"] = json.loads((output / "render-result.json").read_text())
+        receipts = list(direct_output.rglob("result.json"))
+        if len(receipts) != 1:
+            raise RuntimeError("Expected one direct-render receipt from the copied EXE")
+        summary["render"] = json.loads(receipts[0].read_text())
+        summary["render_mode"] = "explicit-job-file (SQL claiming tested separately)"
+        render_output = Path(summary["render"]["run_root"]) / "output"
         summary["exr_count"] = sum(1 for p in render_output.rglob("*.exr") if p.stat().st_size > 0)
         summary["render_output"] = str(render_output)
         write_json(output / "validation-result.json", summary)

@@ -10,7 +10,7 @@ from portable_pipe_tools.render_farm.project_registration import ProjectRegistra
 from portable_pipe_tools.render_farm.queue import create_queue_folders, write_json_atomic
 from portable_pipe_tools.render_farm.unreal_runner import UnrealExecutionResult
 from portable_pipe_tools.render_farm.v2_gui_settings import save_registered_projects, save_unreal_editor_preference
-from portable_pipe_tools.render_farm.cloud_dispatch import CloudClaimResult, CloudJobLease
+from portable_pipe_tools.render_farm.cloud_dispatch import CloudClaimResult, CloudJobLease, DispatcherConnectionError
 
 
 class RegisteredClaimTests(unittest.TestCase):
@@ -33,7 +33,10 @@ class RegisteredClaimTests(unittest.TestCase):
         save_registered_projects(self.projects, self.settings)
         save_unreal_editor_preference(str(self.engine), self.settings)
         self.executor = Mock(return_value=UnrealExecutionResult(True, "Rendered", 0))
-        self.worker = RegisteredQueueWorker(self.settings, "TestWorker", progress=lambda _: None, executor=self.executor)
+        self.dispatcher = Mock()
+        self.dispatcher.claim_job.return_value = CloudClaimResult(lease=None, stop_requested=False)
+        self.worker = RegisteredQueueWorker(self.settings, "TestWorker", dispatcher_client=self.dispatcher,
+                                            progress=lambda _: None, executor=self.executor)
 
     def job(self, folder_project, identity, identifier, priority=50):
         farm = Path(folder_project.render_farm_root)
@@ -49,18 +52,12 @@ class RegisteredClaimTests(unittest.TestCase):
         write_json_atomic(folder / "job.json", job)
         return folder
 
-    def test_worker_claims_highest_priority_eligible_show_and_finishes_it(self):
-        self.job(self.projects[0], "Bishop", "bishop", priority=20)
-        high = self.job(self.projects[1], "Spectrum", "spectrum", priority=90)
-        unrelated = self.job(self.projects[0], "Unregistered", "other", priority=100)
-        with patch("portable_pipe_tools.render_farm.registered_claims.install_runtime"), \
-             patch("portable_pipe_tools.render_farm.worker.pull_latest_branch", side_effect=AssertionError("No Git updates")):
-            result = self.worker.run_next()
-        self.assertEqual("complete", result.status)
-        self.assertFalse(high.exists())
-        self.assertTrue(unrelated.exists())
-        self.assertEqual(Path(self.projects[1].local_uproject), self.executor.call_args.kwargs["local_uproject"])
-        self.assertEqual("registered_local_only", self.executor.call_args.kwargs["job"]["worker_sync_policy"])
+    def test_missing_sql_connection_never_falls_back_to_a_dropbox_job(self):
+        queued = self.job(self.projects[0], "Bishop", "bishop", priority=100)
+        with self.assertRaisesRegex(ValueError, "SQL dispatcher"):
+            RegisteredQueueWorker(self.settings, "TestWorker")
+        self.assertTrue(queued.exists())
+        self.executor.assert_not_called()
 
     def test_unavailable_registered_project_is_not_claimed(self):
         queued = self.job(self.projects[0], "Bishop", "bishop")
@@ -68,19 +65,21 @@ class RegisteredClaimTests(unittest.TestCase):
         self.assertIsNone(self.worker.run_next())
         self.assertTrue(queued.exists())
         self.executor.assert_not_called()
+        self.assertEqual(["Spectrum"], self.dispatcher.claim_job.call_args.kwargs["eligible_project_ids"])
 
     def test_stop_before_claim_preserves_queue(self):
         queued = self.job(self.projects[0], "Bishop", "bishop")
         self.assertIsNone(self.worker.run_next(stopped=lambda: True))
         self.assertTrue(queued.exists())
+        self.dispatcher.claim_job.assert_not_called()
 
-    def test_failure_requeues_and_blacklists_in_v1_flow(self):
-        self.job(self.projects[0], "Bishop", "bishop")
-        self.executor.return_value = UnrealExecutionResult(False, "Unreal failed", 1)
-        with patch("portable_pipe_tools.render_farm.registered_claims.install_runtime"):
-            result = self.worker.run_next()
-        self.assertEqual("requeued", result.status)
-        self.assertTrue(result.final_folder.is_dir())
+    def test_sql_outage_does_not_claim_or_move_dropbox_jobs(self):
+        queued = self.job(self.projects[0], "Bishop", "bishop")
+        self.dispatcher.claim_job.side_effect = DispatcherConnectionError("Offline")
+        with self.assertRaises(DispatcherConnectionError):
+            self.worker.run_next()
+        self.assertTrue(queued.exists())
+        self.executor.assert_not_called()
 
     def test_cloud_request_advertises_available_projects_and_resolves_job_paths(self):
         dispatcher = Mock()

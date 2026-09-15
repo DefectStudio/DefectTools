@@ -1,9 +1,15 @@
-param([ValidateSet('folder', 'single')][string]$Mode = 'single')
+param(
+    [ValidateSet('folder', 'single')][string]$Mode = 'single',
+    [string]$CompanyConnection = (Join-Path $env:LOCALAPPDATA 'DefectStudio\RenderFarmV2\cloud_connection.json')
+)
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $buildPython = Join-Path $repositoryRoot '.venv\Scripts\python.exe'
 Push-Location $repositoryRoot
 try {
+    if (-not (Test-Path -LiteralPath $CompanyConnection -PathType Leaf)) {
+        throw 'Supply the administrator-managed V2 service profile with -CompanyConnection.'
+    }
     if (-not (Test-Path -LiteralPath $buildPython)) {
         & py -3.13 -m venv .venv
         if ($LASTEXITCODE -ne 0) { throw 'Install Python 3.13 to build the EXE.' }
@@ -11,6 +17,7 @@ try {
     & $buildPython -m pip install --disable-pip-version-check -r requirements-build.txt
     if ($LASTEXITCODE -ne 0) { throw 'Build dependencies could not be installed.' }
     $env:RENDER_WORKER_BUILD_MODE = $Mode
+    $env:RENDER_WORKER_COMPANY_CONNECTION = (Resolve-Path -LiteralPath $CompanyConnection).Path
     & $buildPython -m PyInstaller --noconfirm --distpath "dist\$Mode" --workpath "build\$Mode" packaging\RenderWorkerV2.spec
     if ($LASTEXITCODE -ne 0) { throw 'EXE build failed.' }
     $relativeExecutable = if ($Mode -eq 'folder') { 'dist\folder\RenderWorkerV2\RenderWorkerV2.exe' } else { 'dist\single\RenderWorkerV2.exe' }

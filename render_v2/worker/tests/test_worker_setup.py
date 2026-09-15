@@ -36,6 +36,12 @@ class WorkerSetupTests(unittest.TestCase):
         self.assertEqual([], list(self.farm.iterdir()))
         self.assertFalse((self.project.parent / "Plugins").exists())
 
+    def test_missing_sql_connection_cannot_pass_setup(self):
+        report = check_worker_setup(self.settings)
+        self.assertFalse(report.ok)
+        self.assertIn("SQL service connection is required", report.describe())
+        self.assertEqual([], list(self.farm.iterdir()))
+
     def test_missing_paths_and_wrong_credential_are_actionable(self):
         self.engine.unlink()
         self.project.unlink()

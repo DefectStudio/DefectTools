@@ -39,14 +39,13 @@ from portable_pipe_tools.render_farm.local_paths import (
 )
 from portable_pipe_tools.render_farm.cloud_dispatch import (
     DispatcherClient,
-    load_dispatcher_connection,
 )
 from portable_pipe_tools.render_farm.cloud_queue import (
     get_default_cloud_spool_root,
 )
 from portable_pipe_tools.app_runtime import default_settings_path
 from portable_pipe_tools.apps.worker_project_list import WorkerProjectList
-from portable_pipe_tools.apps.worker_connection_dialog import WorkerConnectionDialog
+from portable_pipe_tools.render_farm.company_connection import load_company_worker_connection
 from portable_pipe_tools.render_farm.worker_setup import check_worker_setup
 from portable_pipe_tools.render_farm.engine_discovery import find_installed_unreal_editor
 from portable_pipe_tools.render_farm.registered_render import render_registered_job
@@ -195,16 +194,6 @@ class RenderWorkerV2App:
 
         self.farm_root_var = tk.StringVar(value=load_saved_render_farm_root())
         self.worker_name_var = tk.StringVar(value=default_worker_name() + "-V2")
-        try:
-            cloud_worker_configured = (
-                load_dispatcher_connection("worker") is not None
-            )
-        except Exception:
-            cloud_worker_configured = False
-        # Preserve the saved coordination mode after removing its legacy UI toggle.
-        self.use_cloud_dispatcher_var = tk.BooleanVar(
-            value=cloud_worker_configured
-        )
         saved_poll_interval = load_saved_poll_interval_seconds()
         self.poll_interval_var = tk.StringVar(
             value=saved_poll_interval or str(DEFAULT_POLL_INTERVAL_SECONDS)
@@ -222,7 +211,7 @@ class RenderWorkerV2App:
         self.local_uproject_var = tk.StringVar(
             value=load_saved_local_uproject()
         )
-        self.status_var = tk.StringVar(value="Configure projects and connection, then Check Setup")
+        self.status_var = tk.StringVar(value="Add your local projects, then Check Setup")
         self._registered_render_active = False
         self._registered_render_cancel = Event()
         self._close_after_registered_render = False
@@ -232,8 +221,6 @@ class RenderWorkerV2App:
                               ("render_timeout_hours", self.render_timeout_hours_var)):
             if key in preferences:
                 variable.set(str(preferences[key]))
-        if type(preferences.get("use_cloud_dispatcher")) is bool:
-            self.use_cloud_dispatcher_var.set(preferences["use_cloud_dispatcher"])
         self.current_stage_var = tk.StringVar(
             value=WORKER_STAGE_LABELS[WorkerStage.STOPPED]
         )
@@ -328,7 +315,7 @@ class RenderWorkerV2App:
         ttk.Label(
             outer,
             text=(
-                "Filesystem render worker — process one supervised job or listen "
+                "SQL render worker — process one supervised job or listen "
                 "continuously for Unreal Movie Render Graph jobs."
             ),
         ).pack(anchor="w", pady=(2, 12))
@@ -455,9 +442,6 @@ class RenderWorkerV2App:
 
         self.check_setup_button = ttk.Button(button_row, text="Check Setup", command=self._check_setup)
         self.check_setup_button.pack(side="left", padx=(0, 8), before=self.render_one_button)
-        self.connection_button = ttk.Button(button_row, text="Configure Connection…",
-                                            command=self._configure_connection)
-        self.connection_button.pack(side="left", padx=(0, 8), before=self.check_setup_button)
 
         activity_frame = ttk.LabelFrame(outer, text="Worker Activity", padding=8)
         activity_frame.pack(fill="x", pady=(2, 10))
@@ -841,27 +825,14 @@ class RenderWorkerV2App:
         self.worker_name_var.set(worker_name)
         return worker_name
 
-    def _get_dispatcher_client(self) -> DispatcherClient | None:
-        if not self.use_cloud_dispatcher_var.get():
-            return None
-        connection = load_dispatcher_connection("worker", required=True)
-        assert connection is not None
-        return DispatcherClient(connection)
+    def _get_dispatcher_client(self) -> DispatcherClient:
+        return DispatcherClient(load_company_worker_connection())
 
     def _save_worker_preferences(self):
         save_listener_preferences(self.settings_path, worker_name=self._get_worker_name(),
                                   poll_interval_seconds=self._get_poll_interval_seconds(),
                                   render_timeout_hours=self._get_render_timeout_seconds() / SECONDS_PER_HOUR,
-                                  use_cloud_dispatcher=self.use_cloud_dispatcher_var.get())
-
-    def _configure_connection(self):
-        if self._busy or self._listener_state.active or not self._setup_prerequisites_set():
-            return
-        def saved():
-            self.use_cloud_dispatcher_var.set(True)
-            self._save_worker_preferences()
-            self._log("V2 worker connection saved. Use Check Setup to verify access.")
-        WorkerConnectionDialog(self.root, on_save=saved)
+                                  use_cloud_dispatcher=True)
 
     def _check_setup(self):
         if self._busy or self._listener_state.active or not self._setup_prerequisites_set():
@@ -984,15 +955,11 @@ class RenderWorkerV2App:
             save_listener_preferences(self.settings_path, worker_name=configuration.worker_name,
                                       poll_interval_seconds=configuration.poll_interval_seconds,
                                       render_timeout_hours=configuration.render_timeout_seconds / SECONDS_PER_HOUR,
-                                      use_cloud_dispatcher=configuration.dispatcher_client is not None)
+                                      use_cloud_dispatcher=True)
         except (OSError, ValueError) as error:
             self._show_input_error(error)
             return
-        coordination_message = (
-            "Cloudflare D1 Dispatcher (atomic leases)"
-            if configuration.dispatcher_client is not None
-            else "Legacy filesystem queue"
-        )
+        coordination_message = "Company V2 SQL service (atomic leases)"
         maximum_idle_poll_interval = max(
             configuration.poll_interval_seconds,
             DEFAULT_MAXIMUM_IDLE_POLL_INTERVAL_SECONDS,
@@ -1001,11 +968,7 @@ class RenderWorkerV2App:
             project.project_id for project in self._registered_queue_worker.projects))
         self._log("Registered queue renders use local files without project Git updates.")
 
-        heartbeat_root = (
-            get_default_cloud_spool_root(configuration.worker_name)
-            if configuration.dispatcher_client is not None
-            else configuration.farm_root
-        )
+        heartbeat_root = get_default_cloud_spool_root(configuration.worker_name)
         heartbeat = WorkerHeartbeat(
             heartbeat_root,
             configuration.worker_name,
@@ -1559,7 +1522,6 @@ class RenderWorkerV2App:
         self.unreal_editor_cmd_entry.configure(state=prerequisite_state)
         self.unreal_editor_cmd_browse_button.configure(state=prerequisite_state)
         self.unreal_editor_cmd_scan_button.configure(state=prerequisite_state)
-        self.connection_button.configure(state=button_state)
         self.check_setup_button.configure(state=button_state)
         self.clear_log_button.configure(state="normal" if root_is_set and engine_is_set else "disabled")
 

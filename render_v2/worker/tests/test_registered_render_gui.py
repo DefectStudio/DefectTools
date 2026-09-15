@@ -26,6 +26,8 @@ class RegisteredRenderGuiTests(unittest.TestCase):
             local_uproject=str(self.path / "Show.uproject"), render_farm_root=str(self.path / "Show/renderFarm")))
         save_registered_projects([registration], self.settings)
         self.app = RenderWorkerV2App(settings_path=self.settings)
+        self.dispatcher = Mock()
+        self.enterContext(patch.object(self.app, "_get_dispatcher_client", return_value=self.dispatcher))
         self.app.root.withdraw()
         self.addCleanup(lambda: None if self.app._closing else self.app._shutdown_application(0))
         self.app.project_list.tree.selection_set("Show")
@@ -54,14 +56,13 @@ class RegisteredRenderGuiTests(unittest.TestCase):
 
     def test_setup_check_is_async_and_does_not_start_listener(self):
         from portable_pipe_tools.render_farm.worker_setup import SetupReport
-        self.app.use_cloud_dispatcher_var.set(False)
         with patch(MODULE + ".check_worker_setup", return_value=SetupReport(projects=["Show"])) as check, \
              patch(MODULE + ".messagebox.showinfo"), patch(MODULE + ".RegisteredQueueWorker") as worker:
             self.app._check_setup()
             self.assertFalse(self.app.project_list.editing_enabled)
             self.wait_finished()
             self.assertEqual("Setup checks passed", self.app.status_var.get())
-            check.assert_called_once_with(self.settings, dispatcher=None)
+            check.assert_called_once_with(self.settings, dispatcher=self.dispatcher)
             worker.assert_not_called()
             self.assertFalse(self.app._listener_state.active)
 
@@ -91,7 +92,6 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         self.app.unreal_editor_cmd_var.set(str(engine))
         self.app.worker_name_var.set("V2-Test")
         self.app.farm_root_var.set("invalid unused legacy path")
-        self.app.use_cloud_dispatcher_var.set(False)
         service = Mock()
         service.projects = self.app.project_list.projects
         service.run_next.return_value = None
