@@ -117,9 +117,9 @@ class ProjectDialog(tk.Toplevel):
         self.destroy()
 
 
-class WorkerProjectList(ttk.LabelFrame):
+class WorkerProjectList(ttk.Frame):
     def __init__(self, parent, *, settings_path, on_change=lambda message: None):
-        super().__init__(parent, text="Projects on this worker", padding=8)
+        super().__init__(parent)
         self.settings_path = Path(settings_path)
         self.on_change = on_change
         self.projects = load_registered_projects(self.settings_path)
@@ -128,26 +128,29 @@ class WorkerProjectList(ttk.LabelFrame):
         self.dropbox_root = tk.StringVar(self, value=load_dropbox_root(self.settings_path))
         self.catalog_status = tk.StringVar(self)
         self.columnconfigure(0, weight=1)
-        self.tree = ttk.Treeview(self, columns=("name", "project", "downloads", "status"),
+        self.projects_frame = ttk.LabelFrame(self, text="Projects on this worker", padding=8)
+        self.projects_frame.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.projects_frame.columnconfigure(0, weight=1)
+        self.tree = ttk.Treeview(self.projects_frame, columns=("name", "project", "downloads", "status"),
                                  show="headings", selectmode="browse", height=4)
         for key, title, width in [("name", "Project", 150), ("project", "Local Unreal project", 380),
                                   ("downloads", "Downloads", 85), ("status", "Location status", 175)]:
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width, minwidth=60, stretch=key in ("name", "project"))
         self.tree.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        scroll = ttk.Scrollbar(self.projects_frame, orient="vertical", command=self.tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scroll.set)
-        buttons = ttk.Frame(self)
+        buttons = ttk.Frame(self.projects_frame)
         buttons.grid(row=0, column=2, sticky="n", padx=(8, 0))
         self.add_button = ttk.Button(buttons, text="+", width=3, command=self.add)
         self.add_button.pack(pady=(0, 5))
         self.remove_button = ttk.Button(buttons, text="−", width=3, command=self.remove, state="disabled")
         self.remove_button.pack()
-        ttk.Label(self, text="+ Add project    − Remove selected project    Double-click a project to edit").grid(
+        ttk.Label(self.projects_frame, text="+ Add project    − Remove selected project    Double-click a project to edit").grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(5, 0))
-        source = ttk.Frame(self)
-        source.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        source = ttk.Frame(self, padding=(8, 0))
+        source.grid(row=0, column=0, sticky="ew")
         source.columnconfigure(1, weight=1)
         ttk.Label(source, text="Dropbox project root").grid(row=0, column=0, padx=(0, 8))
         ttk.Entry(source, textvariable=self.dropbox_root, state="readonly").grid(row=0, column=1, sticky="ew")
