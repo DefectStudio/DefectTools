@@ -6,10 +6,34 @@ venv/
 .env
 *.log
 
+# Local tooling, caches and scratch directories (not dotfiles)
+.*/
+*.egg-info/
+*.tmp
+*.temp
+*~
+.coverage
+.coverage.*
+htmlcov/
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+
 # PyInstaller build output
 build/
 dist/
 *.spec
+!render_v2/worker/packaging/*.spec
+
+# Generated company worker includes a private worker credential
+/tools/RenderWorkerV2.exe
+worker_company_connection.json
+company-service-secrets.json
+company-worker.json
+company-manager.json
+company-submit.json
+company-viewer.json
 
 # Local user config / secrets
 local_config/

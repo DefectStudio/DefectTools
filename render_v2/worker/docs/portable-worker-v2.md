@@ -6,6 +6,12 @@ See [validation evidence and remaining acceptance tests](portable-worker-v2-vali
 
 ## Copy and start
 
+The local release is `F:/Defect Tools/tools/RenderWorkerV2.exe`. Its instructions
+are in `tools/RenderWorkerV2_README.txt` at the Defect Tools root. The EXE lives
+inside the repository folder but is Git-ignored because it embeds a private
+worker credential. All worker source and packaging files are tracked under
+`render_v2/worker`; Manager V2 and the dispatcher source are under `render_v2/manager`.
+
 Copy `RenderWorkerV2.exe` to a folder on the target computer and double-click it. Python, Git, pip and a Defect Tools checkout are not required for the registered-local-project workflow. Unreal and the required project assets/plugins must already be available. Run as the intended Windows user; the application does not request administrator elevation.
 
 1. Select the Dropbox root containing your shows using its **Browse** button. Until a root is set, only the Dropbox setup is shown. Choosing a folder reveals the UnrealEditor-Cmd.exe row above the project list.
@@ -33,7 +39,7 @@ powershell -NoProfile -File tools\build_worker.ps1 -Mode folder
 powershell -NoProfile -File tools\build_worker.ps1 -Mode single
 ```
 
-The build installs pinned dependencies into the worker's `.venv`. The folder build is under `dist/folder/RenderWorkerV2`; the distributable single EXE is `dist/single/RenderWorkerV2.exe`. Supply `-CompanyConnection PATH` to select the administrator's V2 service JSON profile; the default is `%LOCALAPPDATA%/DefectStudio/RenderFarmV2/company-worker.json`. Only `api_url` and `worker_token` are included. Manager, submitter and database administration credentials are excluded. Keep the profile and generated build output out of Git. A localhost profile produces a local-development build, not a company-wide release.
+The build installs pinned dependencies into the worker's `.venv`. The folder build is under `dist/folder/RenderWorkerV2`; the single build writes `dist/single/RenderWorkerV2.exe` and copies it to `tools/RenderWorkerV2.exe` at the Defect Tools root. Close the released worker before building a replacement. Supply `-CompanyConnection PATH` to select the administrator's V2 service JSON profile; the default is `%LOCALAPPDATA%/DefectStudio/RenderFarmV2/company-worker.json`. Only `api_url` and `worker_token` are included. Manager, submitter and database administration credentials are excluded. Keep the profile and generated build output out of Git. A localhost profile produces a local-development build, not a company-wide release.
 
 ## Validate the exact artifact
 

@@ -23,6 +23,14 @@ try {
     $relativeExecutable = if ($Mode -eq 'folder') { 'dist\folder\RenderWorkerV2\RenderWorkerV2.exe' } else { 'dist\single\RenderWorkerV2.exe' }
     $executable = Join-Path $repositoryRoot $relativeExecutable
     Write-Output "Built $executable"
+    if ($Mode -eq 'single') {
+        $defectToolsRoot = Split-Path -Parent (Split-Path -Parent $repositoryRoot)
+        $releaseDirectory = Join-Path $defectToolsRoot 'tools'
+        $releaseExecutable = Join-Path $releaseDirectory 'RenderWorkerV2.exe'
+        New-Item -ItemType Directory -Force -Path $releaseDirectory | Out-Null
+        Copy-Item -LiteralPath $executable -Destination $releaseExecutable -Force
+        Write-Output "Ready to run: $releaseExecutable"
+    }
 } finally {
     Pop-Location
 }

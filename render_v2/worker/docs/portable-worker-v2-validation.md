@@ -1,6 +1,6 @@
 # Portable V2 preview validation — September 15, 2026
 
-Version: 2.0.0-preview.1. Release: `F:/Render Worker V2 Preview/release/RenderWorkerV2.exe` (approximately 12.2 MiB). This is the current registered-project worker, not the old pilot.
+Version: 2.0.0-preview.1. Current release location: `F:/Defect Tools/tools/RenderWorkerV2.exe` (approximately 12.2 MiB). The EXE and validation artifacts were relocated into Defect Tools on September 18. These September 15 results describe the build tested at that time; later hosted SQL acceptance is recorded in [the September 17 report](hosted-bishop-acceptance-20260917.md).
 
 Verified:
 
@@ -16,9 +16,9 @@ The first fixture attempt failed before Unreal startup because the older direct-
 
 Local evidence, excluded from Git:
 
-- `F:/Render Worker V2 Preview/validation/final-20260915/validation-result.json`
-- `F:/Render Worker V2 Preview/validation/final-20260915/self-test.json`
-- `F:/Render Worker V2 Preview/validation/final-20260915/render-result.json`
+- `F:/Defect Tools/render_v2/worker/LocalSaveFiles/portable-validation/final-20260915/validation-result.json`
+- `F:/Defect Tools/render_v2/worker/LocalSaveFiles/portable-validation/final-20260915/self-test.json`
+- `F:/Defect Tools/render_v2/worker/LocalSaveFiles/portable-validation/final-20260915/render-result.json`
 - Final render outputs and Unreal logs under that validation directory's `shows/s3bishop` tree.
 - Build logs in the worker's `LocalSaveFiles/build-v2-single.log` and `build-v2-folder.log`.
 

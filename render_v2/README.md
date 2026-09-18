@@ -1,7 +1,7 @@
 # Render Farm V2 in Defect Tools
 
 Both apps now live in this Git repository: `manager/` contains Manager V2 and
-the local V2 dispatcher; `worker/` contains Worker V2 and its EXE build tooling.
+the V2 dispatcher; `worker/` contains Worker V2 and its EXE build tooling.
 Each keeps its own Python source root and settings directory. Use the launchers
 so `portable_pipe_tools` resolves to the intended version. The original V1
 source and launchers at the repository root remain available.
@@ -10,6 +10,7 @@ source and launchers at the repository root remain available.
 
 - `run_manager_v2.bat`: Manager V2 GUI.
 - `run_worker_v2.bat`: Worker V2 GUI with registered local rendering.
+- `tools/RenderWorkerV2.exe`: packaged company SQL worker; no Python installation required.
 - `run_v2_backend.bat`: isolated local V2 dispatcher on port 8795.
 
 Python 3.11 or newer with Tk is required for the source GUIs. Install Node.js for
@@ -29,14 +30,17 @@ were not imported. Reconfigure preferences for these new app locations.
 
 Run `test_render_v2.bat --no-pause` for both Python suites. API checks run with
 `npm run check` from `manager/cloudflare/defect-farm-api` after `npm ci`.
-Worker EXE tooling remains at `worker/build_worker.bat`; its existing entry point
-is the direct-job pilot, not the newer GUI review. Consolidation does not change
-rendering behavior or rebuild the EXE.
+Worker EXE tooling is at `worker/build_worker.bat`. The default single-file build
+packages the registered-project GUI and copies the result into the repository's
+`tools/RenderWorkerV2.exe`. Source, tests, assets, and packaging recipes are tracked;
+the generated EXE, build folders, private connection profiles, and temporary
+validation files are ignored. The EXE embeds the private company worker credential.
 
 **Latest worker milestone:** [Registered queue claiming](worker/docs/registered-queue-claiming.md)
-connects Start Worker to filesystem claims and eligible V2 cloud leases. Bishop
-ZZZ850 passed the full local cloud claim/render/complete path. The packaged EXE
-has not yet been switched to this GUI.
+connects Start Worker to eligible jobs in the separate hosted V2 SQL service.
+There is no filesystem-claim fallback. Bishop ZZZ_000_0850 passed the full hosted
+submission/claim/render/completion path with the packaged EXE on September 17;
+see [acceptance evidence](worker/docs/hosted-bishop-acceptance-20260917.md).
 
 Consolidation validation: 320 manager tests and 175 worker tests passed through
 the combined root launcher. The copied V2 dispatcher's type checks also passed.
