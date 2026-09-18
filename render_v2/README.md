@@ -33,8 +33,9 @@ Run `test_render_v2.bat --no-pause` for both Python suites. API checks run with
 Worker EXE tooling is at `worker/build_worker.bat`. The default single-file build
 packages the registered-project GUI and copies the result into the repository's
 `tools/RenderWorkerV2.exe`. Source, tests, assets, and packaging recipes are tracked;
-the generated EXE, build folders, private connection profiles, and temporary
-validation files are ignored. The EXE embeds the private company worker credential.
+the released EXE is tracked with Git LFS, including its embedded company worker
+credential, as explicitly approved on September 18. Build folders, separate
+private connection profiles, and temporary validation files remain ignored.
 
 **Latest worker milestone:** [Registered queue claiming](worker/docs/registered-queue-claiming.md)
 connects Start Worker to eligible jobs in the separate hosted V2 SQL service.

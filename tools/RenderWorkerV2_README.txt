@@ -3,7 +3,7 @@ Render Worker V2 — 2.0.0-preview.1 (Windows x64 preview)
 Local executable: F:\Defect Tools\tools\RenderWorkerV2.exe
 Source and build tooling: F:\Defect Tools\render_v2\worker
 Manager and SQL service source: F:\Defect Tools\render_v2\manager
-The executable is generated and Git-ignored because it embeds a private worker credential.
+The released executable is tracked with Git LFS, including its embedded company worker credential, as approved by the user.
 Build with render_v2\worker\build_worker.bat; single-file builds copy the EXE here.
 
 Copy RenderWorkerV2.exe to the destination computer and double-click it.

@@ -26,8 +26,7 @@ dist/
 *.spec
 !render_v2/worker/packaging/*.spec
 
-# Generated company worker includes a private worker credential
-/tools/RenderWorkerV2.exe
+# Separate private profiles and temporary build-embedded configuration
 worker_company_connection.json
 company-service-secrets.json
 company-worker.json
