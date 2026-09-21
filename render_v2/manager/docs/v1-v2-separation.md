@@ -4,7 +4,7 @@ The September 10 transition direction is to keep the original manager and worker
 
 | Component | V1 | V2 |
 | --- | --- | --- |
-| Manager | `F:/Defect Tools/tools/farm_render_manager.bat` | `F:/Defect Tools/render_v2/manager/run_manager_v2.bat` |
+| Manager | `F:/Defect Tools/tools/farm_render_manager.bat` | `F:/Defect Tools/tools/run_manager_v2.bat` |
 | Worker | `F:/Defect Tools/tools/render_worker.bat` | `F:/Defect Tools/tools/render_worker_v2.bat` |
 | Dispatcher | Existing production `defect-farm-api` | Hosted `defect-farm-api-v2` |
 | SQL | Existing production `defect-farm-production` | Independent `defect-farm-v2-production` |

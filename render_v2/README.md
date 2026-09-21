@@ -8,7 +8,7 @@ source and launchers at the repository root remain available.
 
 ## Launch from the Defect Tools root
 
-- `run_manager_v2.bat`: Manager V2 GUI.
+- `tools/run_manager_v2.bat`: Manager V2 GUI (root launcher remains an alias).
 - `run_worker_v2.bat`: Worker V2 GUI with registered local rendering.
 - `tools/render_worker_v2.bat`: primary Worker V2 launcher; runs Python source directly.
 - `run_v2_backend.bat`: isolated local V2 dispatcher on port 8795.
@@ -17,6 +17,13 @@ Python 3.11 or newer with Tk is required for the source GUIs. Install Node.js fo
 the backend; its root launcher runs `npm ci` when dependencies are missing.
 Migrations apply only to the local V2 database. Stop any other local V2
 dispatcher using port 8795 before starting it.
+
+Manager V2 requires the private manager profile at
+`%LOCALAPPDATA%/DefectStudio/RenderFarmV2/company-manager.json`, or an explicit
+`--profile PATH`. This is separate from the worker credential shipped with Worker
+V2. See `tools/RenderManagerV2_README.txt` at the repository root for installation
+and read-only startup diagnostics. Startup errors remain visible in the console
+and are logged under `%LOCALAPPDATA%/DefectStudio/RenderFarmManagerV2/logs`.
 
 Configure the Dropbox root in each GUI. Exact immediate show folder names with
 a `renderFarm` child supply the project list. Register the worker's local Unreal
