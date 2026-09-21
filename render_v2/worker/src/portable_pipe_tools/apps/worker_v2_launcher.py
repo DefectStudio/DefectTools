@@ -1,4 +1,4 @@
-"""Portable V2 GUI and explicit diagnostic commands; no automatic work on launch."""
+"""Python V2 GUI and explicit diagnostic commands; no automatic work on launch."""
 from __future__ import annotations
 
 import argparse
@@ -15,7 +15,7 @@ import sys
 import tempfile
 import traceback
 
-from portable_pipe_tools.app_runtime import default_settings_path, is_frozen, prepare_external_programs, resource_root, settings_directory
+from portable_pipe_tools.app_runtime import default_settings_path, is_frozen, migrate_legacy_source_settings, prepare_external_programs, resource_root, settings_directory
 from portable_pipe_tools.apps.render_worker_v2_app import RenderWorkerV2App
 from portable_pipe_tools.render_farm.cloud_dispatch import DispatcherClient, load_dispatcher_connection
 from portable_pipe_tools.render_farm.registered_claims import RegisteredQueueWorker
@@ -182,6 +182,8 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     logs = settings_directory() / "logs"
     try:
+        if not argv:
+            migrate_legacy_source_settings()
         logs.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                             handlers=[RotatingFileHandler(logs / "worker.log", maxBytes=3_000_000,

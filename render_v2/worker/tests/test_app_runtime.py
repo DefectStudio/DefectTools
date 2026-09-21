@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from portable_pipe_tools.app_runtime import default_catalog_path, default_settings_path, resource_root
+from portable_pipe_tools.app_runtime import default_catalog_path, default_settings_path, resource_root, migrate_legacy_source_settings
 
 
 class AppRuntimeTests(unittest.TestCase):
@@ -16,10 +16,26 @@ class AppRuntimeTests(unittest.TestCase):
             self.assertTrue(get_default_cloud_spool_root("Test").is_relative_to(
                 Path(temporary) / "DefectStudio/RenderFarmV2"))
 
-    def test_source_launch_keeps_existing_repository_settings(self):
-        with patch.object(sys, "frozen", False, create=True):
-            self.assertEqual(resource_root() / "LocalSaveFiles/worker_v2.json", default_settings_path())
+    def test_source_launch_reuses_exe_user_settings_location(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(sys, "frozen", False, create=True), \
+             patch.dict(os.environ, {"LOCALAPPDATA": temporary}):
+            self.assertEqual(Path(temporary) / "DefectStudio/RenderWorkerV2/worker_v2.json", default_settings_path())
             self.assertTrue(default_catalog_path().is_file())
+
+    def test_source_preferences_migrate_without_overwriting_existing_user_settings(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(sys, "frozen", False, create=True), \
+             patch.dict(os.environ, {"LOCALAPPDATA": str(Path(temporary) / "user")}), \
+             patch("portable_pipe_tools.app_runtime.resource_root", return_value=Path(temporary) / "source"):
+            legacy = Path(temporary) / "source/LocalSaveFiles"
+            legacy.mkdir(parents=True)
+            (legacy / "worker_v2.json").write_text('{"worker_name": "source"}')
+            migrate_legacy_source_settings()
+            self.assertEqual('{"worker_name": "source"}', default_settings_path().read_text())
+            default_settings_path().write_text('{"worker_name": "existing-user"}')
+            migrate_legacy_source_settings()
+            self.assertEqual('{"worker_name": "existing-user"}', default_settings_path().read_text())
 
     def test_frozen_resources_and_persistent_settings_are_separate(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,5 +1,8 @@
 # Windows EXE
 
+> Historical packaging notes. The EXE and build scripts were retired on September 21, 2026.
+> Use `tools/render_worker_v2.bat`; see [current Python distribution](portable-worker-v2.md).
+
 > Historical pilot documentation. The current registered-project worker is
 > `RenderWorkerV2.exe`; use [Portable Worker V2](portable-worker-v2.md).
 > Its default build does not use the catalog, project discovery, or downloads described below.

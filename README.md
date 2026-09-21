@@ -3,7 +3,9 @@
 Portable external Python tools for animation pipeline work outside Unreal Engine.
 
 **Render Farm V2:** Both V2 apps now live in this repository under `render_v2`.
-Use `run_manager_v2.bat` and `run_worker_v2.bat` at the repository root.
+Use `run_manager_v2.bat` at the repository root and `tools/render_worker_v2.bat`.
+Worker V2 runs Python source (Python 3.11+ with Tkinter); no EXE build is needed.
+The root `run_worker_v2.bat` remains an alias.
 See [V2 setup and tests](render_v2/README.md). Original V1 launchers remain available.
 
 Initial goals:

@@ -1,26 +1,33 @@
-Render Worker V2 — 2.0.0-preview.1 (Windows x64 preview)
+Render Worker V2 - Python/batch distribution
 
-Local executable: F:\Defect Tools\tools\RenderWorkerV2.exe
-Source and build tooling: F:\Defect Tools\render_v2\worker
-Manager and SQL service source: F:\Defect Tools\render_v2\manager
-The released executable is tracked with Git LFS, including its embedded company worker credential, as approved by the user.
-Build with render_v2\worker\build_worker.bat; single-file builds copy the EXE here.
+Double-click tools\render_worker_v2.bat in the Defect Tools checkout.
+The root run_worker_v2.bat is an alias for the same launcher.
+Keep tools and render_v2 together; copying only the BAT is not sufficient.
 
-Copy RenderWorkerV2.exe to the destination computer and double-click it.
-Python, Git and the Defect Tools repository are not required for local projects.
-Unreal Engine, project files, required engine plugins and Dropbox access must already be available.
+Requirements:
+- Windows and Python 3.11 or newer with Tcl/Tk (Tkinter).
+- The launcher uses the worker's .venv if present, otherwise py -3 or python.
+- No pip packages, PyInstaller, or EXE build are required.
+- Unreal Engine, project files, required plugins and Dropbox access must exist.
 
 First run:
-1. Select the Dropbox root using Browse to reveal the UnrealEditor-Cmd.exe row.
-2. Set UnrealEditor-Cmd.exe to reveal the remaining controls, then use + to register each local Unreal project. UE 5.8 is detected once; use Scan beside Browse to detect it again.
-3. Company SQL connection is embedded in this EXE. There is no connection setup or Dropbox job-coordination mode.
-   Company service: https://defect-farm-api-v2.twilight-tooth-7b7c.workers.dev (separate V2 database).
-4. Click Check Setup, resolve its messages, then Start Worker.
+1. Select the Dropbox project root.
+2. Set UnrealEditor-Cmd.exe (UE 5.8 detection and Scan remain available).
+3. Register each local Unreal project using +.
+4. Click Check Setup, resolve any messages, then Start Worker.
+
+The company worker-only V2 connection is included with the source at
+render_v2\worker\worker_company_connection.json. No credential setup is needed.
+V2 uses the separate company SQL service only; Dropbox does not coordinate jobs.
 
 Settings/logs: %LOCALAPPDATA%\DefectStudio\RenderWorkerV2
-The packaged EXE uses its embedded company V2 connection; no local connection file is needed.
-Stop and close the worker before replacing the EXE. Settings survive replacement.
-Do not copy another person's credentials or machine settings with this EXE.
+Existing EXE settings are reused. Older source preferences are imported on GUI
+startup only when the corresponding per-user settings file does not exist.
+Stop and close the worker before updating the checkout.
 
-This preview does not download projects, install Unreal, auto-start, or auto-update.
-It is unsigned. A test on another physical machine is still required before broad rollout.
+Diagnostics (from the Defect Tools root):
+tools\render_worker_v2.bat --self-test "%TEMP%\worker-v2-selftest.json"
+The self-test uses synthetic projects; it does not claim jobs or render.
+
+Project downloads, automatic startup and automatic updates are not implemented
+by this GUI. A second-computer Python-launch/render acceptance test is pending.

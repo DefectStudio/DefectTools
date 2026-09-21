@@ -24,10 +24,12 @@ htmlcov/
 build/
 dist/
 *.spec
-!render_v2/worker/packaging/*.spec
 
 # Separate private profiles and temporary build-embedded configuration
 worker_company_connection.json
+# Approved company worker connection ships with the Python/batch distribution.
+!render_v2/worker/worker_company_connection.json
+tools/RenderWorkerV2.exe
 company-service-secrets.json
 company-worker.json
 company-manager.json

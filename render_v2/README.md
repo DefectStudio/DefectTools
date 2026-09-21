@@ -1,7 +1,7 @@
 # Render Farm V2 in Defect Tools
 
 Both apps now live in this Git repository: `manager/` contains Manager V2 and
-the V2 dispatcher; `worker/` contains Worker V2 and its EXE build tooling.
+the V2 dispatcher; `worker/` contains Worker V2 Python source and resources.
 Each keeps its own Python source root and settings directory. Use the launchers
 so `portable_pipe_tools` resolves to the intended version. The original V1
 source and launchers at the repository root remain available.
@@ -10,7 +10,7 @@ source and launchers at the repository root remain available.
 
 - `run_manager_v2.bat`: Manager V2 GUI.
 - `run_worker_v2.bat`: Worker V2 GUI with registered local rendering.
-- `tools/RenderWorkerV2.exe`: packaged company SQL worker; no Python installation required.
+- `tools/render_worker_v2.bat`: primary Worker V2 launcher; runs Python source directly.
 - `run_v2_backend.bat`: isolated local V2 dispatcher on port 8795.
 
 Python 3.11 or newer with Tk is required for the source GUIs. Install Node.js for
@@ -26,16 +26,18 @@ V1 production resources and credentials are not shared with V2. Machine settings
 local databases, virtual environments, build outputs, and downloaded projects
 were not imported. Reconfigure preferences for these new app locations.
 
-## Checks and packaging
+## Checks and distribution
 
 Run `test_render_v2.bat --no-pause` for both Python suites. API checks run with
 `npm run check` from `manager/cloudflare/defect-farm-api` after `npm ci`.
-Worker EXE tooling is at `worker/build_worker.bat`. The default single-file build
-packages the registered-project GUI and copies the result into the repository's
-`tools/RenderWorkerV2.exe`. Source, tests, assets, and packaging recipes are tracked;
-the released EXE is tracked with Git LFS, including its embedded company worker
-credential, as explicitly approved on September 18. Build folders, separate
-private connection profiles, and temporary validation files remain ignored.
+Worker V2 is distributed as Python source with `tools/render_worker_v2.bat`.
+Install Python 3.11+ with Tcl/Tk on each worker; no pip dependencies are required.
+Keep the Defect Tools directory structure intact when copying or updating it.
+The company worker-only connection ships in `worker/worker_company_connection.json`;
+operators do not provision credentials. The EXE and PyInstaller build scripts
+were retired on September 21. Settings and logs retain the former EXE's location:
+`%LOCALAPPDATA%/DefectStudio/RenderWorkerV2`. Machine configuration, temporary
+validation files, and old build outputs remain ignored.
 
 **Latest worker milestone:** [Registered queue claiming](worker/docs/registered-queue-claiming.md)
 connects Start Worker to eligible jobs in the separate hosted V2 SQL service.

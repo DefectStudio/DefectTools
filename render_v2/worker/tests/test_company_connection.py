@@ -15,7 +15,6 @@ class CompanyConnectionTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.enterContext(patch(MODULE + ".is_frozen", return_value=True))
         self.enterContext(patch(MODULE + ".resource_root", return_value=self.root))
 
     def write_profile(self, **values):
@@ -30,7 +29,7 @@ class CompanyConnectionTests(unittest.TestCase):
 
     def test_missing_profile_is_an_error_not_a_machine_or_filesystem_fallback(self):
         with patch(MODULE + ".load_dispatcher_connection", side_effect=AssertionError("No fallback")):
-            with self.assertRaisesRegex(DispatcherConfigurationError, "configured build"):
+            with self.assertRaisesRegex(DispatcherConfigurationError, "Update the complete Defect Tools"):
                 load_company_worker_connection()
 
     def test_bundled_profile_cannot_target_v1_production(self):
@@ -38,7 +37,7 @@ class CompanyConnectionTests(unittest.TestCase):
         with self.assertRaisesRegex(DispatcherConfigurationError, "V1 production"):
             load_company_worker_connection()
 
-    def test_source_checkout_can_use_its_development_service(self):
-        with patch(MODULE + ".is_frozen", return_value=False), patch(MODULE + ".load_dispatcher_connection") as load:
-            self.assertIs(load.return_value, load_company_worker_connection())
-            load.assert_called_once_with("worker", required=True)
+    def test_source_worker_ignores_machine_connection_configuration(self):
+        self.write_profile(api_url="https://v2.example.test", worker_token="worker-test-only")
+        with patch(MODULE + ".load_dispatcher_connection", side_effect=AssertionError("No machine setup")):
+            self.assertEqual("worker-test-only", load_company_worker_connection().token)

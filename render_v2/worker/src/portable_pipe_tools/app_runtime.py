@@ -1,4 +1,4 @@
-"""Resource and settings locations for source launches and the portable EXE."""
+"""Source resources and persistent per-user settings for Render Worker V2."""
 
 from __future__ import annotations
 
@@ -19,10 +19,20 @@ def resource_root() -> Path:
 
 
 def settings_directory() -> Path:
+    local = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local")))
+    return local / "DefectStudio/RenderWorkerV2"
+
+
+def migrate_legacy_source_settings() -> None:
+    """Keep existing EXE settings; import older source preferences only if absent."""
     if is_frozen():
-        local = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local")))
-        return local / "DefectStudio/RenderWorkerV2"
-    return resource_root() / "LocalSaveFiles"
+        return
+    for name in ("worker_v2.json", "render_worker_local_save.json"):
+        source = resource_root() / "LocalSaveFiles" / name
+        destination = settings_directory() / name
+        if source.is_file() and not destination.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
 
 
 def default_settings_path() -> Path:

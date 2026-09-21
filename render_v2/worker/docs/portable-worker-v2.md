@@ -1,56 +1,74 @@
-# Portable Render Worker V2
+# Render Worker V2 distribution
 
-Preview 2.0.0-preview.1, Windows x64. This build packages the current registered-project GUI, its Python/Tk runtime, animation assets and minimal Unreal runtime plugin. The default build no longer launches the older catalog/pilot interface.
+As of September 21, 2026, distribute Python source and a batch launcher.
+The released EXE and PyInstaller build recipes have been removed. Earlier EXE
+validation reports are historical evidence, not current installation instructions.
 
-See [validation evidence and remaining acceptance tests](portable-worker-v2-validation.md).
+## Install and launch
 
-## Copy and start
+1. Install Python 3.11+ for Windows with Tcl/Tk and the Python launcher.
+2. Obtain the Defect Tools checkout, including its LFS-managed animation assets.
+   Keep the `tools` and `render_v2` directories in their original layout.
+3. Double-click `tools/render_worker_v2.bat`. It checks Python/Tk availability
+   and runs `portable_pipe_tools.apps.worker_v2_launcher` from the V2 source root.
+   No pip packages or build step are required. Startup failures remain visible
+   in the console and application failures are written to the worker log.
+4. Select the Dropbox root, set UnrealEditor-Cmd.exe, and add local projects.
+   UE 5.8 auto-detection and the manual Scan button behave as before.
+5. Click Check Setup, then Start Worker when ready to claim jobs.
 
-The local release is `F:/Defect Tools/tools/RenderWorkerV2.exe`. Its instructions
-are in `tools/RenderWorkerV2_README.txt` at the Defect Tools root. The EXE lives
-inside the repository and is tracked with Git LFS. The user explicitly approved
-including its embedded company worker credential. All worker source and packaging files are tracked under
-`render_v2/worker`; Manager V2 and the dispatcher source are under `render_v2/manager`.
+Unreal, project assets and required plugins must already be installed. The worker
+injects its minimal Unreal runtime into the selected project at render time.
+Automatic project discovery/downloads, startup and updates are not implemented
+by the registered-project GUI. Git is not required to execute local renders.
 
-Copy `RenderWorkerV2.exe` to a folder on the target computer and double-click it. Python, Git, pip and a Defect Tools checkout are not required for the registered-local-project workflow. Unreal and the required project assets/plugins must already be available. Run as the intended Windows user; the application does not request administrator elevation.
+## Company connection and settings
 
-1. Select the Dropbox root containing your shows using its **Browse** button. Until a root is set, only the Dropbox setup is shown. Choosing a folder reveals the UnrealEditor-Cmd.exe row above the project list.
-2. Set the UnrealEditor-Cmd.exe field to reveal the project list and remaining worker controls. Installed UE 5.8 is checked once on first use; browse manually if blank or incorrect. Both saved paths restore the full interface at startup; clearing the executable hides everything below it again. Then add each project with **+**, select its Dropbox show name, and browse to its local `.uproject`.
-3. The company V2 SQL service connection is embedded in the executable by the build administrator. There is no connection button or coordination-mode switch. Dropbox supplies project names, files and output storage; it is never scanned for queued jobs. Old filesystem-mode preferences are ignored.
-4. Click **Check Setup**. It checks local paths, basic write access, available engine-version metadata, disk-space warnings, managed plugin conflicts and authentication to the company SQL service. Missing or unreachable service configuration is an error, with no filesystem fallback. It never claims a job or installs a plugin. Full asset/GPU compatibility is verified by an actual render.
-5. Click **Start Worker** to begin claiming, or select a registration and use **Render job file…** for a direct test. **Stop Worker** requests cancellation using the existing listener/render behavior.
+`render_v2/worker/worker_company_connection.json` is intentionally included in
+Git with the batch/source release. It replaces the company worker credential
+formerly embedded in the EXE; no per-artist credential provisioning is needed.
+It contains only `api_url` and `worker_token`. Anyone with the checkout can read
+this shared worker credential. Manager, submitter, and administrative profiles
+remain separate and ignored. Rotate the shared worker token by updating this
+file and distributing the updated checkout.
 
-The **Scan** button beside the executable's **Browse** button reruns the same UE 5.8 detection used on first launch. A successful scan fills and saves the executable path and reveals the remaining controls. An unsuccessful scan preserves the current selection and reports that no matching engine was found. Scanning runs in the background; automatic startup detection remains a one-time step.
+The service is `https://defect-farm-api-v2.twilight-tooth-7b7c.workers.dev`.
+V1 is rejected, and there is no Dropbox/filesystem job-coordination fallback.
+The worker does not use leftover machine service profiles or environment tokens.
 
-Unreal's runtime plugin is installed into the explicitly registered project at render time; that project and the queue/output locations must be writable. The diagnostics use short-lived temporary write probes in those configured folders. Project downloading is not implemented by this GUI and remains off by default; do not treat the existing checkbox as a completed download feature.
+Settings and logs remain in `%LOCALAPPDATA%/DefectStudio/RenderWorkerV2`.
+Existing EXE users retain their registered projects and preferences. Older source
+settings (`worker_v2.json`, `render_worker_local_save.json`) are copied from
+`LocalSaveFiles` on GUI launch only if the corresponding per-user file is absent.
+Stop the worker before updating the checkout; reopening uses the updated Python.
 
-## Persistent state and replacing the EXE
+## Diagnostics
 
-Worker settings and logs live in `%LOCALAPPDATA%\DefectStudio\RenderWorkerV2`. The packaged app uses only its embedded company service profile, not connection settings or environment variables left on the destination computer. Source development uses the separate V2 connection settings in `%LOCALAPPDATA%\DefectStudio\RenderFarmV2\cloud_connection.json`. No operator settings are written into the executable's temporary extraction folder.
+From the Defect Tools root:
 
-Stop the worker and close it before replacing the EXE. Copy the new EXE over the old one, then reopen it; saved preferences remain. Copying the EXE carries its worker service credential, but not machine project paths. Automatic startup, crash recovery and self-updates are not included in this preview.
-
-## Build
-
-On Windows, install Python 3.13 for the build machine only. Run `build_worker.bat` or:
-
-```powershell
-powershell -NoProfile -File tools\build_worker.ps1 -Mode folder
-powershell -NoProfile -File tools\build_worker.ps1 -Mode single
+```bat
+tools\render_worker_v2.bat --self-test "%TEMP%\worker-v2-selftest.json"
+tools\render_worker_v2.bat check-setup --report "%TEMP%\worker-v2-setup.json"
 ```
 
-The build installs pinned dependencies into the worker's `.venv`. The folder build is under `dist/folder/RenderWorkerV2`; the single build writes `dist/single/RenderWorkerV2.exe` and copies it to `tools/RenderWorkerV2.exe` at the Defect Tools root. Close the released worker before building a replacement. Supply `-CompanyConnection PATH` to select the administrator's V2 service JSON profile; the default is `%LOCALAPPDATA%/DefectStudio/RenderFarmV2/company-worker.json`. Only `api_url` and `worker_token` are included. Manager, submitter and database administration credentials are excluded. Keep the separate profile and intermediate build output out of Git; commit the released `tools/RenderWorkerV2.exe` through Git LFS. A localhost profile produces a local-development build, not a company-wide release.
+The self-test checks the actual GUI with synthetic temporary registrations,
+settings reload, animation and runtime resources, and external process startup.
+It does not contact SQL, claim work, or render. Check Setup checks configured
+paths and company SQL access without claiming jobs.
 
-## Validate the exact artifact
+The `render` and `claim-once` commands remain available for explicitly requested
+render tests. `claim-once --worker NAME --report FILE` can claim and render a
+real SQL job. The batch file forwards arguments and returns the Python exit code.
 
-The windowed executable accepts `--self-test REPORT.json`, which uses temporary synthetic settings to test the actual V2 GUI, registration persistence, default downloads-off, bundled resources, animation loading, and external process launch. It does not contact the dispatcher or render.
+Run `render_v2/worker/test_worker.bat --no-pause` for regression tests.
+The previous hosted Bishop acceptance used the EXE. A Python/batch render test
+on another physical computer remains outstanding.
 
-`tools/validate_portable_worker.py --exe PATH --output NEW_DIRECTORY` copies the single EXE outside its build tree, removes Python/Git and Defect environment configuration from the test process, supplies a fresh Local AppData location, launches from Windows' directory, and tests the artifact again after replacement. The self-test verifies preference persistence within its own two launches; replacement testing alone is not a substitute for a real user's saved-profile upgrade test.
-
-Supply both `--bishop-settings SETTINGS.json` and `--bishop-job JOB.json` to explicitly opt in to a real Bishop render. This creates an isolated output tree, reads only the selected Bishop registration, disables downloads and invokes the EXE's explicit `render` command. It does not perform job coordination. SQL claiming is tested separately. The validation expects 40 nonempty EXR files for the existing development-shot fixture.
-
-For controlled diagnostics, `RenderWorkerV2.exe render ...` forwards to the registered local render command. `RenderWorkerV2.exe check-setup --settings FILE --report FILE` tests local readiness and the embedded SQL service without claiming. `RenderWorkerV2.exe claim-once --settings FILE --worker NAME --report FILE` claims at most one job from the embedded company SQL service; it has no filesystem mode. Windowed command output goes to the persistent worker log; the claim command writes a JSON receipt and exits nonzero when no job completes.
-
-## Release limits
-
-This preview is unsigned. The separate hosted V2 SQL service was deployed on September 15; see [deployment details](company-sql-deployment.md). No V1 migrations were applied. Same-machine tests with a fresh settings directory and restricted PATH are useful evidence but are not a second-machine acceptance test. The security audit's server-side project authorization and unique machine credentials remain separate hardening tasks.
+September 21 validation: all 221 worker tests passed. The tools launcher and both
+aliases passed the GUI self-test. A copied source distribution also passed from
+an unrelated working directory with spaces in its path, no virtual environment,
+fresh user settings, and no separately provisioned connection. A restricted-PATH
+check confirmed startup without Git on PATH; absent Python produces actionable
+guidance and exit code 1. The bundled company connection authenticated with the
+hosted service as the worker role; the database health check was connected.
+No jobs were claimed and no real renders were started during these checks.

@@ -8,9 +8,9 @@ from unittest.mock import patch
 from portable_pipe_tools.render_farm.worker import WorkerResult
 
 
-class PackagedEntryTests(unittest.TestCase):
+class WorkerLauncherTests(unittest.TestCase):
     def test_explicit_claim_command_uses_current_registered_worker_interface(self):
-        path = Path(__file__).resolve().parents[1] / "packaging/v2_entry.py"
+        path = Path(__file__).resolve().parents[1] / "src/portable_pipe_tools/apps/worker_v2_launcher.py"
         spec = importlib.util.spec_from_file_location("v2_entry_test", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
