@@ -1,0 +1,41 @@
+{
+  "snapshot_date": "2026-09-23",
+  "package": "IronWidow-Krita-Bridge-2026-09-23.zip",
+  "package_sha256": "44b36f10aa0c058709b3c00326567e2781849003547eb0f7111d10245f85f29b",
+  "source": "Installed ironwidow_krita extension; files copied byte-for-byte, no runtime changes",
+  "configured_default": "D:/IronWidow/Saved/UnrealKritaBridge; configure recipient path before use",
+  "krita_files": {
+    "ironwidow_krita.desktop": "8fb563b7f52892ed99a70019993626731e58844b79eff419534991e98f9651a8",
+    "ironwidow_krita/__init__.py": "ec0736fb1c2df133b9f04ae9931405331fcef5d792c7072bf5a7feb58599a3d0",
+    "ironwidow_krita/context.py": "692fc253fa438ca571a72f9cab8a1aee8166f838bfab591b5d7506b242d7d07a",
+    "ironwidow_krita/krita_card_export.py": "c52fb87d3d3893cda9a65686375c07b465bdc89817725bbfd5bf1cbe935b1ba0",
+    "ironwidow_krita/krita_layer_export.py": "c873537d4748384d97631e452c4d2be03a8daf9b307bd72237ca670bb8925eea",
+    "ironwidow_krita/live_preview.py": "4d897a0868fc0451a75babcaaaeb7c04e10c6d0e74109d895db2bbb341fc1b52",
+    "ironwidow_krita/project.json": "aa74bc1ec862f6d80a9cc45f7c077a5761eb2261539f8b5bdc14c15958e74421"
+  },
+  "unreal_python_reference": {
+    "assigned_camera_send.py": "514feae5f12055f3c13277fa5f1931d0c099b6c4255e6bb52d1c6e1949766df6",
+    "bridge_raster.py": "93614b75430b7d78a6b718fe7b052f9f9990156011f55891feb6d4cad21389ac",
+    "depth_png.py": "f20dc29a6e202137484e96254a6ee6c0652c5feacae67ec8cc97498dc55c4b41",
+    "init_unreal.py": "3925eb8d201408586244eb109c313eb3c560902d634a17d1b9beda79d66f6a75",
+    "krita_bridge_panel.py": "2b734dd828f606142631e5d12b14e411d9c4b71755a22b51d60b275f88dd9b4e",
+    "krita_camera_capture.py": "6f2416b77d2a3f8aa976ddb5f50f4c3d346904fe492954c3f56d14c05756a3dc",
+    "krita_capture_lighting.py": "7e31fc44b52c8959050c815850924e4ea71867f442b370c7e48a3c8452fe6f49",
+    "krita_card_math.py": "3ac0765743cbbcbaeafdd23b06acd054e8947f71ffa9a1da5706329fa23c7186",
+    "krita_cards.py": "da4ac97dc5ab386a169d7a6741e077260960878b1aebefdf815e2e288c933c6f",
+    "krita_cards_ui.py": "bd7540c940cc669fb87e8eb57a69e633c4a040f44bab5bd2d6632b2b25b2eef0",
+    "krita_landscape.py": "2e8b700101671a7e863f1492a357d7d34b28a7b402ab451b30b1ad9354872e14",
+    "krita_layer_capture.py": "621919d8e70701bd04c6160521caea9f1a0d6c9444e6edb57612a61e9a687acf",
+    "krita_layer_return.py": "606e22c588946299dc109a89f5e0b8019aa8974bb3b46717856b798111483df9",
+    "krita_layer_return_ui.py": "aef8b747f7298b94e375c7717aa0b05576742ca389070d93c57b981d3e0a24f2",
+    "krita_layers.py": "c48b03bb537a0f840fd3584f7bcd045868a5b071e3ef8810c17e9091d267ef2e",
+    "krita_layers_ui.py": "aa934295358e437cf16c8d706977068119eda428fa9e97220d5456d01a7e4200",
+    "krita_live_preview.py": "69106ee21d2eff1acd565d587cd7c08e0ad4b9ae293f9f306788dc38e10d049e",
+    "krita_map_scope.py": "3bfe06c78ede301bd6523a27135e493c23897485a83ea513353771ab4d59adbd",
+    "krita_painting_browser.py": "2989c95dce9b67c8af4307c24e70dd60b332fc7aee289d0046e207d36221adb4",
+    "krita_png.py": "f1678efc151ea1f89f850e7921e17021db75723ac9909b38daa423b287977cb8",
+    "krita_projection.py": "9de24afbf1942e76d3f6425864c6c3d3abe571d8687c235a53a55918c10c13d3",
+    "krita_projector.py": "62b445dcdf4cefc950726861373611cc66a38ddd354d9d67aeb6b4061fdfd355",
+    "unreal_krita_bridge.py": "02767e03b8a35f05264a5e3b669f34086bb3f1923325ce7a212bf3be624f496f"
+  }
+}
