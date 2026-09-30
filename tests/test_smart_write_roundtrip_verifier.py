@@ -9,6 +9,7 @@ import pytest
 VERIFIER = (
     Path(__file__).resolve().parents[1]
     / "tools"
+    / "dev"
     / "verify_smart_write_roundtrip.py"
 )
 
