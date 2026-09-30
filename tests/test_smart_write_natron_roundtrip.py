@@ -10,8 +10,9 @@ import pytest
 PROJECT_ENVIRONMENT_VARIABLE = "SMARTWRITE_NATRON_ROUNDTRIP_PROJECT"
 VERIFIER = (
     Path(__file__).resolve().parents[1]
-    / "tools"
-    / "dev"
+    / "src"
+    / "portable_pipe_tools"
+    / "auto_comp_natron"
     / "verify_smart_write_roundtrip.py"
 )
 
@@ -25,7 +26,7 @@ VERIFIER = (
 )
 def test_smart_write_survives_real_natron_save_reload() -> None:
     verifier = runpy.run_path(str(VERIFIER))
-    repository = VERIFIER.parents[2]
+    repository = VERIFIER.parents[3]
     verifier["verify_roundtrip"](
         Path(os.environ[PROJECT_ENVIRONMENT_VARIABLE]),
         Path(os.environ.get("NATRON_RENDERER", r"F:\Natron\bin\NatronRenderer.exe")),

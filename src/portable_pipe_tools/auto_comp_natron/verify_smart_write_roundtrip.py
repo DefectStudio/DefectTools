@@ -335,7 +335,7 @@ def verify_roundtrip(
 
 
 def _parser() -> argparse.ArgumentParser:
-    repository = Path(__file__).resolve().parents[2]
+    repository = Path(__file__).resolve().parents[3]
     parser = argparse.ArgumentParser(
         description="Verify SmartWrite state and paths across a Natron save/reload."
     )

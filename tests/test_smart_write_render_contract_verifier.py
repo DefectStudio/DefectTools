@@ -8,8 +8,9 @@ import pytest
 
 VERIFIER = (
     Path(__file__).resolve().parents[1]
-    / "tools"
-    / "dev"
+    / "src"
+    / "portable_pipe_tools"
+    / "auto_comp_natron"
     / "verify_smart_write_render_contract.py"
 )
 

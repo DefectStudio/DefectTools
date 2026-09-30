@@ -307,7 +307,7 @@ def main() -> int:
     parser.add_argument(
         "--plugin-directory",
         type=Path,
-        default=Path(__file__).resolve().parents[2] / "natron_plugins",
+        default=Path(__file__).resolve().parents[3] / "natron_plugins",
     )
     arguments = parser.parse_args()
     output = verify_render_contract(
