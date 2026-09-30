@@ -1,6 +1,6 @@
 """Render a job using only an explicitly registered local project.
 
-No catalog download, checkout discovery, clone, fetch, pull, or branch change.
+Updates the registered Git checkout and assets before rendering; no project discovery or clone.
 Input jobs and live queues remain unchanged; each run gets isolated outputs.
 """
 
@@ -20,6 +20,7 @@ from uuid import uuid4
 from portable_pipe_tools.app_runtime import default_settings_path
 from portable_pipe_tools.render_farm.project_render import install_runtime
 from portable_pipe_tools.render_farm.project_workspace import project_lock, PreparationCancelled
+from portable_pipe_tools.render_farm.registered_sync import sync_registered_project, SYNC_POLICY
 from portable_pipe_tools.render_farm.queue import read_json_object, write_json_atomic
 from portable_pipe_tools.render_farm.unreal_runner import execute_unreal_job, validate_real_render_job
 from portable_pipe_tools.render_farm.v2_gui_settings import load_registered_projects
@@ -90,17 +91,17 @@ def render_registered_job(settings_path: Path, project_id: str, job_path: Path, 
         job_folder = run_root / "job"
         job_folder.mkdir(parents=True, exist_ok=False)
         (run_root / "renderFarm").mkdir()
-        progress(f"Registered local project: {uproject}; using files as they are on disk.")
+        progress(f"Registered project: {uproject}; updating before rendering.")
         progress(f"Run folder: {run_root}")
         summary = {"success": False, "project_id": project.project_id,
                    "shot": job["shot_name"], "run_root": str(run_root),
-                   "source_job": str(Path(job_path).resolve()), "sync_policy": "registered_local_only"}
+                   "source_job": str(Path(job_path).resolve()), "sync_policy": SYNC_POLICY}
         try:
             original_id = job["job_id"]
             job.update(job_id=f"{project.project_id}_{job['shot_name']}_{run_id}", source_job_id=original_id,
                        project=project.project_id, project_id=project.project_id,
                        worker_runtime_version=2, disable_project_scripts=True,
-                       worker_sync_policy="registered_local_only",
+                       worker_sync_policy=SYNC_POLICY,
                        output_directory=str(run_root / "output"), output_relative_directory="output",
                        submitted_show_file_server_path=str(run_root),
                        submitted_output_directory=str(run_root / "output"))
@@ -116,6 +117,9 @@ def render_registered_job(settings_path: Path, project_id: str, job_path: Path, 
                 elif key.casefold() in ("filenameformat", "mp4filenameformat"):
                     value = job["output_file_name_format"] if key.casefold() == "filenameformat" else job["shot_name"]
                     payload.update(enabled=True, serialized_value=value)
+            commit = sync_registered_project(uproject, run_root / "project-sync", progress=progress, cancelled=cancelled)
+            job.update(prepared_git_commit=commit, git_commit_after_pull=commit)
+            summary["git_commit_after_pull"] = commit
             write_json_atomic(job_folder / "job.json", job)
             if cancelled():
                 raise PreparationCancelled("Render cancelled before runtime installation")

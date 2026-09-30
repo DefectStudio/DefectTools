@@ -276,7 +276,7 @@ class RenderWorkerV2App:
         self._refresh_control_states()
         self._log("V2 local rendering: select a registered project, then Render job file…")
         self._log(
-            "Registered renders use the saved local project and engine without Git updates. "
+            "Registered renders pull the latest project branch, submodules and LFS assets before Unreal starts. "
             "Each run writes to WorkerV2Renders under that show's Dropbox folder."
         )
         if self.farm_root_var.get():
@@ -966,7 +966,7 @@ class RenderWorkerV2App:
         )
         self._log("Claiming only registered, available shows: " + ", ".join(
             project.project_id for project in self._registered_queue_worker.projects))
-        self._log("Registered queue renders use local files without project Git updates.")
+        self._log("Each claimed job updates its registered Git project before rendering; failed updates stop the render.")
 
         heartbeat_root = get_default_cloud_spool_root(configuration.worker_name)
         heartbeat = WorkerHeartbeat(

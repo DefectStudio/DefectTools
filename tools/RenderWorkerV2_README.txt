@@ -9,6 +9,10 @@ Requirements:
 - The launcher uses the worker's .venv if present, otherwise py -3 or python.
 - No pip packages, PyInstaller, or EXE build are required.
 - Unreal Engine, project files, required plugins and Dropbox access must exist.
+- Install Git for Windows with Git LFS and authenticate access to the project
+  and plugin repositories. Each render pulls the current branch's upstream,
+  updates pinned submodules, and downloads LFS assets. Update failures prevent
+  rendering. Commit or resolve local edits in Anchorpoint before starting.
 
 First run:
 1. Select the Dropbox project root.
@@ -29,5 +33,5 @@ Diagnostics (from the Defect Tools root):
 tools\render_worker_v2.bat --self-test "%TEMP%\worker-v2-selftest.json"
 The self-test uses synthetic projects; it does not claim jobs or render.
 
-Project downloads, automatic startup and automatic updates are not implemented
+Project downloads, automatic startup and automatic worker software updates are not implemented
 by this GUI. A second-computer Python-launch/render acceptance test is pending.

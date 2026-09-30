@@ -3,7 +3,8 @@
 from pathlib import Path
 
 from portable_pipe_tools.render_farm.project_render import install_runtime
-from portable_pipe_tools.render_farm.project_workspace import project_lock, PreparationError
+from portable_pipe_tools.render_farm.project_workspace import project_lock, PreparationError, PreparationCancelled
+from portable_pipe_tools.render_farm.registered_sync import sync_registered_project, SYNC_POLICY
 from portable_pipe_tools.render_farm.registered_render import local_project_lock, prepare_registered_job
 from portable_pipe_tools.render_farm.queue import read_json_object, safe_name
 from portable_pipe_tools.render_farm.unreal_runner import execute_unreal_job, UnrealExecutionResult
@@ -52,18 +53,18 @@ class RegisteredQueueWorker:
             with project_lock(local_project_lock(uproject)):
                 if should_cancel():
                     return UnrealExecutionResult(False, "Stopped before Unreal launch", None, cancelled=True)
+                commit = sync_registered_project(uproject, Path(claimed_folder) / "project-sync",
+                                                 progress=self.progress, cancelled=should_cancel)
                 install_runtime(uproject.parent, project_directory=uproject.parent)
                 job.update(uproject=str(uproject), project=project.project_id, project_id=project.project_id,
                            worker_runtime_version=2, disable_project_scripts=True,
-                           worker_sync_policy="registered_local_only")
-                for key in ("prepared_git_commit", "git_commit_after_pull"):
-                    job.pop(key, None)
-                self.progress(f"Rendering claimed job {job['job_id']} using registered {uproject}; no Git update")
+                           worker_sync_policy=SYNC_POLICY, prepared_git_commit=commit, git_commit_after_pull=commit)
+                self.progress(f"Rendering claimed job {job['job_id']} using updated {uproject}")
                 return self.executor(claimed_folder=claimed_folder, job=job, unreal_editor_cmd=engine,
                                      local_uproject=uproject, render_farm_root=Path(project.render_farm_root),
                                      should_cancel=should_cancel, timeout_seconds=timeout_seconds)
         except PreparationError as error:
-            return UnrealExecutionResult(False, str(error), None, cancelled=True)
+            return UnrealExecutionResult(False, str(error), None, cancelled=isinstance(error, PreparationCancelled))
 
     def run_next(self, *, stopped=lambda: False, stage_callback=None, job_callback=None,
                  render_timeout_seconds=7200, heartbeat_interval_seconds=60):
@@ -91,7 +92,7 @@ class RegisteredQueueWorker:
         return run_once(farm_root=projects[0].render_farm_root, dispatcher_client=self.dispatcher,
                         dispatcher_app_version="render-worker-v2-registered",
                         dispatcher_capabilities={"registered_projects": [p.project_id for p in projects],
-                                                 "sync_policy": "registered_local_only"},
+                                                 "sync_policy": SYNC_POLICY},
                         eligible_project_ids=[p.project_id for p in projects], job_paths_resolver=resolve_paths,
                         cloud_spool_root=self.spool,
                         dispatcher_heartbeat_interval_seconds=heartbeat_interval_seconds, **options)

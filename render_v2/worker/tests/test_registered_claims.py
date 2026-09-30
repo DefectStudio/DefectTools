@@ -33,6 +33,7 @@ class RegisteredClaimTests(unittest.TestCase):
         save_registered_projects(self.projects, self.settings)
         save_unreal_editor_preference(str(self.engine), self.settings)
         self.executor = Mock(return_value=UnrealExecutionResult(True, "Rendered", 0))
+        self.sync = self.enterContext(patch("portable_pipe_tools.render_farm.registered_claims.sync_registered_project", return_value="a" * 40))
         self.dispatcher = Mock()
         self.dispatcher.claim_job.return_value = CloudClaimResult(lease=None, stop_requested=False)
         self.worker = RegisteredQueueWorker(self.settings, "TestWorker", dispatcher_client=self.dispatcher,
@@ -103,6 +104,8 @@ class RegisteredClaimTests(unittest.TestCase):
             stop_requested=False)
         dispatcher.heartbeat_job.return_value = {"lease_expires_at": int(time.time()) + 300}
         def render(**kwargs):
+            self.sync.assert_called_once()
+            self.assertEqual("a" * 40, kwargs["job"]["git_commit_after_pull"])
             self.assertFalse(kwargs["should_cancel"]())
             self.assertEqual(Path(self.projects[1].render_farm_root), kwargs["render_farm_root"])
             self.assertEqual(Path(self.projects[1].local_uproject), kwargs["local_uproject"])
@@ -114,6 +117,19 @@ class RegisteredClaimTests(unittest.TestCase):
         self.assertEqual("complete", result.status)
         self.assertEqual("cloud_spectrum", dispatcher.complete_job.call_args.args[0])
         dispatcher.heartbeat_job.assert_called()
+
+    def test_git_failure_prevents_unreal_and_is_not_reported_as_user_cancellation(self):
+        from portable_pipe_tools.render_farm.project_workspace import PreparationError
+        folder = self.job(self.projects[0], "Bishop", "git_failure")
+        job = json.loads((folder / "job.json").read_text())
+        self.sync.side_effect = PreparationError("Cannot pull upstream")
+        with patch("portable_pipe_tools.render_farm.registered_claims.install_runtime") as install:
+            result = self.worker._render(claimed_folder=folder, job=job)
+        self.assertFalse(result.success)
+        self.assertFalse(result.cancelled)
+        self.assertIn("Cannot pull", result.reason)
+        install.assert_not_called()
+        self.executor.assert_not_called()
 
     def test_ineligible_cloud_response_is_released_before_rendering(self):
         dispatcher = Mock()

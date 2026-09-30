@@ -14,18 +14,19 @@ embedded in the rendering code.
 The saved project registration supplies the local `.uproject` and Dropbox path.
 An unknown project, mismatched job ID, missing project/engine/farm folder, or
 invalid job is rejected. The registration's ID must match its Dropbox show
-folder. The renderer uses the local files as they currently exist, including
-local edits. It does not search for other checkouts, clone, fetch, pull, switch
-branches, or load a remote catalog. This local action performs no project Git
-updates regardless of the download checkbox. Optional download provisioning is
-separate work.
+folder. Before rendering, the registered checkout is updated using fast-forward-only
+Git pull on its existing branch/upstream, pinned recursive submodule updates and
+Git LFS downloads. Update failure or tracked local edits block the render without
+discarding work. Untracked files are preserved. There is no project discovery,
+missing-project clone or branch switch. The download checkbox concerns optional
+cloning; it does not disable updating existing checkouts.
 
 The worker installs/updates its small managed RenderWorkerRuntime plugin in the
 selected project's Plugins folder. It refuses to overwrite an unmanaged plugin.
-For Git projects it excludes this worker-owned plugin locally; projects copied
-without Git are supported. A per-project lock prevents two workers using that
-same local checkout concurrently. Project assets and the `.uproject` are not
-edited by this operation.
+The worker-owned plugin is excluded locally from Git. Projects copied without
+Git metadata must be replaced with a proper checkout before rendering. A
+per-project lock covers updating, runtime installation and rendering. Project
+assets and the `.uproject` can change to their latest committed upstream versions.
 
 Each run writes a new folder beneath the registered show's
 `WorkerV2Renders/<project>/<shot>/<timestamp-and-id>`. It contains `job/job.json`,

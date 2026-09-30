@@ -192,7 +192,7 @@ def main(argv=None):
             sys.stdout = LogStream()
         if sys.stderr is None:
             sys.stderr = LogStream()
-        prepare_external_programs(discover_git=False)
+        prepare_external_programs()
         if len(argv) == 2 and argv[0] == "--self-test":
             return self_test(Path(argv[1]))
         if argv and argv[0] == "render":

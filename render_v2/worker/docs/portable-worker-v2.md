@@ -20,7 +20,14 @@ validation reports are historical evidence, not current installation instruction
 Unreal, project assets and required plugins must already be installed. The worker
 injects its minimal Unreal runtime into the selected project at render time.
 Automatic project discovery/downloads, startup and updates are not implemented
-by the registered-project GUI. Git is not required to execute local renders.
+by the registered-project GUI. As of September 30, Git for Windows with Git LFS
+and preconfigured repository authentication are required. Before each render,
+the current project branch is fast-forwarded to its configured upstream, pinned
+submodules are updated recursively, and root/submodule LFS assets are hydrated.
+Local tracked edits, detached HEAD, missing upstream, divergence, failed downloads
+or authentication errors block rendering. Untracked files are preserved and no
+branch switch, reset, clean or stash is performed. The clone/download checkbox
+does not disable these updates to already registered checkouts.
 
 ## Company connection and settings
 

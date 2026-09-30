@@ -43,12 +43,13 @@ class RegisteredRenderTests(unittest.TestCase):
         self.job.write_text(json.dumps(self.data))
         self.result = Mock(success=True, reason="Rendered", cancelled=False)
         self.result.terminal_result_details.return_value = {"frame_count": 40}
+        self.sync = self.enterContext(patch.object(renderer, "sync_registered_project", return_value="a" * 40))
 
     def render(self, **kwargs):
         return renderer.render_registered_job(self.settings, "Show With Spaces", self.job,
                                                progress=lambda _: None, **kwargs)
 
-    def test_copied_project_renders_without_git_discovery_or_download_and_preserves_input(self):
+    def test_updated_project_renders_and_preserves_input(self):
         before = self.job.read_bytes()
         with patch.object(renderer.shutil, "which", return_value=None), \
              patch.object(renderer.subprocess, "run", side_effect=AssertionError("No Git required")), \
@@ -59,8 +60,9 @@ class RegisteredRenderTests(unittest.TestCase):
         self.assertNotEqual(first["run_root"], second["run_root"])
         job = execute.call_args.args[1]
         self.assertEqual(str(self.uproject), job["uproject"])
-        self.assertEqual("registered_local_only", job["worker_sync_policy"])
-        self.assertNotIn("prepared_git_commit", job)
+        self.assertEqual("latest_branch_git_pull_ff_only", job["worker_sync_policy"])
+        self.assertEqual("a" * 40, job["prepared_git_commit"])
+        self.assertEqual(2, self.sync.call_count)
         self.assertEqual("output", job["output_relative_directory"])
         self.assertEqual(before, self.job.read_bytes())
         self.assertTrue((self.uproject.parent / "Plugins/RenderWorkerRuntime/.render-worker-runtime").is_file())
@@ -78,7 +80,7 @@ class RegisteredRenderTests(unittest.TestCase):
                 self.render()
             install.assert_not_called()
 
-    def test_git_checkout_with_downloads_off_uses_only_local_metadata_commands(self):
+    def test_existing_checkout_updates_even_with_clone_downloads_off(self):
         subprocess.run(["git", "init", str(self.uproject.parent)], check=True, capture_output=True)
         real_run = subprocess.run
         commands = []
@@ -91,7 +93,16 @@ class RegisteredRenderTests(unittest.TestCase):
             self.render()
         self.assertGreaterEqual(len(commands), 2)
         self.assertFalse(self.registration.allow_downloads)
+        self.sync.assert_called_once()
         self.assertIn("/Plugins/RenderWorkerRuntime/", (self.uproject.parent / ".git/info/exclude").read_text())
+
+    def test_sync_failure_never_installs_runtime_or_starts_unreal(self):
+        self.sync.side_effect = PreparationError("Git LFS download failed")
+        with patch.object(renderer, "install_runtime") as install, patch.object(renderer, "execute_unreal_job") as execute:
+            with self.assertRaisesRegex(PreparationError, "Git LFS"):
+                self.render()
+            install.assert_not_called()
+            execute.assert_not_called()
 
     def test_missing_local_project_never_falls_back_to_a_download(self):
         self.uproject.unlink()

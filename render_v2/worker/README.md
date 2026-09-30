@@ -10,7 +10,10 @@ this directory's `run_worker_v2_gui.bat` forward to the tools launcher.
 Install Python 3.11 or newer with Tcl/Tk. The batch launcher prefers a worker
 `.venv` if present, then `py -3`, then `python`. No pip packages are needed.
 Unreal, required plugins, local project assets and Dropbox access must already
-be available. Git is not required for the registered-project render workflow.
+be available. Install Git for Windows with Git LFS and authenticate repository
+access before starting the worker. Each render pulls the current branch's
+upstream with `git pull --ff-only`, updates pinned submodules, and downloads LFS
+assets. A failed update prevents rendering; local edits are preserved.
 
 Launch the worker, select the Dropbox root and UnrealEditor-Cmd.exe, register
 local projects with **+**, then use **Check Setup** and **Start Worker**.
@@ -40,4 +43,5 @@ Automatic project discovery and project preparation belong to the historical
 pilot (`run_worker.bat`, `render_project.bat`). They are not the current V2 GUI.
 Registered projects are selected manually; the download checkbox defaults off
 and downloading is not implemented by this GUI. Neither rendering nor claiming
-automatically pulls project repositories. V1 tools remain separate and unchanged.
+clones missing projects. Existing project checkouts are updated before every render,
+regardless of that checkbox. V1 tools remain separate and unchanged.

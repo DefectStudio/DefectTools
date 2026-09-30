@@ -2,7 +2,7 @@
 
 Run the V2 worker, configure the engine and project registrations, and click **Start Worker**.
 V2 uses only its company SQL dispatcher; there is no coordination-mode switch or
-connection button. The internal EXE includes the company service profile.
+connection button. The Python distribution includes the company worker profile.
 The worker stays stopped on application launch. Its name defaults to the machine
 name plus `-V2`; name, polling interval, and render timeout
 persist after starting. **Stop Worker** interrupts the current render and stops
@@ -31,8 +31,13 @@ For every claimed job, the worker resolves the local `.uproject` and Dropbox
 renderFarm root from that show's registration. That root controls output mapping
 and published render logs, including when the job is for a show other than the
 first registration. It uses the minimal managed Unreal runtime and a project
-lock. Project downloads, repository discovery, fetch, pull, and branch switching
-do not run in this local-registration workflow.
+lock. Before each render it pulls the registered project's current branch from
+its upstream using fast-forward only, updates the project's pinned submodules,
+and downloads LFS assets. Updates run while the SQL lease is maintained. Failed
+updates do not launch Unreal and follow the existing job-failure policy. Stop
+cancels the update process. Missing-project cloning, repository discovery and
+main-project branch switching do not run. Git command logs are in the job's
+`project-sync/logs` folder; the pulled commit is recorded in job/result metadata.
 
 The packaged worker reads its embedded company V2 profile. Source development
 uses `%LOCALAPPDATA%/DefectStudio/RenderFarmV2/cloud_connection.json`, separate
