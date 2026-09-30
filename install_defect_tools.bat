@@ -174,10 +174,10 @@ echo  SUCCESS - DefectTools is ready!
 echo ============================================================
 echo.
 echo Render Worker:
-echo   %INSTALL_DIR%\tools\render_worker_gui.bat
+echo   %INSTALL_DIR%\tools\legacy\render_worker_gui.bat
 echo.
 echo Farm Render Manager:
-echo   %INSTALL_DIR%\tools\farm_render_manager.bat
+echo   %INSTALL_DIR%\tools\legacy\farm_render_manager.bat
 echo.
 echo You can now close this window and double-click either tool.
 echo.

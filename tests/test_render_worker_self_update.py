@@ -104,7 +104,7 @@ class RenderWorkerSelfUpdateTests(unittest.TestCase):
     def test_gui_launcher_restarts_on_the_documented_exit_code(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         launcher_text = (
-            repository_root / "tools" / "render_worker_gui.bat"
+            repository_root / "tools" / "legacy" / "render_worker_gui.bat"
         ).read_text(encoding="utf-8")
 
         self.assertEqual(75, RENDER_WORKER_RESTART_EXIT_CODE)

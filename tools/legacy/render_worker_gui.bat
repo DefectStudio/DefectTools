@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-set "REPO_ROOT=%~dp0.."
+set "REPO_ROOT=%~dp0..\.."
 set "PYTHONPATH=%REPO_ROOT%\src"
 set "PORTABLE_PIPE_TOOLS_REPO_ROOT=%REPO_ROOT%"
 

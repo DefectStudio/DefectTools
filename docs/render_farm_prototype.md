@@ -34,7 +34,7 @@ marker files.
 Launch the Tkinter interface from the repository root:
 
 ```bat
-tools\render_worker_gui.bat
+tools\legacy\render_worker_gui.bat
 ```
 
 The BAT launcher supplies its parent directory as the PortablePipeTools Git
@@ -199,7 +199,7 @@ jobs in real-render mode.
 For the current `s3bishop` worker, launch the GUI:
 
 ```bat
-tools\render_worker_gui.bat
+tools\legacy\render_worker_gui.bat
 ```
 
 Then:
@@ -217,7 +217,7 @@ and **Stop Worker** when the computer should stop accepting new work.
 The command-line equivalent is:
 
 ```bat
-tools\render_worker.bat "F:\Defect Dropbox\defect\s3bishop\renderFarm" --worker-name RENDER-03 --render-with-unreal --local-uproject "D:\UnrealProjects\s3bishop\s3bishop.uproject" --unreal-editor-cmd "C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
+tools\legacy\render_worker.bat "F:\Defect Dropbox\defect\s3bishop\renderFarm" --worker-name RENDER-03 --render-with-unreal --local-uproject "D:\UnrealProjects\s3bishop\s3bishop.uproject" --unreal-editor-cmd "C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
 ```
 
 The worker claims at most one job. It launches Unreal in `-game`, unattended,
@@ -259,15 +259,15 @@ waits for its next polling interval before trying again.
 From the repository root:
 
 ```bat
-tools\create_test_render_job.bat D:\RenderFarmPrototype
-tools\render_worker.bat D:\RenderFarmPrototype --worker-name RENDER-03 --simulate-result success
+tools\legacy\create_test_render_job.bat D:\RenderFarmPrototype
+tools\legacy\render_worker.bat D:\RenderFarmPrototype --worker-name RENDER-03 --simulate-result success
 ```
 
 To test the failed-attempt retry path:
 
 ```bat
-tools\create_test_render_job.bat D:\RenderFarmPrototype
-tools\render_worker.bat D:\RenderFarmPrototype --worker-name RENDER-03 --simulate-result failure
+tools\legacy\create_test_render_job.bat D:\RenderFarmPrototype
+tools\legacy\render_worker.bat D:\RenderFarmPrototype --worker-name RENDER-03 --simulate-result failure
 ```
 
 The worker processes at most one eligible job and exits. A failed simulation
