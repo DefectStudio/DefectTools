@@ -1,4 +1,4 @@
-"""Launch Manager V2 against the administrator-provisioned company SQL service."""
+"""Launch Manager V2 using the bundled company SQL connection or a profile override."""
 
 import argparse
 import json
@@ -13,11 +13,16 @@ import tempfile
 from portable_pipe_tools.render_farm.cloud_dispatch import DispatcherConnection
 
 
+def bundled_profile_path():
+    return Path(__file__).resolve().parents[1] / "company-manager.json"
+
+
 def default_profile_path():
-    return (
+    local_profile = (
         Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
         / "DefectStudio/RenderFarmV2/company-manager.json"
     )
+    return local_profile if local_profile.is_file() else bundled_profile_path()
 
 
 def data_directory():
@@ -73,7 +78,7 @@ def self_test(connection):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", type=Path, help="Administrator-provided V2 manager profile")
+    parser.add_argument("--profile", type=Path, help="Override the bundled or per-user V2 manager profile")
     parser.add_argument("--self-test", type=Path, metavar="REPORT", help="Check SQL read access and GUI startup, then exit")
     args = parser.parse_args(argv)
     log_path = data_directory() / "logs/manager.log"
@@ -89,7 +94,7 @@ def main(argv=None):
         if not profile_path.is_file():
             raise RuntimeError(
                 f"The V2 manager credential file is missing: {profile_path}\n"
-                "Ask the administrator for the company-manager.json profile and place it at that path, "
+                "Restore render_v2/manager/company-manager.json from the complete Defect Tools checkout, "
                 "or launch with --profile PATH. The worker/submitter profile cannot manage jobs."
             )
         connection = configure_company_environment(profile_path)

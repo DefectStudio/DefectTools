@@ -18,10 +18,13 @@ the backend; its root launcher runs `npm ci` when dependencies are missing.
 Migrations apply only to the local V2 database. Stop any other local V2
 dispatcher using port 8795 before starting it.
 
-Manager V2 requires the private manager profile at
-`%LOCALAPPDATA%/DefectStudio/RenderFarmV2/company-manager.json`, or an explicit
-`--profile PATH`. This is separate from the worker credential shipped with Worker
-V2. See `tools/RenderManagerV2_README.txt` at the repository root for installation
+Manager V2 ships with `manager/company-manager.json` for the hosted company V2
+service, so a fresh checkout needs no credential setup. An explicit
+`--profile PATH` takes precedence, followed by an existing per-user profile at
+`%LOCALAPPDATA%/DefectStudio/RenderFarmV2/company-manager.json`, then the bundled
+profile. Anyone with the checkout can use its V2 manager credentials. The worker
+credential remains separate. See `tools/RenderManagerV2_README.txt` at the
+repository root for installation
 and read-only startup diagnostics. Startup errors remain visible in the console
 and are logged under `%LOCALAPPDATA%/DefectStudio/RenderFarmManagerV2/logs`.
 

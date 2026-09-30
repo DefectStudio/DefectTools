@@ -15,10 +15,46 @@ spec.loader.exec_module(launcher)
 
 
 class CompanyManagerLauncherTests(unittest.TestCase):
+    def test_fresh_install_uses_bundled_manager_profile(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"LOCALAPPDATA": temporary}):
+            bundled = Path(temporary) / "checkout/company-manager.json"
+            bundled.parent.mkdir()
+            bundled.write_text(json.dumps({"api_url": "https://v2.example.test", "manager_token": "test-bundled-manager"}))
+            with patch.object(launcher, "bundled_profile_path", return_value=bundled):
+                self.assertEqual(bundled, launcher.default_profile_path())
+                connection = launcher.configure_company_environment()
+            self.assertEqual("manager", connection.role)
+            self.assertEqual("test-bundled-manager", os.environ["DEFECT_FARM_MANAGER_TOKEN"])
+            self.assertEqual("https://v2.example.test", os.environ["DEFECT_FARM_API_URL"])
+            self.assertFalse((Path(temporary) / "DefectStudio/RenderFarmV2/company-manager.json").exists())
+
+    def test_existing_per_user_profile_takes_precedence_over_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"LOCALAPPDATA": temporary}):
+            local = Path(temporary) / "DefectStudio/RenderFarmV2/company-manager.json"
+            local.parent.mkdir(parents=True)
+            local.write_text(json.dumps({"api_url": "https://v2.example.test", "manager_token": "test-local-manager"}))
+            with patch.object(launcher, "bundled_profile_path") as bundled:
+                self.assertEqual(local, launcher.default_profile_path())
+                launcher.configure_company_environment()
+                bundled.assert_not_called()
+            self.assertEqual("test-local-manager", os.environ["DEFECT_FARM_MANAGER_TOKEN"])
+
+    def test_explicit_profile_overrides_default_during_startup(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"LOCALAPPDATA": temporary}):
+            explicit = Path(temporary) / "explicit.json"
+            explicit.write_text(json.dumps({"api_url": "https://v2.example.test", "manager_token": "test-explicit-manager"}))
+            report = Path(temporary) / "report.json"
+            with patch.object(launcher, "default_profile_path") as default, patch.object(launcher, "self_test", return_value={"success": True}) as check:
+                code = launcher.main(["--profile", str(explicit), "--self-test", str(report)])
+                default.assert_not_called()
+            self.assertEqual(0, code)
+            self.assertEqual("test-explicit-manager", check.call_args.args[0].token)
+            self.assertTrue(json.loads(report.read_text())["success"])
+
     def test_missing_profile_writes_a_report_and_actionable_log_without_opening_gui(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"LOCALAPPDATA": temporary}):
             report = Path(temporary) / "report.json"
-            with contextlib.redirect_stderr(io.StringIO()) as errors:
+            with contextlib.redirect_stderr(io.StringIO()) as errors, patch.object(launcher, "bundled_profile_path", return_value=Path(temporary) / "missing/company-manager.json"):
                 code = launcher.main(["--self-test", str(report)])
             self.assertEqual(1, code)
             self.assertFalse(json.loads(report.read_text())["success"])

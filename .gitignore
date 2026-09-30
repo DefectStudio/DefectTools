@@ -33,6 +33,8 @@ tools/RenderWorkerV2.exe
 company-service-secrets.json
 company-worker.json
 company-manager.json
+# Approved V2 manager connection ships with the company source distribution.
+!render_v2/manager/company-manager.json
 company-submit.json
 company-viewer.json
 
