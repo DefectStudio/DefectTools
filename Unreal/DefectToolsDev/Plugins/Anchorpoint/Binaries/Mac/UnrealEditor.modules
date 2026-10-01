@@ -1,0 +1,9 @@
+{
+	"BuildId": "55116800",
+	"Modules": 
+	{
+		"Anchorpoint": "libUnrealEditor-Anchorpoint.dylib",
+		"AnchorpointCli": "libUnrealEditor-AnchorpointCli.dylib",
+		"AnchorpointHacks": "libUnrealEditor-AnchorpointHacks.dylib"
+	}
+}
