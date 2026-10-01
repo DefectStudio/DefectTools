@@ -1,0 +1,100 @@
+# Unreal development project with distributable compiled plugins.
+# Publish compatible plugin DLLs and their matching .modules manifests together.
+# Git ignore rules do not control Unreal's binary compatibility or compilation.
+# Submodules maintain their own .gitignore rules in their separate repositories.
+
+# Preserve intentional Unreal build resources despite the parent repository's
+# Python build/ ignore. Generated Intermediate/Build folders stay ignored below.
+!**/Build/
+!**/Build/**
+
+# The parent ignores *.py[cod]; native Python extension modules may be required
+# by packaged plugins, so allow .pyd binaries while ignoring bytecode below.
+!*.pyd
+
+# Unreal-generated working files, at project and plugin level.
+Saved/
+Intermediate/
+DerivedDataCache/
+ArchivedBuilds/
+_output/
+/Config/BroadcastDeviceProviderRegistry.json
+
+# Ignore project binaries; keep packaged plugin binaries, including plugins
+# grouped into subfolders beneath Plugins. Keep required third-party libraries.
+**/Binaries/*
+!Plugins/**/Binaries/
+!Plugins/**/Binaries/**
+
+# Temporary Live Coding patches and numbered Hot Reload module binaries.
+# These exclusions must follow the packaged-plugin binary exceptions above.
+**/Binaries/**/*.patch_*
+**/Binaries/**/UnrealEditor-*-[0-9][0-9][0-9][0-9].*
+
+# Transient compiler/linker products. Scope .obj to Binaries so mesh source
+# files remain shareable. Keep .lib dependencies and useful .pdb debug symbols.
+**/Binaries/**/*.obj
+**/Binaries/**/*.exp
+**/Binaries/**/*.ilk
+**/Binaries/**/*.pch
+*.uatbuildrecord
+*.csprojAssemblyReference.cache
+*.tmp
+*.temp
+obj/
+
+# Visual Studio and other IDE-generated files.
+.vs/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+.vscode/
+.idea/
+.history/
+.gradle/
+*.xcodeproj/
+*.xcworkspace/
+# Keep authored .props and .vsconfig files; they can be shared build settings.
+
+# Python environments, test output and caches.
+.venv/
+.venv_build/
+venv/
+__pycache__/
+*.py[co]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# Personal assistant configuration.
+.codex/
+.cursor/
+.gemini/
+.claude/
+.mcp.json
+CLAUDE.md
+AGENTS.md
+
+# Tool-generated local diagnostics.
+sentry.properties
+.sentry-native/
+
+# DCC backup files. Keep original import assets and source meshes.
+*.blend[1-9]*
+*_bak*.hip
+*_bak*.hipnc
+
+# Operating-system files.
+.DS_Store
+Thumbs.db
+Desktop.ini
