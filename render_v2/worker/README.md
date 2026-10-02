@@ -15,6 +15,15 @@ access before starting the worker. Each render pulls the current branch's
 upstream with `git pull --ff-only`, updates pinned submodules, and downloads LFS
 assets. A failed update prevents rendering; local edits are preserved.
 
+A clean submodule checked out at a different published commit is allowed. The
+worker synchronizes it to the commit recorded by the project before rendering.
+This applies to all submodules, including nested ones. Tracked edits, staged
+submodule version changes, unpublished local commits, and update failures still
+prevent rendering. The allowance does not apply to the main project checkout.
+The worker must verify a mismatched commit through a fetched remote-tracking
+reference. Missing, stale, or shallow history can prevent this proof; preparation
+stops and preserves that checkout.
+
 Launch the worker, select the Dropbox root and UnrealEditor-Cmd.exe, register
 local projects with **+**, then use **Check Setup** and **Start Worker**.
 Workers claim eligible jobs from the company's separate hosted V2 SQL service.

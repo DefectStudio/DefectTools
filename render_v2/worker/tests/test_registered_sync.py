@@ -50,6 +50,29 @@ class RegisteredSyncTests(unittest.TestCase):
         with patch.dict(os.environ, {"GIT_ALLOW_PROTOCOL": "file"}):
             return sync_registered_project(self.uproject, self.root / "sync logs", progress=lambda _: None, **kwargs)
 
+    def add_plugin(self, *, nested=False):
+        source = self.root / "plugin source"
+        self.git(self.root, "init", "-b", "main", str(source))
+        self.identity(source)
+        (source / "plugin.txt").write_text("pinned plugin")
+        self.commit(source, "Plugin")
+        nested_source = None
+        if nested:
+            nested_source = self.root / "nested source"
+            self.git(self.root, "init", "-b", "main", str(nested_source))
+            self.identity(nested_source)
+            (nested_source / "nested.txt").write_text("pinned nested plugin")
+            self.commit(nested_source, "Nested plugin")
+            self.git(source, "submodule", "add", str(nested_source), "Nested plugin")
+            self.commit(source, "Add nested plugin")
+        self.git(self.seed, "submodule", "add", str(source), "Show/Plugins/Common")
+        self.commit(self.seed, "Add plugin")
+        self.git(self.seed, "push")
+        self.sync()
+        checkout = self.checkout / "Show/Plugins/Common"
+        self.identity(checkout)
+        return source, checkout, nested_source
+
     def test_pulls_latest_current_branch_and_preserves_untracked_files(self):
         (self.seed / "asset.txt").write_text("updated")
         latest = self.commit(self.seed, "New asset")
@@ -102,6 +125,181 @@ class RegisteredSyncTests(unittest.TestCase):
         with patch.object(ProjectWorkspace, "run", fail_lfs):
             with self.assertRaisesRegex(PreparationError, "LFS unavailable"):
                 self.sync()
+
+    def test_clean_published_submodule_drift_returns_to_project_pin(self):
+        source, checkout, _ = self.add_plugin()
+        pinned = self.git(checkout, "rev-parse", "HEAD")
+        (source / "plugin.txt").write_text("new published plugin")
+        published = self.commit(source, "Published plugin update")
+        self.git(checkout, "fetch", "origin")
+        self.git(checkout, "checkout", "--detach", published)
+        (checkout / "artist-note.txt").write_text("keep me")
+        project_head = self.git(self.checkout, "rev-parse", "HEAD")
+        self.assertEqual(project_head, self.sync())
+        self.assertEqual(pinned, self.git(checkout, "rev-parse", "HEAD"))
+        self.assertEqual("pinned plugin", (checkout / "plugin.txt").read_text())
+        self.assertEqual("keep me", (checkout / "artist-note.txt").read_text())
+        self.assertEqual("", self.git(self.checkout, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=untracked"))
+
+    def test_clean_submodule_behind_new_parent_pin_is_updated(self):
+        source, checkout, _ = self.add_plugin()
+        old_pin = self.git(checkout, "rev-parse", "HEAD")
+        (source / "plugin.txt").write_text("new published plugin")
+        published = self.commit(source, "Published plugin update")
+        seed_plugin = self.seed / "Show/Plugins/Common"
+        self.git(seed_plugin, "fetch", "origin")
+        self.git(seed_plugin, "checkout", "--detach", published)
+        updated_parent = self.commit(self.seed, "Adopt new plugin pin")
+        self.git(self.seed, "push")
+        self.assertEqual(old_pin, self.git(checkout, "rev-parse", "HEAD"))
+        self.assertEqual(updated_parent, self.sync())
+        self.assertEqual(published, self.git(checkout, "rev-parse", "HEAD"))
+        self.assertEqual("new published plugin", (checkout / "plugin.txt").read_text())
+
+    def test_clean_published_nested_submodule_drift_returns_to_pin(self):
+        _, checkout, source = self.add_plugin(nested=True)
+        nested = checkout / "Nested plugin"
+        pinned = self.git(nested, "rev-parse", "HEAD")
+        (source / "nested.txt").write_text("new published nested plugin")
+        published = self.commit(source, "Published nested update")
+        self.git(nested, "fetch", "origin")
+        self.git(nested, "checkout", "--detach", published)
+        (nested / "artist-note.txt").write_text("keep me")
+        self.sync()
+        self.assertEqual(pinned, self.git(nested, "rev-parse", "HEAD"))
+        self.assertEqual("pinned nested plugin", (nested / "nested.txt").read_text())
+        self.assertEqual("keep me", (nested / "artist-note.txt").read_text())
+
+    def test_staged_parent_gitlink_is_preserved(self):
+        source, checkout, _ = self.add_plugin()
+        (source / "plugin.txt").write_text("new published plugin")
+        published = self.commit(source, "Published plugin update")
+        self.git(checkout, "fetch", "origin")
+        self.git(checkout, "checkout", "--detach", published)
+        self.git(self.checkout, "add", "Show/Plugins/Common")
+        staged = self.git(self.checkout, "diff", "--cached", "--raw")
+        with self.assertRaisesRegex(PreparationError, "local changes"):
+            self.sync()
+        self.assertEqual(staged, self.git(self.checkout, "diff", "--cached", "--raw"))
+        self.assertEqual(published, self.git(checkout, "rev-parse", "HEAD"))
+
+    def test_staged_submodule_edit_is_preserved(self):
+        _, checkout, _ = self.add_plugin()
+        (checkout / "plugin.txt").write_text("artist plugin edit")
+        self.git(checkout, "add", "plugin.txt")
+        staged = self.git(checkout, "diff", "--cached", "--raw")
+        with self.assertRaisesRegex(PreparationError, "local changes"):
+            self.sync()
+        self.assertEqual("artist plugin edit", (checkout / "plugin.txt").read_text())
+        self.assertEqual(staged, self.git(checkout, "diff", "--cached", "--raw"))
+
+    def test_unpublished_detached_submodule_commit_is_preserved(self):
+        _, checkout, _ = self.add_plugin()
+        self.git(checkout, "checkout", "--detach")
+        (checkout / "plugin.txt").write_text("unpublished artist plugin")
+        unpublished = self.commit(checkout, "Unpublished plugin edit")
+        with self.assertRaisesRegex(PreparationError, "local unpublished commits"):
+            self.sync()
+        self.assertEqual(unpublished, self.git(checkout, "rev-parse", "HEAD"))
+        self.assertEqual("unpublished artist plugin", (checkout / "plugin.txt").read_text())
+
+    def test_parent_pull_does_not_displace_previously_pinned_unpublished_commit(self):
+        source, checkout, _ = self.add_plugin()
+        (checkout / "plugin.txt").write_text("unpublished artist plugin")
+        unpublished = self.commit(checkout, "Unpublished plugin edit")
+        seed_plugin = self.seed / "Show/Plugins/Common"
+        self.git(seed_plugin, "fetch", str(checkout), unpublished)
+        self.git(seed_plugin, "checkout", "--detach", unpublished)
+        self.commit(self.seed, "Pin unpublished plugin")
+        self.git(self.seed, "push")
+        self.git(self.checkout, "pull", "--ff-only", "--recurse-submodules=no")
+        (source / "plugin.txt").write_text("new published plugin")
+        published = self.commit(source, "Published plugin update")
+        self.git(seed_plugin, "fetch", "origin")
+        self.git(seed_plugin, "checkout", "--detach", published)
+        updated_parent = self.commit(self.seed, "Pin published plugin")
+        self.git(self.seed, "push")
+        with self.assertRaisesRegex(PreparationError, "local unpublished commits"):
+            self.sync()
+        self.assertEqual(updated_parent, self.git(self.checkout, "rev-parse", "HEAD"))
+        self.assertEqual(unpublished, self.git(checkout, "rev-parse", "HEAD"))
+        self.assertEqual("unpublished artist plugin", (checkout / "plugin.txt").read_text())
+
+    def test_nested_submodule_edits_are_preserved(self):
+        _, checkout, _ = self.add_plugin(nested=True)
+        nested = checkout / "Nested plugin"
+        (nested / "nested.txt").write_text("nested artist edit")
+        with self.assertRaisesRegex(PreparationError, "local changes"):
+            self.sync()
+        self.assertEqual("nested artist edit", (nested / "nested.txt").read_text())
+
+    def test_nested_unpublished_detached_commit_is_preserved(self):
+        _, checkout, _ = self.add_plugin(nested=True)
+        nested = checkout / "Nested plugin"
+        self.identity(nested)
+        self.git(nested, "checkout", "--detach")
+        (nested / "nested.txt").write_text("unpublished nested artist plugin")
+        unpublished = self.commit(nested, "Unpublished nested plugin edit")
+        with self.assertRaisesRegex(PreparationError, "local unpublished commits"):
+            self.sync()
+        self.assertEqual(unpublished, self.git(nested, "rev-parse", "HEAD"))
+
+    def test_moving_parent_preserves_nested_commit_at_its_old_pin(self):
+        source, checkout, nested_source = self.add_plugin(nested=True)
+        nested = checkout / "Nested plugin"
+        self.identity(nested)
+        (nested / "nested.txt").write_text("unpublished nested artist plugin")
+        unpublished = self.commit(nested, "Unpublished nested plugin edit")
+        old_plugin = self.commit(checkout, "Pin unpublished nested plugin")
+        self.git(source, "fetch", "--recurse-submodules=no", str(checkout), old_plugin)
+        self.git(source, "-c", "submodule.recurse=false", "merge", "--ff-only", old_plugin)
+        self.git(checkout, "fetch", "--recurse-submodules=no", "origin")
+        seed_plugin = self.seed / "Show/Plugins/Common"
+        self.git(seed_plugin, "fetch", "--recurse-submodules=no", "origin")
+        self.git(seed_plugin, "checkout", "--detach", old_plugin)
+        self.commit(self.seed, "Pin old plugin")
+        self.git(self.seed, "push")
+        self.git(self.checkout, "pull", "--ff-only", "--recurse-submodules=no")
+        (nested_source / "nested.txt").write_text("new published nested plugin")
+        new_nested = self.commit(nested_source, "Published nested plugin update")
+        source_nested = source / "Nested plugin"
+        self.git(source_nested, "fetch", "origin")
+        self.git(source_nested, "checkout", "--detach", new_nested)
+        new_plugin = self.commit(source, "Pin new nested plugin")
+        self.git(seed_plugin, "fetch", "--recurse-submodules=no", "origin")
+        self.git(seed_plugin, "checkout", "--detach", new_plugin)
+        new_parent = self.commit(self.seed, "Pin new plugin")
+        self.git(self.seed, "push")
+        with self.assertRaisesRegex(PreparationError, "local unpublished commits"):
+            self.sync()
+        self.assertEqual(new_parent, self.git(self.checkout, "rev-parse", "HEAD"))
+        self.assertEqual(old_plugin, self.git(checkout, "rev-parse", "HEAD"))
+        self.assertEqual(unpublished, self.git(nested, "rev-parse", "HEAD"))
+
+    def test_aligned_nested_pins_need_no_remote_containment_proof(self):
+        _, checkout, _ = self.add_plugin(nested=True)
+        nested = checkout / "Nested plugin"
+        self.git(checkout, "update-ref", "-d", "refs/remotes/origin/main")
+        self.git(nested, "update-ref", "-d", "refs/remotes/origin/main")
+        pinned = self.git(checkout, "rev-parse", "HEAD")
+        nested_pinned = self.git(nested, "rev-parse", "HEAD")
+        self.sync()
+        self.assertEqual(pinned, self.git(checkout, "rev-parse", "HEAD"))
+        self.assertEqual(nested_pinned, self.git(nested, "rev-parse", "HEAD"))
+
+    def test_staged_nested_gitlink_is_preserved(self):
+        _, checkout, source = self.add_plugin(nested=True)
+        nested = checkout / "Nested plugin"
+        (source / "nested.txt").write_text("new nested plugin")
+        published = self.commit(source, "Published nested update")
+        self.git(nested, "fetch", "origin")
+        self.git(nested, "checkout", "--detach", published)
+        self.git(checkout, "add", "Nested plugin")
+        staged = self.git(checkout, "diff", "--cached", "--raw")
+        with self.assertRaisesRegex(PreparationError, "local changes"):
+            self.sync()
+        self.assertEqual(staged, self.git(checkout, "diff", "--cached", "--raw"))
+        self.assertEqual(published, self.git(nested, "rev-parse", "HEAD"))
 
     def test_hydrates_lfs_and_initializes_pinned_submodule(self):
         self.git(self.seed, "lfs", "install", "--local")

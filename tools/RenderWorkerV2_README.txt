@@ -13,6 +13,13 @@ Requirements:
   and plugin repositories. Each render pulls the current branch's upstream,
   updates pinned submodules, and downloads LFS assets. Update failures prevent
   rendering. Commit or resolve local edits in Anchorpoint before starting.
+- A clean submodule at a different published commit is allowed; the worker
+  checks out the version recorded by the project before rendering. This applies
+  to all submodules, including QuickWidgetTools and nested submodules. Tracked
+  edits, staged version changes and unpublished local commits still stop the
+  update. The main project checkout does not receive this allowance.
+  The worker must verify a mismatched commit through fetched remote history;
+  if that history is insufficient, it preserves the checkout and stops.
 
 First run:
 1. Select the Dropbox project root.
