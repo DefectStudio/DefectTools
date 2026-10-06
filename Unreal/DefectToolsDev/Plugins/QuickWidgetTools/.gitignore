@@ -1,0 +1,49 @@
+# Distribute the compiled Win64 editor module so artist workstations do not
+# need a C++ toolchain. Keep debug symbols and unrelated build products local.
+/Binaries/*
+!/Binaries/Win64/
+/Binaries/Win64/*
+!/Binaries/Win64/UnrealEditor-QuickWidgetTools.dll
+!/Binaries/Win64/UnrealEditor-CloudGeneratorTools.dll
+!/Binaries/Win64/UnrealEditor-OnlyCloudsEditor.dll
+!/Binaries/Win64/UnrealEditor.modules
+
+# Ignore build caches, but distribute the packaged runtime objects, manifests,
+# generated headers and import libraries needed by precompiled plugin users.
+/Intermediate/**
+!/Intermediate/**/
+!/Intermediate/Build/Win64/UnrealEditor/Inc/CloudGeneratorTools/UHT/*.h
+!/Intermediate/Build/Win64/UnrealEditor/Inc/CloudGeneratorTools/UHT/*.cpp
+!/Intermediate/Build/Win64/UnrealEditor/Inc/OnlyCloudsEditor/UHT/*.h
+!/Intermediate/Build/Win64/UnrealEditor/Inc/OnlyCloudsEditor/UHT/*.cpp
+!/Intermediate/Build/Win64/UnrealEditor/Inc/QuickWidgetTools/UHT/*.h
+!/Intermediate/Build/Win64/UnrealEditor/Inc/QuickWidgetTools/UHT/*.cpp
+!/Intermediate/Build/Win64/UnrealGame/Inc/CloudGeneratorTools/UHT/*.h
+!/Intermediate/Build/Win64/UnrealGame/Inc/CloudGeneratorTools/UHT/*.cpp
+!/Intermediate/Build/Win64/x64/UnrealEditor/Development/CloudGeneratorTools/*.lib
+!/Intermediate/Build/Win64/x64/UnrealEditor/Development/OnlyCloudsEditor/*.lib
+!/Intermediate/Build/Win64/x64/UnrealEditor/Development/QuickWidgetTools/*.lib
+!/Intermediate/Build/Win64/x64/UnrealGame/Development/CloudGeneratorTools/*.obj
+!/Intermediate/Build/Win64/x64/UnrealGame/Development/CloudGeneratorTools/*.precompiled
+!/Intermediate/Build/Win64/x64/UnrealGame/Shipping/CloudGeneratorTools/*.obj
+!/Intermediate/Build/Win64/x64/UnrealGame/Shipping/CloudGeneratorTools/*.precompiled
+
+# Unreal Engine temporary output
+/Saved/
+/DerivedDataCache/
+
+# Python test/cache output
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# IDE-generated files
+.vs/
+*.sln
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Operating-system files
+.DS_Store
+Thumbs.db

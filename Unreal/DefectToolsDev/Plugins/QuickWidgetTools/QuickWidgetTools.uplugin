@@ -1,0 +1,45 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Quick Widget Tools",
+	"Description": "Editor plugin that scans plugin content for Editor Utility Widgets and adds them to the Unreal main menu.",
+	"Category": "Editor",
+	"CreatedBy": "",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EngineVersion": "5.8.0",
+	"CanContainContent": true,
+	"Installed": true,
+	"Modules": [
+		{
+			"Name": "CloudGeneratorTools",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": ["Win64"]
+		},
+		{
+			"Name": "OnlyCloudsEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit",
+			"PlatformAllowList": ["Win64"]
+		},
+		{
+			"Name": "QuickWidgetTools",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "PythonScriptPlugin",
+			"Enabled": true
+		},
+		{
+			"Name": "NiagaraSimCaching",
+			"Enabled": true
+		}
+	]
+}

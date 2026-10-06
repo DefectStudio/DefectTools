@@ -1,0 +1,31 @@
+# Unreal Engine binary assets
+*.uasset filter=lfs diff=lfs merge=lfs -text
+*.umap filter=lfs diff=lfs merge=lfs -text
+*.ubulk filter=lfs diff=lfs merge=lfs -text
+*.uexp filter=lfs diff=lfs merge=lfs -text
+*.utoc filter=lfs diff=lfs merge=lfs -text
+*.ucas filter=lfs diff=lfs merge=lfs -text
+*.pak filter=lfs diff=lfs merge=lfs -text
+# Precompiled Win64 editor module distributed to non-programmer workstations.
+*.dll filter=lfs diff=lfs merge=lfs -text
+*.modules text
+# Packaged precompiled runtime objects and editor import libraries.
+/Intermediate/Build/**/*.obj filter=lfs diff=lfs merge=lfs -text
+/Intermediate/Build/**/*.lib filter=lfs diff=lfs merge=lfs -text
+*.precompiled text
+# Common binary source assets
+*.fbx filter=lfs diff=lfs merge=lfs -text
+*.abc filter=lfs diff=lfs merge=lfs -text
+*.usd filter=lfs diff=lfs merge=lfs -text
+*.usda filter=lfs diff=lfs merge=lfs -text
+*.usdc filter=lfs diff=lfs merge=lfs -text
+*.exr filter=lfs diff=lfs merge=lfs -text
+*.wav filter=lfs diff=lfs merge=lfs -text
+*.mp4 filter=lfs diff=lfs merge=lfs -text
+*.mov filter=lfs diff=lfs merge=lfs -text
+# Plugin icons must be available in normal Git before LFS is initialized.
+/Resources/** -filter -diff -merge -text
+# Configuration remains normal text.
+*.ini text
+*.lib filter=lfs diff=lfs merge=lfs -text
+*.obj filter=lfs diff=lfs merge=lfs -text

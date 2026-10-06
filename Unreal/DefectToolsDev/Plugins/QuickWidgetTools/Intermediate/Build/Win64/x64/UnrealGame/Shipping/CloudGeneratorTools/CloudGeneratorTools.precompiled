@@ -1,0 +1,13 @@
+{
+	"OutputFiles": [
+		"Module.CloudGeneratorTools.cpp.obj",
+		"CloudGeneratorActor.cpp.obj",
+		"CloudGeneratorToolsModule.cpp.obj",
+		"UltraDynamicSkyOnlyClouds.cpp.obj",
+		"FlexibleCloudAnimationTest.cpp.obj",
+		"OnlyCloudsLayersTest.cpp.obj",
+		"OnlyCloudsPlacementTest.cpp.obj",
+		"OnlyCloudsRecipeScaleTest.cpp.obj"
+	],
+	"ToolChainVersion": "14.44.35222"
+}

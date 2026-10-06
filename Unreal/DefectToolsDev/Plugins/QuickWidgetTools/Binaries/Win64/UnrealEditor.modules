@@ -1,0 +1,9 @@
+{
+	"BuildId": "55116800",
+	"Modules": 
+	{
+		"CloudGeneratorTools": "UnrealEditor-CloudGeneratorTools.dll",
+		"OnlyCloudsEditor": "UnrealEditor-OnlyCloudsEditor.dll",
+		"QuickWidgetTools": "UnrealEditor-QuickWidgetTools.dll"
+	}
+}

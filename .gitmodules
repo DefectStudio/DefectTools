@@ -1,4 +1,0 @@
-[submodule "Unreal/DefectToolsDev/Plugins/QuickWidgetTools"]
-	path = Unreal/DefectToolsDev/Plugins/QuickWidgetTools
-	url = https://github.com/DefectStudio/QuickWidgetToolsCommon.git
-	branch = main
