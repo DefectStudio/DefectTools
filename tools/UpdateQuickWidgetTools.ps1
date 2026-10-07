@@ -465,15 +465,25 @@ if (Test-Path -LiteralPath $remembered) { $address.Text = [IO.File]::ReadAllText
 $script:workerProcess = $null; $script:uiOperation = $null; $script:lastLogLength = -1
 $timer = New-Object Windows.Forms.Timer; $timer.Interval = 250
 $browse.Add_Click({
-    $dialog = New-Object Windows.Forms.OpenFileDialog
-    $dialog.Title = 'Choose Unreal project'; $dialog.Filter = 'Unreal projects (*.uproject)|*.uproject'; $dialog.CheckFileExists = $true; $dialog.Multiselect = $false
-    if (Test-Path -LiteralPath $address.Text -PathType Leaf) { $dialog.InitialDirectory = Split-Path -Parent $address.Text }
-    if ($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK) { $address.Text = $dialog.FileName }
-    $dialog.Dispose()
+    $dialog = $null
+    try {
+        $dialog = New-Object Windows.Forms.OpenFileDialog
+        $dialog.Title = 'Choose Unreal project'; $dialog.Filter = 'Unreal projects (*.uproject)|*.uproject'; $dialog.CheckFileExists = $true; $dialog.Multiselect = $false; $dialog.RestoreDirectory = $true
+        $currentAddress = $address.Text.Trim().Trim('"')
+        if (![string]::IsNullOrWhiteSpace($currentAddress)) {
+            if (Test-Path -LiteralPath $currentAddress -PathType Leaf) { $dialog.InitialDirectory = Split-Path -Parent $currentAddress }
+            elseif (Test-Path -LiteralPath $currentAddress -PathType Container) { $dialog.InitialDirectory = $currentAddress }
+        }
+        if ($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK) { $address.Text = $dialog.FileName }
+    } catch {
+        $status.Text = 'Error'; $status.BackColor = [Drawing.Color]::FromArgb(163,55,59)
+        $log.AppendText("`r`nCould not open the project browser: " + $_.Exception.Message)
+    } finally { if ($dialog) { $dialog.Dispose() } }
 })
 $install.Add_Click({
     try {
         $selected = $address.Text.Trim().Trim('"')
+        if ([string]::IsNullOrWhiteSpace($selected)) { throw 'Choose an existing .uproject file.' }
         if (Test-Path -LiteralPath $selected -PathType Container) {
             $projects = @(Get-ChildItem -LiteralPath $selected -File -Filter '*.uproject')
             if ($projects.Count -ne 1) { throw 'Browse to the .uproject file; that folder does not contain exactly one Unreal project.' }

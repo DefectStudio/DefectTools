@@ -23,3 +23,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\tests\Test-Updat
 ```
 
 The suite creates disposable repositories and local bare remotes under `I:\AICache\QuickWidgetToolsUpdater-tests`; it does not install into production projects or contact GitHub. Do not run an installation at the same time, because the updater deliberately permits only one operation at a time.
+
+To check the Browse dialog and empty-input handling:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\tests\Test-UpdateQuickWidgetToolsGui.ps1
+```
+
+This check opens and automatically cancels the test process's file picker, then verifies that empty INSTALL shows a clear message without starting a worker. Its files stay under `I:\AICache\QuickWidgetToolsUpdater-gui-tests`.
