@@ -7,3 +7,5 @@ import mrg_callbacks_render_info
 import mrg_callbacks_hero
 import mrg_callbacks_postRenderScripts
 import send_clickup_post_render
+import mrg_callbacks_latestmp4
+import mrg_callbacks_allrenders
