@@ -100,7 +100,7 @@ def render_registered_job(settings_path: Path, project_id: str, job_path: Path, 
             original_id = job["job_id"]
             job.update(job_id=f"{project.project_id}_{job['shot_name']}_{run_id}", source_job_id=original_id,
                        project=project.project_id, project_id=project.project_id,
-                       worker_runtime_version=2, disable_project_scripts=True,
+                       worker_runtime_version=2, disable_project_scripts=False,
                        worker_sync_policy=SYNC_POLICY,
                        output_directory=str(run_root / "output"), output_relative_directory="output",
                        submitted_show_file_server_path=str(run_root),

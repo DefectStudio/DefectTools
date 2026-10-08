@@ -57,7 +57,7 @@ class RegisteredQueueWorker:
                                                  progress=self.progress, cancelled=should_cancel)
                 install_runtime(uproject.parent, project_directory=uproject.parent)
                 job.update(uproject=str(uproject), project=project.project_id, project_id=project.project_id,
-                           worker_runtime_version=2, disable_project_scripts=True,
+                           worker_runtime_version=2, disable_project_scripts=False,
                            worker_sync_policy=SYNC_POLICY, prepared_git_commit=commit, git_commit_after_pull=commit)
                 self.progress(f"Rendering claimed job {job['job_id']} using updated {uproject}")
                 return self.executor(claimed_folder=claimed_folder, job=job, unreal_editor_cmd=engine,

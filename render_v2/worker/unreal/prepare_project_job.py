@@ -75,7 +75,7 @@ def prepare(request):
         "schema_version": 1, "job_type": "unreal_movie_render_graph", "status": "rendering",
         "job_id": request["job_id"], "shot_name": shot, "project": request["project_name"],
         "project_id": request["project_id"], "uproject": request["uproject"],
-        "worker_runtime_version": 2, "disable_project_scripts": True,
+        "worker_runtime_version": 2, "disable_project_scripts": False,
         "prepared_git_commit": request["commit"], "worker_sync_policy": "managed_project_fetch",
         "level": level_path, "sequence": sequence_path, "render_config": graph_path,
         "output_directory": output, "output_relative_directory": "output",

@@ -16,7 +16,7 @@ The `render` object describes Unreal asset paths. Templates support `{shot}` for
 - `shot_data`: a shot data asset path used when `level` is omitted.
 - `level_property`: the shot data property holding the associated level; defaults to `AssociatedLevel`.
 
-The pilot expects the graph to expose `OutputDirectory` and `FileNameFormat`, allowing the worker to redirect EXR output to an isolated run folder. It also sets `EXR`, `MP4`, `Hero`, and `MP4FileNameFormat` when those variables exist. Project graph script callbacks are disabled for these development renders. Projects with other rendering conventions need an adapter before they can use this direct-shot path.
+The pilot expects the graph to expose `OutputDirectory` and `FileNameFormat`, allowing the worker to redirect EXR output to an isolated run folder. It also sets `EXR`, `MP4`, `Hero`, and `MP4FileNameFormat` when those variables exist. Project graph script callbacks follow the graph's configured settings; their classes are not restricted by the worker. Projects with other rendering conventions need an adapter before they can use this direct-shot path.
 
 ## Machine settings
 

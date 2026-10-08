@@ -97,7 +97,7 @@ class RegisteredClaimTests(unittest.TestCase):
     def test_cloud_claim_renders_nonfirst_show_renews_lease_and_reports_completion(self):
         folder = self.job(self.projects[1], "Spectrum", "cloud_spectrum")
         job = json.loads((folder / "job.json").read_text())
-        job.update(status="rendering", attempt=1, worker="TestWorker", lease_token="local-lease")
+        job.update(status="rendering", attempt=1, worker="TestWorker", lease_token="local-lease", disable_project_scripts=True)
         dispatcher = Mock()
         dispatcher.claim_job.return_value = CloudClaimResult(
             lease=CloudJobLease(job=job, lease_token="local-lease", lease_expires_at=int(time.time()) + 300, stop_requested=False),
@@ -106,6 +106,7 @@ class RegisteredClaimTests(unittest.TestCase):
         def render(**kwargs):
             self.sync.assert_called_once()
             self.assertEqual("a" * 40, kwargs["job"]["git_commit_after_pull"])
+            self.assertIs(False, kwargs["job"]["disable_project_scripts"])
             self.assertFalse(kwargs["should_cancel"]())
             self.assertEqual(Path(self.projects[1].render_farm_root), kwargs["render_farm_root"])
             self.assertEqual(Path(self.projects[1].local_uproject), kwargs["local_uproject"])

@@ -250,6 +250,35 @@ def _apply_graph_overrides(new_job: Any, graph: Any, job: dict[str, Any]) -> Non
     _log("Applied graph overrides: " + ", ".join(sorted(applied_names)))
 
 
+def _configure_project_scripts(graph: Any, job: dict[str, Any]) -> None:
+    if not job.get("disable_project_scripts"):
+        _log("Project graph callbacks are enabled; using the graph's configured scripts.")
+        return
+
+    # Production jobs allow all configured callbacks. Explicitly isolated test
+    # jobs may still opt out of every project script, regardless of its class.
+    graphs = [graph, *list(graph.get_all_contained_subgraphs() or [])]
+    disabled_count = 0
+    visited: set[str] = set()
+    for contained in graphs:
+        for branch in contained.get_branch_names():
+            for node in contained.get_nodes_for_branch(
+                unreal.MovieGraphExecuteScriptNode, branch
+            ):
+                node_path = node.get_path_name()
+                if node_path in visited:
+                    continue
+                visited.add(node_path)
+
+                node.set_disabled(True)
+                disabled_count += 1
+
+    _log(
+        f"Disabled {disabled_count} project script node(s) "
+        "because this job explicitly requested script isolation."
+    )
+
+
 def _build_pipeline_job(executor: Any, job: dict[str, Any]) -> Any:
     executor.farm_job_queue = unreal.new_object(
         unreal.MoviePipelineQueue,
@@ -266,18 +295,7 @@ def _build_pipeline_job(executor: Any, job: dict[str, Any]) -> Any:
     new_job.set_editor_property("map", unreal.SoftObjectPath(job["level"]))
 
     graph = _load_unreal_object(job["render_config"], "Movie Render Graph")
-    if job.get("disable_project_scripts"):
-        graphs = [graph, *list(graph.get_all_contained_subgraphs() or [])]
-        count = 0
-        visited = set()
-        for contained in graphs:
-            for branch in contained.get_branch_names():
-                for node in contained.get_nodes_for_branch(unreal.MovieGraphExecuteScriptNode, branch):
-                    if node.get_path_name() not in visited:
-                        node.set_disabled(True)
-                        visited.add(node.get_path_name())
-                        count += 1
-        _log(f"Disabled {count} project script node(s) for isolated rendering.")
+    _configure_project_scripts(graph, job)
     new_job.set_graph_preset(graph)
     if new_job.get_graph_preset() is None:
         raise RuntimeError("Movie Render Graph assignment did not stick to the job.")

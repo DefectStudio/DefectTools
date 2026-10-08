@@ -37,7 +37,7 @@ class RegisteredRenderTests(unittest.TestCase):
                          uproject="X:/OtherMachine/Other.uproject", level="/Game/Map", sequence="/Game/Sequence",
                          render_config="/Game/Graph", output_directory="X:/OldOutput",
                          output_relative_directory="old/output", worker_sync_policy="managed_project_fetch",
-                         prepared_git_commit="obsolete", frame_count=40, outputs={"exr": True, "mp4": False},
+                         prepared_git_commit="obsolete", frame_count=40, disable_project_scripts=True, outputs={"exr": True, "mp4": False},
                          graph_variable_overrides={"OutputDirectory": {"enabled": True, "serialized_value": "old"},
                                                    "FileNameFormat": {"enabled": True, "serialized_value": "old"}})
         self.job.write_text(json.dumps(self.data))
@@ -62,6 +62,7 @@ class RegisteredRenderTests(unittest.TestCase):
         self.assertEqual(str(self.uproject), job["uproject"])
         self.assertEqual("latest_branch_git_pull_ff_only", job["worker_sync_policy"])
         self.assertEqual("a" * 40, job["prepared_git_commit"])
+        self.assertIs(False, job["disable_project_scripts"])
         self.assertEqual(2, self.sync.call_count)
         self.assertEqual("output", job["output_relative_directory"])
         self.assertEqual(before, self.job.read_bytes())

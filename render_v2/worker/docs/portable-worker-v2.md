@@ -29,6 +29,33 @@ or authentication errors block rendering. Untracked files are preserved and no
 branch switch, reset, clean or stash is performed. The clone/download checkbox
 does not disable these updates to already registered checkouts.
 
+## Project render callbacks
+
+Production jobs allow any Execute Script callback configured in the project's
+render graph. The worker does not restrict script classes or force disabled
+nodes on. Unreal evaluates the graph's branch conditions, overrides and callback
+lifecycle normally, including job-start, shot and post-render hooks.
+This also allows configured callbacks that report to external services such as
+ClickUp. Those callbacks require their usual project configuration and credentials.
+
+`MRGAllRenderScripts` remains an option for copying completed EXRs to `_hero`
+and MP4s to `_latestmp4`; it is no longer the only permitted script.
+The normal job creation paths explicitly set `disable_project_scripts=false`,
+including when replaying a job that previously disabled scripts. An isolated
+test job can still opt out of all callbacks with `disable_project_scripts=true`.
+
+`Editor Only` is supported by the UE 5.8 `UnrealEditor-Cmd.exe` editor build,
+including headless `-game` renders. There is no need to change the node's mode.
+Each script must be available and registered in the worker's Unreal project.
+Unreal logs `Project graph callbacks are enabled` before rendering, then the
+configured scripts log their own actions. Missing scripts and callback failures
+are handled by Unreal and the project's callbacks.
+
+To distribute runtime changes, stop the worker, update its **Defect Tools**
+source checkout, and reopen `tools/render_worker_v2.bat`. The worker installs
+the updated runtime in the registered Unreal project before its next job.
+Updating only the Unreal project does not update the worker's runtime source.
+
 ## Company connection and settings
 
 `render_v2/worker/worker_company_connection.json` is intentionally included in
