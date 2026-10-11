@@ -106,6 +106,22 @@ class RuntimeProjectScriptsTests(unittest.TestCase):
             graph, {} if job is None else job
         )
 
+    def test_niagara_workaround_establishes_and_logs_process_baseline(self):
+        world = object()
+        commands = []
+        self.unreal.SystemLibrary = types.SimpleNamespace(
+            execute_console_command=lambda context, command: commands.append((context, command))
+        )
+
+        self.runtime["_apply_render_workarounds"](world)
+
+        self.assertIn((world, "fx.Niagara.Batcher.TickFlush.Mode 0"), commands)
+        self.assertTrue(all(context is world for context, command in commands))
+        self.assertTrue(any(
+            "Applied render workaround: fx.Niagara.Batcher.TickFlush.Mode 0" in message
+            for message in self.logs
+        ))
+
     def assert_node_untouched(self, node):
         self.assertEqual([], node.disabled_writes)
         self.assertEqual([], node.property_reads)

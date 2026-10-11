@@ -35,6 +35,7 @@ UNREAL_RESULT_FILENAME = "unreal_result.json"
 # accumulate while Movie Graph finalizes. Keep these outside the graph so its
 # console-variable restoration does not undo them before finalization finishes.
 NIAGARA_TICK_FLUSH_WORKAROUND_COMMANDS = (
+    "fx.Niagara.Batcher.TickFlush.Mode 0",
     "fx.Niagara.Batcher.TickFlush.MaxQueuedFrames 100000",
     "fx.Niagara.Batcher.TickFlush.MaxPendingTicks 100000",
 )

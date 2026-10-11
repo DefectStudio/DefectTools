@@ -246,6 +246,9 @@ def build_unreal_command(
         "-FullStdOutLogOutput",
         "-UTF8Output",
         f"-abslog={unreal_log_path}",
+        # Graph CVars are restored before finalization. Keep UE-392456's
+        # Niagara dummy-view tick flush disabled for the whole render process.
+        "-ExecCmds=fx.Niagara.Batcher.TickFlush.Mode 0",
     ]
     if validate_only:
         command.append("-RenderFarmValidateOnly=true")

@@ -56,6 +56,23 @@ source checkout, and reopen `tools/render_worker_v2.bat`. The worker installs
 the updated runtime in the registered Unreal project before its next job.
 Updating only the Unreal project does not update the worker's runtime source.
 
+## Niagara render finalization workaround
+
+Every Unreal render launched by Worker V2 receives
+`-ExecCmds="fx.Niagara.Batcher.TickFlush.Mode 0"`, regardless of project or
+render graph. The V2 runtime also applies and logs the setting immediately
+before initializing Movie Graph, alongside the existing raised tick-queue limits.
+This works around UE-392456's Niagara GPU tick-flush crash during slow
+image-sequence finalization. It establishes a process baseline because graph
+CVar overrides are restored before finalization.
+
+The setting lasts until the render's Unreal process exits; it does not edit
+project settings or graph assets. Mode 0 retains queued simulation ticks and
+can cause a catch-up pause when scene rendering resumes. Successful tests of
+the worker do not substitute for a real render validation. To remove the
+workaround, remove the Mode 0 command from both `build_unreal_command()` and
+`NIAGARA_TICK_FLUSH_WORKAROUND_COMMANDS`.
+
 ## Company connection and settings
 
 `render_v2/worker/worker_company_connection.json` is intentionally included in

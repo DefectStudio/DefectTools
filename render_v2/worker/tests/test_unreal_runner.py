@@ -118,6 +118,38 @@ class UnrealRunnerTests(unittest.TestCase):
         self.assertIn("-EnablePlugins=RenderWorkerRuntime", command)
         self.assertNotIn(f"-ExecutorPythonClass={PYTHON_EXECUTOR_CLASS}", command)
 
+    def test_niagara_finalization_workaround_applies_to_every_project_and_executor(self) -> None:
+        for project_name in ("spectrum", "s3bishop", "christmasfuneral"):
+            for runtime_version in (None, 2):
+                with self.subTest(project=project_name, runtime=runtime_version):
+                    uproject = self.root / f"{project_name}.uproject"
+                    uproject.write_text("{}", encoding="utf-8")
+                    job = dict(self.job, project=project_name, uproject=str(uproject))
+                    if runtime_version is not None:
+                        job["worker_runtime_version"] = runtime_version
+
+                    command = build_unreal_command(self.claimed_folder, job, self.executable)
+
+                    self.assertEqual(
+                        ["-ExecCmds=fx.Niagara.Batcher.TickFlush.Mode 0"],
+                        [argument for argument in command if argument.startswith("-ExecCmds=")],
+                    )
+
+    def test_niagara_workaround_survives_a_relocated_worker_project(self) -> None:
+        self.job["project"] = "s3bishop"
+        self.job["uproject"] = str(self.root / "submitter" / "s3bishop.uproject")
+        worker_checkout = self.root / "worker checkout with spaces"
+        worker_checkout.mkdir()
+        uproject = worker_checkout / "s3bishop.uproject"
+        uproject.write_text("{}", encoding="utf-8")
+
+        command = build_unreal_command(
+            self.claimed_folder, self.job, self.executable, local_uproject=uproject
+        )
+
+        self.assertEqual(str(uproject.resolve()), command[1])
+        self.assertIn("-ExecCmds=fx.Niagara.Batcher.TickFlush.Mode 0", command)
+
     def test_local_uproject_must_match_submitted_project_name(self) -> None:
         self.job["project"] = "s3bishop"
         wrong_project = self.root / "spectrum.uproject"
