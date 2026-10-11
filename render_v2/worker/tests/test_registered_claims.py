@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from portable_pipe_tools.render_farm.registered_claims import RegisteredQueueWorker
+from portable_pipe_tools.render_farm.registered_sync import SYNC_POLICY, OVERRIDE_SYNC_POLICY
 from portable_pipe_tools.render_farm.project_registration import ProjectRegistration
 from portable_pipe_tools.render_farm.queue import create_queue_folders, write_json_atomic
 from portable_pipe_tools.render_farm.unreal_runner import UnrealExecutionResult
@@ -131,6 +132,38 @@ class RegisteredClaimTests(unittest.TestCase):
         self.assertIn("Cannot pull", result.reason)
         install.assert_not_called()
         self.executor.assert_not_called()
+
+    def test_override_reaches_project_sync_and_job_policy(self):
+        folder = self.job(self.projects[0], "Bishop", "override")
+        job = json.loads((folder / "job.json").read_text())
+        worker = RegisteredQueueWorker(self.settings, "TestWorker", dispatcher_client=self.dispatcher,
+                                       progress=lambda _: None, executor=self.executor, override_local_changes=True)
+        with patch("portable_pipe_tools.render_farm.registered_claims.install_runtime"):
+            result = worker._render(claimed_folder=folder, job=job)
+        self.assertTrue(result.success)
+        self.assertIs(True, self.sync.call_args.kwargs["override_local_changes"])
+        self.assertEqual(OVERRIDE_SYNC_POLICY, self.executor.call_args.kwargs["job"]["worker_sync_policy"])
+        with patch("portable_pipe_tools.render_farm.registered_claims.run_once") as run:
+            worker.run_next()
+        self.assertEqual(OVERRIDE_SYNC_POLICY, run.call_args.kwargs["dispatcher_capabilities"]["sync_policy"])
+
+    def test_default_preserves_local_changes_and_records_policy_on_failure(self):
+        from portable_pipe_tools.render_farm.project_workspace import PreparationError
+        folder = self.job(self.projects[0], "Bishop", "default")
+        job = json.loads((folder / "job.json").read_text())
+        self.sync.side_effect = PreparationError("Tracked changes")
+        result = self.worker._render(claimed_folder=folder, job=job)
+        self.assertFalse(result.success)
+        self.assertIs(False, self.sync.call_args.kwargs["override_local_changes"])
+        self.assertEqual(SYNC_POLICY, job["worker_sync_policy"])
+        self.executor.assert_not_called()
+
+    def test_override_requires_explicit_boolean(self):
+        for value in ("false", "true", 1, None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "explicitly with a boolean"):
+                RegisteredQueueWorker(self.settings, "TestWorker", dispatcher_client=self.dispatcher,
+                                       progress=lambda _: None, override_local_changes=value)
+        self.sync.assert_not_called()
 
     def test_ineligible_cloud_response_is_released_before_rendering(self):
         dispatcher = Mock()

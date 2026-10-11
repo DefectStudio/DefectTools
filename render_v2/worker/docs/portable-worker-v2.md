@@ -26,8 +26,27 @@ the current project branch is fast-forwarded to its configured upstream, pinned
 submodules are updated recursively, and root/submodule LFS assets are hydrated.
 Local tracked edits, detached HEAD, missing upstream, divergence, failed downloads
 or authentication errors block rendering. Untracked files are preserved and no
-branch switch, reset, clean or stash is performed. The clone/download checkbox
+branch switch, reset, clean or stash is performed with **Override Local Changes** off. The clone/download checkbox
 does not disable these updates to already registered checkouts.
+
+**Override Local Changes** is an operator opt-in for disposable render checkouts.
+It starts unchecked each time the application opens and is locked while a worker
+or manual render is active. When checked, each job fetches the current branch's
+configured upstream first, resets the registered checkout to that fetched commit,
+discards tracked edits, staged changes, local commits and untracked nonignored
+files, and forces recursive plugins to the project's recorded pins. No backup or
+stash is created. Ignored caches and outputs are normally retained. Obsolete
+managed plugin worktrees removed by the remote are also removed, including their
+local caches. Both queued jobs and manual job-file renders use this option; job
+data cannot enable it.
+
+LFS assets are still downloaded, and actual tracked contents, staged state,
+branch/commit and plugin pins are verified before Unreal starts. Stat-only Git
+modified flags do not block this opt-in path when the actual contents match.
+Missing upstreams, detached HEAD, fetch/LFS failures and unresolved content
+differences still block preparation. Untracked embedded repositories are not
+blanket-deleted; if one survives cleanup, remove it from the registered checkout
+before retrying. The option does not clear job blacklists.
 
 ## Project render callbacks
 

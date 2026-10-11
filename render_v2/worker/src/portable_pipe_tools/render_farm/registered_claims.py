@@ -4,7 +4,7 @@ from pathlib import Path
 
 from portable_pipe_tools.render_farm.project_render import install_runtime
 from portable_pipe_tools.render_farm.project_workspace import project_lock, PreparationError, PreparationCancelled
-from portable_pipe_tools.render_farm.registered_sync import sync_registered_project, SYNC_POLICY
+from portable_pipe_tools.render_farm.registered_sync import sync_registered_project, SYNC_POLICY, OVERRIDE_SYNC_POLICY
 from portable_pipe_tools.render_farm.registered_render import local_project_lock, prepare_registered_job
 from portable_pipe_tools.render_farm.queue import read_json_object, safe_name
 from portable_pipe_tools.render_farm.unreal_runner import execute_unreal_job, UnrealExecutionResult
@@ -14,7 +14,9 @@ from portable_pipe_tools.render_farm.worker import run_once
 
 class RegisteredQueueWorker:
     def __init__(self, settings_path: Path, worker_name: str, *, dispatcher_client=None,
-                 progress=print, executor=None):
+                 progress=print, executor=None, override_local_changes=False):
+        if type(override_local_changes) is not bool:
+            raise ValueError("Override Local Changes must be enabled explicitly with a boolean.")
         self.settings_path = Path(settings_path)
         self.worker_name = worker_name
         self.dispatcher = dispatcher_client
@@ -22,6 +24,8 @@ class RegisteredQueueWorker:
             raise ValueError("V2 requires the company SQL dispatcher; filesystem job claiming is not supported.")
         self.progress = progress
         self.executor = executor or execute_unreal_job
+        self.override_local_changes = override_local_changes
+        self.sync_policy = OVERRIDE_SYNC_POLICY if self.override_local_changes else SYNC_POLICY
         self.spool = self.settings_path.parent / "queue-spool" / safe_name(worker_name, "WORKER")
         self.projects = self.ready_projects()
         if not self.projects:
@@ -49,16 +53,18 @@ class RegisteredQueueWorker:
     def _render(self, *, claimed_folder, job, should_cancel=lambda: False, timeout_seconds=7200, **_):
         identity = str(job.get("project_id") or job.get("project") or "")
         project, uproject, engine, _ = prepare_registered_job(self.settings_path, identity, Path(claimed_folder) / "job.json")
+        job["worker_sync_policy"] = self.sync_policy
         try:
             with project_lock(local_project_lock(uproject)):
                 if should_cancel():
                     return UnrealExecutionResult(False, "Stopped before Unreal launch", None, cancelled=True)
                 commit = sync_registered_project(uproject, Path(claimed_folder) / "project-sync",
-                                                 progress=self.progress, cancelled=should_cancel)
+                                                 progress=self.progress, cancelled=should_cancel,
+                                                 override_local_changes=self.override_local_changes)
                 install_runtime(uproject.parent, project_directory=uproject.parent)
                 job.update(uproject=str(uproject), project=project.project_id, project_id=project.project_id,
                            worker_runtime_version=2, disable_project_scripts=False,
-                           worker_sync_policy=SYNC_POLICY, prepared_git_commit=commit, git_commit_after_pull=commit)
+                           worker_sync_policy=self.sync_policy, prepared_git_commit=commit, git_commit_after_pull=commit)
                 self.progress(f"Rendering claimed job {job['job_id']} using updated {uproject}")
                 return self.executor(claimed_folder=claimed_folder, job=job, unreal_editor_cmd=engine,
                                      local_uproject=uproject, render_farm_root=Path(project.render_farm_root),
@@ -92,7 +98,7 @@ class RegisteredQueueWorker:
         return run_once(farm_root=projects[0].render_farm_root, dispatcher_client=self.dispatcher,
                         dispatcher_app_version="render-worker-v2-registered",
                         dispatcher_capabilities={"registered_projects": [p.project_id for p in projects],
-                                                 "sync_policy": SYNC_POLICY},
+                                                 "sync_policy": self.sync_policy},
                         eligible_project_ids=[p.project_id for p in projects], job_paths_resolver=resolve_paths,
                         cloud_spool_root=self.spool,
                         dispatcher_heartbeat_interval_seconds=heartbeat_interval_seconds, **options)

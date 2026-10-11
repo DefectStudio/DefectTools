@@ -212,6 +212,8 @@ class RenderWorkerV2App:
             value=load_saved_local_uproject()
         )
         self.status_var = tk.StringVar(value="Add your local projects, then Check Setup")
+        # Destructive preparation is an explicit opt-in for this app session only.
+        self.override_local_changes_var = tk.BooleanVar(value=False)
         self._registered_render_active = False
         self._registered_render_cancel = Event()
         self._close_after_registered_render = False
@@ -380,6 +382,14 @@ class RenderWorkerV2App:
             setup_frame,
             text="Stops and requeues an overlong Unreal render; default is 2 hours.",
         ).grid(row=5, column=2, sticky="w", padx=(8, 0), pady=4)
+
+        self.override_local_changes_checkbox = ttk.Checkbutton(
+            setup_frame, text="Override Local Changes", variable=self.override_local_changes_var)
+        self.override_local_changes_checkbox.grid(row=6, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Label(
+            setup_frame, text="Discards local project changes without a backup.",
+            font=("Segoe UI", 9),
+        ).grid(row=6, column=2, sticky="w", padx=(8, 0), pady=4)
 
         worker_name_fields = setup_frame.grid_slaves(row=0)
         # Keep Dropbox and engine selection ahead of the project list.
@@ -929,9 +939,11 @@ class RenderWorkerV2App:
 
         try:
             self._save_engine_field()
+            override_local_changes = self.override_local_changes_var.get()
             self._registered_queue_worker = RegisteredQueueWorker(
                 self.settings_path, self._get_worker_name(),
-                dispatcher_client=self._get_dispatcher_client(), progress=self._log)
+                dispatcher_client=self._get_dispatcher_client(), progress=self._log,
+                override_local_changes=override_local_changes)
             first_project = self._registered_queue_worker.projects[0]
             farm_root = Path(first_project.render_farm_root)
             local_uproject = Path(first_project.local_uproject)
@@ -967,6 +979,9 @@ class RenderWorkerV2App:
         self._log("Claiming only registered, available shows: " + ", ".join(
             project.project_id for project in self._registered_queue_worker.projects))
         self._log("Each claimed job updates its registered Git project before rendering; failed updates stop the render.")
+        self._log(
+            "Override Local Changes: " + ("ON — local project changes may be discarded without a backup."
+                                         if override_local_changes else "OFF"))
 
         heartbeat_root = get_default_cloud_spool_root(configuration.worker_name)
         heartbeat = WorkerHeartbeat(
@@ -1076,6 +1091,7 @@ class RenderWorkerV2App:
         try:
             self._save_engine_field()
             timeout = self._get_render_timeout_seconds()
+            override_local_changes = self.override_local_changes_var.get()
         except (OSError, ValueError) as error:
             self._show_input_error(error)
             return
@@ -1087,7 +1103,8 @@ class RenderWorkerV2App:
             "Registered local render",
             lambda: render_registered_job(self.settings_path, selected[0], Path(path),
                                            timeout_seconds=timeout, progress=self._log,
-                                           cancelled=self._registered_render_cancel.is_set),
+                                           cancelled=self._registered_render_cancel.is_set,
+                                           override_local_changes=override_local_changes),
             self._registered_render_finished,
             on_error=self._registered_render_failed,
         )
@@ -1496,7 +1513,7 @@ class RenderWorkerV2App:
             not self._startup_update_complete or self._restart_pending
         )
         operation_locked = (
-            update_gate_locked or self._busy or self._listener_state.active
+            update_gate_locked or self._busy or self._listener_state.active or self._registered_render_active
         )
         root_is_set = bool(self.project_list.dropbox_root.get().strip())
         engine_is_set = bool(self.unreal_editor_cmd_var.get().strip())
@@ -1519,6 +1536,7 @@ class RenderWorkerV2App:
         self.worker_name_entry.configure(state=prerequisite_state)
         self.poll_interval_spinbox.configure(state=entry_state)
         self.render_timeout_spinbox.configure(state=entry_state)
+        self.override_local_changes_checkbox.configure(state=entry_state)
         self.unreal_editor_cmd_entry.configure(state=prerequisite_state)
         self.unreal_editor_cmd_browse_button.configure(state=prerequisite_state)
         self.unreal_editor_cmd_scan_button.configure(state=prerequisite_state)

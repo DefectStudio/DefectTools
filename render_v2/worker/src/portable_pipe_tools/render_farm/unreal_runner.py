@@ -522,11 +522,13 @@ def execute_unreal_job(
             ),
         )
 
+    # Sync preparation imports this runner through ProjectWorkspace.
+    from portable_pipe_tools.render_farm.registered_sync import SYNC_POLICY, OVERRIDE_SYNC_POLICY
     rendered_commit = _query_git_commit(uproject.parent)
     worker_sync_policy = str(
         job.get("worker_sync_policy") or "current_checkout"
     ).strip()
-    if worker_sync_policy == "latest_branch_git_pull_ff_only":
+    if worker_sync_policy in (SYNC_POLICY, OVERRIDE_SYNC_POLICY):
         pulled_commit = str(job.get("git_commit_after_pull") or "").strip()
         if not rendered_commit or rendered_commit.casefold() != pulled_commit.casefold():
             raise RuntimeError(
@@ -547,11 +549,12 @@ def execute_unreal_job(
     if rendered_commit:
         LOGGER.info("Render checkout Git commit: %s", rendered_commit)
     LOGGER.info("Worker-local Unreal project: %s", uproject)
-    if worker_sync_policy == "latest_branch_git_pull_ff_only":
+    if worker_sync_policy in (SYNC_POLICY, OVERRIDE_SYNC_POLICY):
         LOGGER.info(
-            "Git sync verified: rendering the latest pulled '%s' branch at %s.",
+            "Git sync verified: rendering the latest remote '%s' branch at %s (policy=%s).",
             job.get("git_branch") or "current",
             rendered_commit,
+            worker_sync_policy,
         )
     elif worker_sync_policy == "managed_project_fetch":
         LOGGER.info("Managed project fetch verified at %s.", rendered_commit)

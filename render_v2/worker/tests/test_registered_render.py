@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from portable_pipe_tools.render_farm import registered_render as renderer
+from portable_pipe_tools.render_farm.registered_sync import OVERRIDE_SYNC_POLICY
 from portable_pipe_tools.render_farm.project_registration import ProjectRegistration
 from portable_pipe_tools.render_farm.project_workspace import project_lock, PreparationError
 from portable_pipe_tools.render_farm.local_paths import prepare_worker_output_mapping
@@ -64,12 +65,29 @@ class RegisteredRenderTests(unittest.TestCase):
         self.assertEqual("a" * 40, job["prepared_git_commit"])
         self.assertIs(False, job["disable_project_scripts"])
         self.assertEqual(2, self.sync.call_count)
+        self.assertIs(False, self.sync.call_args.kwargs["override_local_changes"])
         self.assertEqual("output", job["output_relative_directory"])
         self.assertEqual(before, self.job.read_bytes())
         self.assertTrue((self.uproject.parent / "Plugins/RenderWorkerRuntime/.render-worker-runtime").is_file())
         self.assertTrue((Path(first["run_root"]) / "result.json").is_file())
         mapping = prepare_worker_output_mapping(job, execute.call_args.kwargs["render_farm_root"])
         self.assertEqual(Path(second["run_root"]) / "output", mapping.worker_output_directory)
+
+    def test_override_reaches_sync_executor_and_result_receipt(self):
+        with patch.object(renderer.shutil, "which", return_value=None), \
+             patch.object(renderer, "install_runtime"), \
+             patch.object(renderer, "execute_unreal_job", return_value=self.result) as execute:
+            result = self.render(override_local_changes=True)
+        self.assertIs(True, self.sync.call_args.kwargs["override_local_changes"])
+        self.assertEqual(OVERRIDE_SYNC_POLICY, execute.call_args.args[1]["worker_sync_policy"])
+        receipt = json.loads((Path(result["run_root"]) / "result.json").read_text())
+        self.assertEqual(OVERRIDE_SYNC_POLICY, receipt["sync_policy"])
+
+    def test_override_requires_explicit_boolean_before_preparation(self):
+        for value in ("false", "true", 1, None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "explicitly with a boolean"):
+                self.render(override_local_changes=value)
+        self.sync.assert_not_called()
 
     def test_wrong_or_unregistered_project_fails_before_runtime_install(self):
         with patch.object(renderer, "install_runtime") as install:

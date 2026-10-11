@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import tempfile
 import threading
 import time
@@ -40,19 +41,53 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         self.assertFalse(self.app._busy)
 
     def test_selected_registration_drives_async_render_and_controls_recover(self):
+        self.assertFalse(self.app.override_local_changes_var.get())
+        self.assertEqual("Override Local Changes", self.app.override_local_changes_checkbox.cget("text"))
         result = dict(success=True, reason="40 frames", run_root=str(self.path))
         with patch(MODULE + ".filedialog.askopenfilename", return_value=str(self.path / "job.json")), \
              patch(MODULE + ".render_registered_job", return_value=result) as render:
             self.app._render_registered_job()
             self.assertFalse(self.app.project_list.editing_enabled)
             self.assertEqual("disabled", str(self.app.render_one_button.cget("state")))
+            self.assertEqual("disabled", str(self.app.override_local_changes_checkbox.cget("state")))
             self.wait_finished()
         self.assertEqual("Show", render.call_args.args[1])
         self.assertEqual(self.settings, render.call_args.args[0])
+        self.assertIs(False, render.call_args.kwargs["override_local_changes"])
         self.assertTrue(self.app.project_list.editing_enabled)
         self.assertEqual("normal", str(self.app.render_one_button.cget("state")))
         self.assertEqual("normal", str(self.app.start_worker_button.cget("state")))
+        self.assertEqual("normal", str(self.app.override_local_changes_checkbox.cget("state")))
         self.assertEqual("Render complete", self.app.status_var.get())
+
+    def test_manual_render_captures_override_before_background_thread(self):
+        started = threading.Event()
+        release = threading.Event()
+        observed = []
+        def render(*args, override_local_changes, **kwargs):
+            started.set()
+            release.wait(2)
+            observed.append(override_local_changes)
+            return dict(success=True, reason="Rendered", run_root=str(self.path))
+        self.app.override_local_changes_var.set(True)
+        with patch(MODULE + ".filedialog.askopenfilename", return_value=str(self.path / "job.json")), \
+             patch(MODULE + ".render_registered_job", side_effect=render):
+            self.app._render_registered_job()
+            self.assertTrue(started.wait(1))
+            self.assertEqual("disabled", str(self.app.override_local_changes_checkbox.cget("state")))
+            self.app.override_local_changes_var.set(False)
+            release.set()
+            self.wait_finished()
+        self.assertEqual([True], observed)
+
+    def test_override_is_not_restored_from_saved_settings(self):
+        saved = json.loads(self.settings.read_text())
+        saved["override_local_changes"] = True
+        self.settings.write_text(json.dumps(saved))
+        self.app._shutdown_application(0)
+        self.app = RenderWorkerV2App(settings_path=self.settings)
+        self.app.root.withdraw()
+        self.assertFalse(self.app.override_local_changes_var.get())
 
     def test_setup_check_is_async_and_does_not_start_listener(self):
         from portable_pipe_tools.render_farm.worker_setup import SetupReport
@@ -92,6 +127,7 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         self.app.unreal_editor_cmd_var.set(str(engine))
         self.app.worker_name_var.set("V2-Test")
         self.app.farm_root_var.set("invalid unused legacy path")
+        self.app.override_local_changes_var.set(True)
         service = Mock()
         service.projects = self.app.project_list.projects
         service.run_next.return_value = None
@@ -105,14 +141,18 @@ class RegisteredRenderGuiTests(unittest.TestCase):
             self.app._start_worker()
             self.assertTrue(self.app._listener_state.active)
             self.assertFalse(self.app.project_list.editing_enabled)
+            self.assertEqual("disabled", str(self.app.override_local_changes_checkbox.cget("state")))
             deadline = time.monotonic() + 3
             while (not service.run_next.called or self.app._busy) and time.monotonic() < deadline:
                 self.app.root.update()
                 time.sleep(0.01)
             service.run_next.assert_called_once()
             factory.assert_called_once()
+            self.assertIs(True, factory.call_args.kwargs["override_local_changes"])
             updater.assert_not_called()
             self.app._stop_worker()
             self.assertFalse(self.app._listener_state.active)
         self.assertTrue(self.app.project_list.editing_enabled)
+        self.assertEqual("normal", str(self.app.override_local_changes_checkbox.cget("state")))
+        self.assertNotIn("override_local_changes", json.loads(self.settings.read_text()))
         self.assertEqual("V2-Test", load_listener_preferences(self.settings)["worker_name"])

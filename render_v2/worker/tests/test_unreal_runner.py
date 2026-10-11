@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from portable_pipe_tools.render_farm.queue import JOB_FILENAME
 from portable_pipe_tools.render_farm.unreal_runner import (
@@ -17,6 +17,7 @@ from portable_pipe_tools.render_farm.unreal_runner import (
     _format_timeout_duration,
     _wait_for_unreal_process,
     build_unreal_command,
+    execute_unreal_job,
     resolve_unreal_project,
     resolve_unreal_editor_cmd,
 )
@@ -63,6 +64,21 @@ class UnrealRunnerTests(unittest.TestCase):
     def test_explicit_unreal_executable_is_used(self) -> None:
         resolved = resolve_unreal_editor_cmd(self.job, self.executable)
         self.assertEqual(self.executable.resolve(), resolved.resolve())
+
+    def test_registered_sync_policies_reject_changed_checkout_before_unreal_launch(self) -> None:
+        module = "portable_pipe_tools.render_farm.unreal_runner"
+        for policy in ("latest_branch_git_pull_ff_only", "latest_branch_override_local_changes"):
+            for current in (None, "b" * 40):
+                with self.subTest(policy=policy, current=current):
+                    job = dict(self.job, worker_sync_policy=policy, git_commit_after_pull="a" * 40)
+                    with patch(module + ".prepare_worker_output_mapping", return_value=Mock()), \
+                         patch(module + ".build_unreal_command", return_value=[str(self.executable), str(self.uproject)]), \
+                         patch(module + ".path_exists_with_retry", return_value=False), \
+                         patch(module + "._query_git_commit", return_value=current), \
+                         patch(module + ".subprocess.Popen") as launch:
+                        with self.assertRaisesRegex(RuntimeError, "checkout changed"):
+                            execute_unreal_job(self.claimed_folder, job, self.executable)
+                        launch.assert_not_called()
 
     def test_command_contains_farm_executor_and_exact_job_path(self) -> None:
         command = build_unreal_command(

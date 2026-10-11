@@ -39,6 +39,17 @@ cancels the update process. Missing-project cloning, repository discovery and
 main-project branch switching do not run. Git command logs are in the job's
 `project-sync/logs` folder; the pulled commit is recorded in job/result metadata.
 
+The optional **Override Local Changes** checkbox starts off on every app launch.
+An enabled worker instead fetches and resets the current branch to its configured
+upstream, discarding local tracked/staged changes, local commits and untracked
+nonignored files without backup. Plugins are forced to the fetched project's pins
+and LFS hydration remains required. Ignored caches and outputs are normally kept;
+obsolete managed plugin worktrees are removed including their local caches.
+Unknown embedded repositories that survive cleanup still block rendering. The
+prepared commit and override sync policy are recorded with the job, and the
+runner still refuses a commit change before Unreal launch. Manual job-file
+renders use the same option. It does not clear existing job blacklists.
+
 The packaged worker reads its embedded company V2 profile. Source development
 uses `%LOCALAPPDATA%/DefectStudio/RenderFarmV2/cloud_connection.json`, separate
 from V1 credentials. No SQL schema migration is needed for eligibility. The local
