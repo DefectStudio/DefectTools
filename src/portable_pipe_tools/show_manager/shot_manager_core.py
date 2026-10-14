@@ -264,6 +264,8 @@ def calculate_edl_proposed_range(
     original_end_frame: int | None,
     handle_frame_count: int = EDL_FRAME_HANDLE_COUNT,
 ) -> tuple[int, int] | None:
+    if handle_frame_count < 0:
+        raise ValueError("EDL handles must be 0 frames or greater.")
     if (
         not edl_frame_ranges
         or original_start_frame is None
@@ -286,7 +288,10 @@ def calculate_edl_proposed_range(
     return proposed_start_frame, proposed_end_frame
 
 
-def refresh_edl_proposed_range(shot_row: ShotRow) -> None:
+def refresh_edl_proposed_range(
+    shot_row: ShotRow,
+    handle_frame_count: int = EDL_FRAME_HANDLE_COUNT,
+) -> None:
     if (
         shot_row.keep_range
         and shot_row.start_frame is not None
@@ -301,6 +306,7 @@ def refresh_edl_proposed_range(shot_row: ShotRow) -> None:
         shot_row.edl_frame_ranges,
         shot_row.start_frame,
         shot_row.end_frame,
+        handle_frame_count,
     )
 
 
@@ -531,6 +537,7 @@ def apply_edl_sequence_comparison(
     edl_import: ResolveEdlImport,
     sequence_name: str,
     first_order: int,
+    handle_frame_count: int = EDL_FRAME_HANDLE_COUNT,
 ) -> EdlComparisonSummary:
     """Apply a preview-only per-sequence EDL proposal to loaded shot rows."""
     clean_sequence_name = str(sequence_name or "").strip().upper()
@@ -538,6 +545,8 @@ def apply_edl_sequence_comparison(
         raise ValueError("Choose one sequence before building an EDL comparison.")
     if first_order < 0:
         raise ValueError("First Shot Number in Sequence must be 0 or greater.")
+    if handle_frame_count < 0:
+        raise ValueError("EDL handles must be 0 frames or greater.")
 
     sequence_rows = [
         shot_row
@@ -612,7 +621,7 @@ def apply_edl_sequence_comparison(
         shot_row.edl_order = inactive_first_order + order_offset
 
     for shot_row in sequence_rows:
-        refresh_edl_proposed_range(shot_row)
+        refresh_edl_proposed_range(shot_row, handle_frame_count)
 
     missing_shot_names = tuple(
         shot_name
@@ -1148,6 +1157,8 @@ class ShotManagerApp:
         self.show_select_var = tk.StringVar()
         self.sequence_select_var = tk.StringVar(value=ALL_SEQUENCES_LABEL)
         self.first_shot_number_var = tk.StringVar(value="001")
+        self.edl_handle_frame_count_var = tk.StringVar(value=str(EDL_FRAME_HANDLE_COUNT))
+        self.edl_handle_frame_count = EDL_FRAME_HANDLE_COUNT
         self.edl_source_var = tk.StringVar(value="No Resolve XML loaded.")
         self.update_shot_order_var = tk.BooleanVar(value=True)
         self.update_shot_active_var = tk.BooleanVar(value=True)
@@ -1170,6 +1181,7 @@ class ShotManagerApp:
         self.shot_sort_reverse = False
         self._build_ui()
         self._load_saved_local_state()
+        self.edl_handle_frame_count_var.trace_add("write", self._on_edl_handles_changed)
 
     def run(self) -> None:
         self.root.mainloop()
@@ -1303,6 +1315,25 @@ class ShotManagerApp:
             textvariable=self.edl_source_var,
             anchor="w",
         ).grid(row=0, column=5, sticky="ew")
+        ttk.Label(edl_frame, text="Handles (frames per side)").grid(
+            row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0),
+        )
+        self.edl_handle_frame_count_entry = ttk.Spinbox(
+            edl_frame,
+            textvariable=self.edl_handle_frame_count_var,
+            from_=0,
+            to=999999,
+            increment=1,
+            width=8,
+            validate="key",
+            validatecommand=(
+                self.root.register(lambda value: re.fullmatch(r"[0-9]*", value) is not None),
+                "%P",
+            ),
+        )
+        self.edl_handle_frame_count_entry.grid(
+            row=1, column=1, sticky="w", padx=(0, 12), pady=(8, 0),
+        )
 
         actions_frame = ttk.Frame(outer)
         actions_frame.pack(fill="x", pady=(8, 0))
@@ -1366,6 +1397,31 @@ class ShotManagerApp:
             state="normal" if can_export else "disabled"
         )
 
+    def _parse_edl_handle_frame_count(self) -> int:
+        raw_value = self.edl_handle_frame_count_var.get().strip()
+        if not re.fullmatch(r"[0-9]+", raw_value):
+            raise ValueError("EDL handles must be a whole number of frames, 0 or greater.")
+        return int(raw_value)
+
+    def _on_edl_handles_changed(self, *_args: str) -> None:
+        try:
+            handle_frame_count = self._parse_edl_handle_frame_count()
+        except ValueError:
+            # Allow an empty field while replacing the previous number.
+            return
+        if handle_frame_count == self.edl_handle_frame_count:
+            return
+        self.edl_handle_frame_count = handle_frame_count
+        if self.edl_import is not None:
+            for shot_row in self.current_shot_rows:
+                refresh_edl_proposed_range(shot_row, handle_frame_count)
+            self._render_shot_rows()
+        self._set_status(f"EDL handles set to {handle_frame_count} frame(s) per side.")
+        try:
+            update_local_save_data(edl_handle_frame_count=handle_frame_count)
+        except OSError as error:
+            self._set_status(f"EDL handles updated, but could not save the preference: {error}")
+
     def _clear_edl_preview(self, set_status: bool = True) -> None:
         clear_edl_comparison(self.current_shot_rows)
         self.edl_import = None
@@ -1383,12 +1439,14 @@ class ShotManagerApp:
         if not sequence_name:
             raise ValueError("Choose one sequence before importing a Resolve EDL.")
         first_order = self._parse_first_shot_number()
+        handle_frame_count = self._parse_edl_handle_frame_count()
         self.first_shot_number_var.set(f"{first_order:03d}")
         summary = apply_edl_sequence_comparison(
             self.current_shot_rows,
             self.edl_import,
             sequence_name,
             first_order,
+            handle_frame_count,
         )
         self.edl_comparison_summary = summary
         self.shot_sort_column = "edl_order"
@@ -1593,6 +1651,12 @@ class ShotManagerApp:
 
     def _load_saved_local_state(self) -> None:
         local_save_data = load_local_save_data()
+        saved_handle_frame_count = _coerce_optional_int(
+            local_save_data.get("edl_handle_frame_count", EDL_FRAME_HANDLE_COUNT)
+        )
+        if saved_handle_frame_count is not None and saved_handle_frame_count >= 0:
+            self.edl_handle_frame_count = saved_handle_frame_count
+            self.edl_handle_frame_count_var.set(str(saved_handle_frame_count))
         saved_dropbox_folder = str(local_save_data.get("dropbox_folder") or "").strip()
         self.saved_show_name = str(local_save_data.get("selected_show") or "").strip()
         self.saved_sequence_name = str(local_save_data.get("selected_sequence") or "").strip()
@@ -1982,7 +2046,7 @@ class ShotManagerApp:
 
     def _toggle_keep_range(self, shot_row: ShotRow) -> None:
         shot_row.keep_range = not shot_row.keep_range
-        refresh_edl_proposed_range(shot_row)
+        refresh_edl_proposed_range(shot_row, self.edl_handle_frame_count)
         self._render_shot_rows()
         state_text = "keeping the original frame range" if shot_row.keep_range else "using the EDL proposed frame range"
         self._set_status(f"{shot_row.shot_name} is now {state_text}.")

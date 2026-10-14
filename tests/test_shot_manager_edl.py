@@ -92,6 +92,28 @@ class ShotManagerEdlTests(unittest.TestCase):
         )
         self.assertIsNone(calculate_edl_proposed_range((), 1001, 1100))
 
+    def test_proposed_range_uses_custom_handles_and_rejects_negative_counts(self) -> None:
+        for handle_count, expected_range in (
+            (0, (1051, 1094)),
+            (25, (1026, 1119)),
+            (500, (1001, 1200)),
+        ):
+            with self.subTest(handle_count=handle_count):
+                self.assertEqual(
+                    expected_range,
+                    calculate_edl_proposed_range(
+                        ((1051, 1094),),
+                        1001,
+                        1200,
+                        handle_frame_count=handle_count,
+                    ),
+                )
+
+        with self.assertRaises(ValueError):
+            calculate_edl_proposed_range(
+                ((1051, 1094),), 1001, 1200, handle_frame_count=-1,
+            )
+
     def test_parse_resolve_xml_uses_timeline_order_and_ignores_return_deduping(self) -> None:
         xml_text = """<?xml version="1.0" encoding="UTF-8"?>
 <xmeml version="5">
@@ -188,6 +210,31 @@ class ShotManagerEdlTests(unittest.TestCase):
         self.assertEqual(2, summary.active_count)
         self.assertEqual(1, summary.inactive_count)
         self.assertEqual(1, summary.return_cut_count)
+
+        for handle_count, expected_ranges in (
+            (0, ((1006, 1015), (1111, 1140))),
+            (25, ((1001, 1040), (1101, 1150))),
+            (500, ((1001, 1050), (1101, 1150))),
+        ):
+            with self.subTest(handle_count=handle_count):
+                custom_summary = apply_edl_sequence_comparison(
+                    rows,
+                    edl_import,
+                    "JNG",
+                    201,
+                    handle_frame_count=handle_count,
+                )
+                self.assertEqual(
+                    expected_ranges,
+                    (rows[0].edl_proposed_range, rows[1].edl_proposed_range),
+                )
+                self.assertIsNone(rows[2].edl_proposed_range)
+                self.assertEqual(1, custom_summary.return_cut_count)
+
+        with self.assertRaises(ValueError):
+            apply_edl_sequence_comparison(
+                rows, edl_import, "JNG", 201, handle_frame_count=-1,
+            )
 
     def test_manifest_update_preserves_metadata_and_sets_both_active_fields(self) -> None:
         rows = [
@@ -370,6 +417,64 @@ class ShotManagerEdlTests(unittest.TestCase):
         row.keep_range = False
         refresh_edl_proposed_range(row)
         self.assertEqual((1011, 1070), row.edl_proposed_range)
+
+        for handle_count, expected_range, expected_cut in (
+            (0, (1021, 1060), 60),
+            (25, (1001, 1085), 15),
+        ):
+            with self.subTest(handle_count=handle_count):
+                refresh_edl_proposed_range(row, handle_frame_count=handle_count)
+                self.assertEqual(expected_range, row.edl_proposed_range)
+                self.assertEqual(expected_cut, calculate_estimated_frames_cut([row]))
+
+                row.keep_range = True
+                refresh_edl_proposed_range(row, handle_frame_count=handle_count)
+                self.assertEqual((1001, 1100), row.edl_proposed_range)
+                self.assertEqual(0, calculate_estimated_frames_cut([row]))
+
+                row.keep_range = False
+                refresh_edl_proposed_range(row, handle_frame_count=handle_count)
+                self.assertEqual(expected_range, row.edl_proposed_range)
+
+    def test_export_writes_custom_handle_range_and_preserves_source(self) -> None:
+        xml_text = """<xmeml><sequence><name>Edit</name><media><video><track>
+<clipitem><name>JNG_000_0050.mp4</name><start>0</start><end>44</end><in>50</in><out>94</out></clipitem>
+</track></video></media></sequence></xmeml>"""
+        original_manifest = {
+            "sequence_name": "JNG",
+            "shots": [{
+                "shot_name": "JNG_000_0050",
+                "order": 900,
+                "is_active": False,
+                "start_frame": 1001,
+                "end_frame": 1200,
+            }],
+        }
+        row = _shot_row("JNG_000_0050", 900, False)
+        row.start_frame = 1001
+        row.end_frame = 1200
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            xml_path = Path(temporary_directory) / "edit.xml"
+            xml_path.write_text(xml_text, encoding="utf-8")
+            manifest_path = Path(temporary_directory) / "jng_sequence_shots_manifest.json"
+            manifest_path.write_text(json.dumps(original_manifest), encoding="utf-8")
+            row.manifest_path = manifest_path
+            edl_import = parse_resolve_edl_xml(xml_path)
+            apply_edl_sequence_comparison(
+                [row], edl_import, "JNG", 201, handle_frame_count=25,
+            )
+
+            result = export_edl_updates_to_sequence_manifest(manifest_path, [row], "JNG")
+            updated = json.loads(result.output_path.read_text(encoding="utf-8"))
+            source = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual((1051, 1094), row.edl_frame_ranges[0])
+        self.assertEqual((1026, 1119), (
+            updated["shots"][0]["start_frame"],
+            updated["shots"][0]["end_frame"],
+        ))
+        self.assertEqual(original_manifest, source)
 
     def test_export_overwrites_stable_updated_file_without_backup(self) -> None:
         rows = [_shot_row("JNG_000_0050", 900, False)]
