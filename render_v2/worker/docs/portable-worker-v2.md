@@ -29,6 +29,12 @@ or authentication errors block rendering. Untracked files are preserved and no
 branch switch, reset, clean or stash is performed with **Override Local Changes** off. The clone/download checkbox
 does not disable these updates to already registered checkouts.
 
+Registered project updates and asset downloads have no worker time limit, for
+both queued jobs and manual job-file renders. The **Give Up On Render Timer**
+applies only after preparation, when Unreal starts rendering. **Stop** still
+cancels preparation, and queued jobs continue renewing their SQL lease while
+downloads run.
+
 **Override Local Changes** is an operator opt-in for disposable render checkouts.
 It starts unchecked each time the application opens and is locked while a worker
 or manual render is active. When checked, each job fetches the current branch's

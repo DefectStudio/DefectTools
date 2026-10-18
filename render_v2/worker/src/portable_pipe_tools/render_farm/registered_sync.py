@@ -191,9 +191,9 @@ def _check_local_changes(run, directory):
 
 
 def sync_registered_project(uproject: Path, log_root: Path, *, progress=print,
-                            cancelled=lambda: False, timeout_seconds=1800,
+                            cancelled=lambda: False, timeout_seconds: float | None = None,
                             override_local_changes=False) -> str:
-    """Caller holds the project lock through sync, runtime installation and render."""
+    """Sync without a time limit by default; caller holds the project lock through render."""
     if type(override_local_changes) is not bool:
         raise ValueError("Override Local Changes must be enabled explicitly with a boolean.")
     prepare_external_programs()
@@ -201,7 +201,7 @@ def sync_registered_project(uproject: Path, log_root: Path, *, progress=print,
         raise PreparationError("Install Git for Windows with Git LFS before rendering registered projects.")
     commands = ProjectWorkspace(log_root, progress=progress, cancelled=cancelled,
                                 timeout_seconds=timeout_seconds, discovery_roots=())
-    commands.deadline = time.monotonic() + timeout_seconds
+    commands.deadline = 0.0 if timeout_seconds is None else time.monotonic() + timeout_seconds
     directory = Path(uproject).parent
     def run(args, cwd=None, capture=False):
         return commands.run(args, cwd or directory, capture=capture)

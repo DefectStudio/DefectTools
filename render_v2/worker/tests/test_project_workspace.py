@@ -14,6 +14,13 @@ from portable_pipe_tools.render_farm.project_workspace import (
 )
 
 
+class ProjectWorkspaceTimeoutTests(unittest.TestCase):
+    def test_explicit_timeout_must_remain_positive_and_finite(self):
+        for value in (0, -1, float("inf"), float("nan"), True, "1800"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                ProjectWorkspace(Path("unused"), timeout_seconds=value, discovery_roots=())
+
+
 class ProjectWorkspaceTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

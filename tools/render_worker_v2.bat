@@ -3,6 +3,8 @@ setlocal
 set "WORKER_ROOT=%~dp0..\render_v2\worker"
 set "PYTHONPATH=%WORKER_ROOT%\src"
 
+rem Project updates/downloads have no worker time limit; the GUI timer applies to Unreal rendering.
+
 rem Prefer a local worker environment, then the Windows Python launcher.
 set "WORKER_PYTHON=%WORKER_ROOT%\.venv\Scripts\python.exe"
 set "WORKER_PYTHON_ARGS="

@@ -116,6 +116,33 @@ class RegisteredSyncTests(unittest.TestCase):
         with self.assertRaises(PreparationCancelled):
             self.sync(cancelled=lambda: True)
 
+    def run_slow_download(self, *, cancel_during_download=False, **kwargs):
+        original = ProjectWorkspace.run
+        clock = [100.0]
+        if cancel_during_download:
+            kwargs["cancelled"] = lambda: clock[0] > 100.0
+
+        def slow_lfs(instance, args, cwd, **options):
+            if args[:2] == ["lfs", "pull"]:
+                clock[0] += 7201
+            return original(instance, args, cwd, **options)
+
+        with patch("portable_pipe_tools.render_farm.project_workspace.time.monotonic", side_effect=lambda: clock[0]), \
+             patch.object(ProjectWorkspace, "run", slow_lfs):
+            return self.sync(**kwargs)
+
+    def test_download_longer_than_two_hours_has_no_default_deadline(self):
+        expected = self.git(self.checkout, "rev-parse", "HEAD")
+        self.assertEqual(expected, self.run_slow_download())
+
+    def test_explicit_preparation_timeout_is_still_enforced(self):
+        with self.assertRaisesRegex(PreparationError, "Project preparation timed out"):
+            self.run_slow_download(timeout_seconds=1800)
+
+    def test_unlimited_slow_download_still_honors_cancellation(self):
+        with self.assertRaises(PreparationCancelled):
+            self.run_slow_download(cancel_during_download=True)
+
     def test_lfs_failure_is_not_ignored(self):
         original = ProjectWorkspace.run
         def fail_lfs(instance, args, cwd, **kwargs):

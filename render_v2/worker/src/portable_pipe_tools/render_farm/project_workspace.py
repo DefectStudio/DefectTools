@@ -69,11 +69,13 @@ def project_lock(path: Path):
 class ProjectWorkspace:
     def __init__(self, root: Path, *, progress: Callable[[str], None] = print,
                  cancelled: Callable[[], bool] = lambda: False,
-                 timeout_seconds: float = 7200, cache_roots: tuple[Path, ...] = (),
+                 timeout_seconds: float | None = 7200, cache_roots: tuple[Path, ...] = (),
                  discovery_roots: tuple[Path, ...] | None = None):
         self.root = Path(root).resolve()
-        if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
-            raise ValueError("Preparation timeout must be a positive finite number")
+        if timeout_seconds is not None and (
+                type(timeout_seconds) not in (int, float)
+                or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+            raise ValueError("Preparation timeout must be a positive finite number or None")
         self.progress = progress
         self.cancelled = cancelled
         self.timeout_seconds = timeout_seconds
@@ -144,7 +146,7 @@ class ProjectWorkspace:
     def acquire(self, project: ProjectDefinition, *, engine: Path | None = None):
         self.root.mkdir(parents=True, exist_ok=True)
         with project_lock(self.root / ".locks" / f"{project.project_id}.lock"):
-            self.deadline = time.monotonic() + self.timeout_seconds
+            self.deadline = 0.0 if self.timeout_seconds is None else time.monotonic() + self.timeout_seconds
             existing = self._discover(project)
             if existing is not None:
                 lock_path = Path(self.run(["rev-parse", "--git-path", "render-worker.lock"], existing, capture=True))
@@ -227,7 +229,7 @@ class ProjectWorkspace:
         return PreparedProject(project, checkout, uproject, commit, selected_engine)
 
     def prepare(self, project: ProjectDefinition, *, engine: Path | None = None) -> PreparedProject:
-        self.deadline = time.monotonic() + self.timeout_seconds
+        self.deadline = 0.0 if self.timeout_seconds is None else time.monotonic() + self.timeout_seconds
         self.check_cancelled()
         projects = self.root / "projects"
         projects.mkdir(parents=True, exist_ok=True)
