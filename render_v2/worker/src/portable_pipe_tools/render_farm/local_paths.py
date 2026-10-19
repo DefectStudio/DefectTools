@@ -204,19 +204,26 @@ def find_existing_output_targets(
 ) -> list[Path]:
     output_root = _absolute_path(worker_output_directory)
     existing: list[Path] = []
+    outputs = job.get("outputs")
+    if not isinstance(outputs, dict):
+        outputs = {}
 
-    mp4_path = mp4_output_path(job, output_root)
-    if mp4_path is not None and path_exists_with_retry(mp4_path):
-        existing.append(mp4_path)
+    # Disabled outputs are preserved and must not block an unrelated render.
+    # Keep checking both formats for legacy jobs without explicit output flags.
+    if outputs.get("mp4", True) is True:
+        mp4_path = mp4_output_path(job, output_root)
+        if mp4_path is not None and path_exists_with_retry(mp4_path):
+            existing.append(mp4_path)
 
-    exr_folder = exr_output_folder(job, output_root)
-    if exr_folder is not None and path_exists_with_retry(exr_folder):
-        contents = retry_transient_windows_lock(
-            lambda: list(exr_folder.iterdir()),
-            description=f"Inspect existing render output {exr_folder}",
-        )
-        if contents:
-            existing.append(exr_folder)
+    if outputs.get("exr", True) is True:
+        exr_folder = exr_output_folder(job, output_root)
+        if exr_folder is not None and path_exists_with_retry(exr_folder):
+            contents = retry_transient_windows_lock(
+                lambda: list(exr_folder.iterdir()),
+                description=f"Inspect existing render output {exr_folder}",
+            )
+            if contents:
+                existing.append(exr_folder)
 
     return existing
 

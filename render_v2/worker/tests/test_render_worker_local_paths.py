@@ -149,6 +149,49 @@ class RenderWorkerLocalPathTests(unittest.TestCase):
 
         self.assertTrue(mp4.exists())
 
+    def test_mp4_only_overwrite_preserves_existing_exrs(self) -> None:
+        for overwrite_exr in (False, True):
+            with self.subTest(overwrite_exr=overwrite_exr):
+                job = self._job()
+                job["outputs"] = {"mp4": True, "exr": False, "hero": True}
+                job[OVERWRITE_EXISTING_MP4_FIELD] = True
+                job[OVERWRITE_EXISTING_EXR_FIELD] = overwrite_exr
+                output, _ = resolve_worker_output_directory(job, self.show_root)
+                output.mkdir(parents=True, exist_ok=True)
+                mp4 = output / "BSH_000_0030_beauty_v017.mp4"
+                mp4.write_bytes(b"old render")
+                exr_folder = output / "BSH_000_0030_beauty_v017"
+                exr_folder.mkdir(exist_ok=True)
+                exr = exr_folder / "BSH_000_0030_beauty_v017.1001.exr"
+                exr.write_bytes(b"existing EXR")
+
+                self.assertEqual(find_existing_output_targets(job, output), [mp4])
+                mapping = prepare_worker_output_mapping(job, self.farm_root)
+
+                self.assertEqual(output, mapping.worker_output_directory)
+                self.assertFalse(mp4.exists())
+                self.assertEqual(exr.read_bytes(), b"existing EXR")
+
+    def test_exr_only_overwrite_preserves_existing_mp4(self) -> None:
+        job = self._job()
+        job["outputs"] = {"mp4": False, "exr": True, "hero": False}
+        job[OVERWRITE_EXISTING_MP4_FIELD] = True
+        job[OVERWRITE_EXISTING_EXR_FIELD] = True
+        output, _ = resolve_worker_output_directory(job, self.show_root)
+        output.mkdir(parents=True)
+        mp4 = output / "BSH_000_0030_beauty_v017.mp4"
+        mp4.write_bytes(b"existing MP4")
+        exr_folder = output / "BSH_000_0030_beauty_v017"
+        exr_folder.mkdir()
+        (exr_folder / "BSH_000_0030_beauty_v017.1001.exr").write_bytes(b"old EXR")
+
+        self.assertEqual(find_existing_output_targets(job, output), [exr_folder])
+        mapping = prepare_worker_output_mapping(job, self.farm_root)
+
+        self.assertEqual(output, mapping.worker_output_directory)
+        self.assertFalse(exr_folder.exists())
+        self.assertEqual(mp4.read_bytes(), b"existing MP4")
+
     def test_legacy_job_defaults_to_overwriting_mp4_and_exr_folder(self) -> None:
         job = self._job()
         output, _ = resolve_worker_output_directory(job, self.show_root)
