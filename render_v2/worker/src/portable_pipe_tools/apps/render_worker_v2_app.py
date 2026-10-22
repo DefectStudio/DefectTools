@@ -50,6 +50,7 @@ from portable_pipe_tools.render_farm.worker_setup import check_worker_setup
 from portable_pipe_tools.render_farm.engine_discovery import find_installed_unreal_editor
 from portable_pipe_tools.render_farm.registered_render import render_registered_job
 from portable_pipe_tools.render_farm.registered_claims import RegisteredQueueWorker
+from portable_pipe_tools.render_farm.preparation_errors import is_disk_space_error
 from portable_pipe_tools.render_farm.v2_gui_settings import (
     load_or_detect_unreal_editor,
     save_unreal_editor_preference,
@@ -92,7 +93,7 @@ DEFAULT_RENDER_TIMEOUT_HOURS = DEFAULT_RENDER_TIMEOUT_SECONDS / SECONDS_PER_HOUR
 MINIMUM_RENDER_TIMEOUT_HOURS = 0.25
 MAXIMUM_RENDER_TIMEOUT_HOURS = 24.0
 AUTOMATIC_START_DELAY_MS = 250
-PERIODIC_UPDATE_INTERVAL_MS = 10 * 60 * 1_000
+PERIODIC_UPDATE_INTERVAL_MS = 2 * 60 * 1_000
 
 HEARTBEAT_STATUS_BY_STAGE = {
     WorkerStage.STOPPED: "stopped",
@@ -185,7 +186,8 @@ class ListenerConfiguration:
 
 
 class RenderWorkerV2App:
-    def __init__(self, *, settings_path: Path | None = None) -> None:
+    def __init__(self, *, settings_path: Path | None = None,
+                 automatic_updates: bool = True, auto_start: bool = False) -> None:
         self.settings_path = settings_path or default_settings_path()
         self.root = tk.Tk()
         self.root.title("Render Worker V2 — Automatic Claims")
@@ -230,13 +232,17 @@ class RenderWorkerV2App:
 
         self._busy = False
         self._closing = False
-        self._startup_update_complete = True
+        self._automatic_updates_enabled = automatic_updates
+        self._auto_start_after_update = auto_start
+        self._startup_update_complete = not automatic_updates
         self._restart_pending = False
+        self._restart_requires_active_listener = False
         self._exit_code = 0
         self._worker_git_branch = ""
         self._worker_git_commit = ""
         self._worker_heartbeat: WorkerHeartbeat | None = None
         self._stop_requested_remotely = False
+        self._disk_space_stop_reason: str | None = None
         self._listener_state = ContinuousWorkerState()
         self._listener_configuration: ListenerConfiguration | None = None
         self._listener_after_id: str | None = None
@@ -303,6 +309,8 @@ class RenderWorkerV2App:
         self._log(
             f"Project animation sprites: {DEFAULT_ANIMATION_SPRITE_FOLDER}"
         )
+        if automatic_updates:
+            self._startup_update_after_id = self.root.after(0, self._begin_startup_update_check)
 
     def _build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=12)
@@ -605,7 +613,8 @@ class RenderWorkerV2App:
             f"branch={git_pull.branch}, commit={git_pull.commit_after[:12]}"
         )
         self._refresh_control_states()
-        self._schedule_automatic_start()
+        if self._auto_start_after_update:
+            self._schedule_automatic_start()
 
     def _startup_update_failed(self, error: Exception) -> None:
         self.status_var.set("Update check failed — worker controls are disabled")
@@ -626,10 +635,17 @@ class RenderWorkerV2App:
 
     def _restart_after_update(self) -> None:
         self._restart_after_id = None
+        if self._disk_space_stop_reason or (
+            self._restart_requires_active_listener
+            and (not self._listener_state.active or self._listener_state.stop_requested)
+        ):
+            self.status_var.set("Update installed — reopen worker to load it")
+            self._log("Update restart canceled because the worker was stopped.")
+            return
         self._shutdown_application(RENDER_WORKER_RESTART_EXIT_CODE)
 
     def _schedule_automatic_start(self) -> None:
-        if self._closing or self._automatic_start_after_id is not None:
+        if self._closing or self._disk_space_stop_reason or self._automatic_start_after_id is not None:
             return
         self.status_var.set("Ready — starting worker automatically")
         self._log(
@@ -643,13 +659,15 @@ class RenderWorkerV2App:
 
     def _automatic_start_worker(self) -> None:
         self._automatic_start_after_id = None
-        if self._closing:
+        if self._closing or self._disk_space_stop_reason:
             return
         self._start_worker(require_confirmation=False)
 
     def _schedule_periodic_update_check(self) -> None:
         if (
             self._closing
+            or not self._automatic_updates_enabled
+            or self._disk_space_stop_reason
             or self._restart_pending
             or not self._listener_state.active
             or self._periodic_update_after_id is not None
@@ -699,6 +717,7 @@ class RenderWorkerV2App:
                 f"commit={git_pull.commit_before[:12]} -> "
                 f"{git_pull.commit_after[:12]}"
             )
+            self._restart_pending = True
             if not self._listener_state.active or self._listener_state.stop_requested:
                 self.status_var.set("Update installed — reopen worker to load it")
                 self._log(
@@ -708,7 +727,7 @@ class RenderWorkerV2App:
                 self._refresh_control_states()
                 return
 
-            self._restart_pending = True
+            self._restart_requires_active_listener = True
             self.status_var.set("Render Worker updated while waiting — restarting")
             self._log(
                 "Restarting while idle so the newly pulled worker code is loaded."
@@ -728,6 +747,9 @@ class RenderWorkerV2App:
         self._schedule_periodic_update_check()
 
     def _periodic_update_failed(self, error: Exception) -> None:
+        if is_disk_space_error(error):
+            self._stop_for_disk_space(error)
+            return
         self._log(
             "Periodic update check warning: "
             f"{type(error).__name__}: {error}. The worker will keep listening "
@@ -1031,6 +1053,7 @@ class RenderWorkerV2App:
 
         self._worker_heartbeat = heartbeat
         self._stop_requested_remotely = False
+        self._disk_space_stop_reason = None
         self._listener_configuration = configuration
         self._listener_empty_checks = 0
         self._remember_farm_root(configuration.farm_root)
@@ -1062,6 +1085,8 @@ class RenderWorkerV2App:
         if configuration.dispatcher_client is not None:
             self._log(f"Worker-local D1 job spool: {heartbeat_root}")
         self._schedule_listener_check_now()
+        if self._automatic_updates_enabled:
+            self._schedule_periodic_update_check()
 
     def _stop_worker(self) -> None:
         if self._registered_render_active:
@@ -1139,6 +1164,11 @@ class RenderWorkerV2App:
             self._worker_heartbeat.request_stop()
         action = self._listener_state.request_stop()
         self._cancel_listener_countdown()
+        if getattr(self, "_periodic_update_after_id", None) is not None:
+            self._cancel_periodic_update_check()
+        if getattr(self, "_automatic_start_after_id", None) is not None:
+            self.root.after_cancel(self._automatic_start_after_id)
+            self._automatic_start_after_id = None
         self._refresh_control_states()
         if action is ListenerAction.FINISH_CURRENT:
             self.status_var.set(
@@ -1197,6 +1227,9 @@ class RenderWorkerV2App:
                 self._schedule_listener_wait()
 
     def _listener_job_check_finished(self, result: WorkerResult | None) -> None:
+        if result is not None and is_disk_space_error(result.reason):
+            self._stop_for_disk_space(result.reason, job_check_finished=True)
+            return
         if result is not None and result.status == "stopped":
             self._stop_requested_remotely = True
             self._listener_state.request_stop()
@@ -1216,13 +1249,37 @@ class RenderWorkerV2App:
             self._schedule_listener_wait()
 
     def _listener_job_check_errored(self, error: Exception) -> None:
-        del error
+        if is_disk_space_error(error):
+            self._stop_for_disk_space(error, job_check_finished=True)
+            return
         action = self._listener_state.finish_job_check_with_error()
         if action is ListenerAction.STOPPED:
             self._finish_listener_stopped()
             return
         self._log("Automatic worker will continue listening after the error.")
         self._schedule_listener_wait()
+
+    def _stop_for_disk_space(self, error: Exception | str, *, job_check_finished=False) -> None:
+        self._disk_space_stop_reason = "Worker stopped: free disk space, then Start Worker to resume."
+        self._log(f"Disk-space failure: {error}. Automatic retries are disabled until you restart the worker.")
+        # Cancellation is in memory: a full control disk must not block stopping.
+        action = self._listener_state.request_stop()
+        self._cancel_listener_countdown()
+        if getattr(self, "_periodic_update_after_id", None) is not None:
+            self._cancel_periodic_update_check()
+        if getattr(self, "_automatic_start_after_id", None) is not None:
+            self.root.after_cancel(self._automatic_start_after_id)
+            self._automatic_start_after_id = None
+        if self._worker_heartbeat is not None:
+            self._worker_heartbeat.request_stop()
+        if job_check_finished:
+            self._listener_state.finish_job_check_with_error()
+            self._finish_listener_stopped()
+        elif action is ListenerAction.STOPPED:
+            self._finish_listener_stopped()
+        else:
+            self.status_var.set("Disk space exhausted — stopping the current operation")
+            self._refresh_control_states()
 
     def _schedule_listener_wait(self) -> None:
         configuration = self._listener_configuration
@@ -1273,7 +1330,8 @@ class RenderWorkerV2App:
         self._set_worker_stage(WorkerStage.STOPPED)
         self._clear_current_job()
         self.status_var.set(
-            "Worker stopped remotely" if stopped_remotely else "Worker stopped"
+            getattr(self, "_disk_space_stop_reason", None)
+            or ("Worker stopped remotely" if stopped_remotely else "Worker stopped")
         )
         self._refresh_control_states()
         self._log(
@@ -1467,6 +1525,9 @@ class RenderWorkerV2App:
                 "Worker heartbeat warning: "
                 f"{type(error).__name__}: {error}"
             )
+            if is_disk_space_error(error) and self._listener_state.active:
+                self._stop_for_disk_space(error)
+                return
         if (
             heartbeat.remote_stop_event.is_set()
             and self._listener_state.active

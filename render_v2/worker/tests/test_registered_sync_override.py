@@ -304,12 +304,34 @@ class RegisteredSyncOverrideTests(unittest.TestCase):
         self.assertEqual(payload, (self.checkout / "texture.bin").read_bytes())
         self.assert_clean()
 
+    def test_override_same_commit_reuses_complete_uncached_lfs_asset(self):
+        self.git(self.seed, "lfs", "install", "--local")
+        self.git(self.seed, "lfs", "track", "*.bin")
+        payload = b"complete existing render asset without cache copy\x00" * 100
+        (self.seed / "texture.bin").write_bytes(payload)
+        latest = self.publish("Publish LFS asset")
+        self.assertEqual(latest, self.sync(override_local_changes=True))
+        media = self.checkout / ".git/lfs/objects"
+        shutil.rmtree(media)
+        # Local attributes must not turn an LFS payload into an ordinary large
+        # Git blob while override refreshes stat metadata before the reset.
+        (self.checkout / ".gitattributes").write_text("*.bin -filter -diff -merge -text\n")
+        original = ProjectWorkspace.run
+        def forbid_download(instance, args, cwd, **kwargs):
+            if args[:2] in (["lfs", "fetch"], ["lfs", "pull"]):
+                self.fail("Override must reuse complete local assets without downloading cache copies")
+            return original(instance, args, cwd, **kwargs)
+        with patch.object(ProjectWorkspace, "run", forbid_download):
+            self.assertEqual(latest, self.sync(override_local_changes=True))
+        self.assertEqual(payload, (self.checkout / "texture.bin").read_bytes())
+        self.assertFalse(any(path.is_file() for path in media.rglob("*")))
+
     def test_override_lfs_failure_still_refuses_to_render(self):
         (self.checkout / "asset.txt").write_text("opted-in local difference")
         original = ProjectWorkspace.run
 
         def fail_lfs(instance, args, cwd, **kwargs):
-            if args[:2] == ["lfs", "pull"]:
+            if args[:2] == ["lfs", "ls-files"]:
                 raise PreparationError("Fixture LFS download failed")
             return original(instance, args, cwd, **kwargs)
 
@@ -324,7 +346,7 @@ class RegisteredSyncOverrideTests(unittest.TestCase):
         def status_with_stale_metadata(instance, args, cwd, **kwargs):
             nonlocal hydrated
             result = original(instance, args, cwd, **kwargs)
-            if args[:2] == ["lfs", "pull"]:
+            if args[:2] == ["lfs", "ls-files"]:
                 hydrated = True
             if hydrated and args[0] == "status" and kwargs.get("capture"):
                 return " M asset.txt"
@@ -341,7 +363,7 @@ class RegisteredSyncOverrideTests(unittest.TestCase):
 
         def edit_during_lfs(instance, args, cwd, **kwargs):
             result = original(instance, args, cwd, **kwargs)
-            if args[:2] == ["lfs", "pull"]:
+            if args[:2] == ["lfs", "ls-files"]:
                 (self.checkout / "asset.txt").write_text("real concurrent artist edit")
             return result
 
@@ -473,7 +495,7 @@ class RegisteredSyncOverrideTests(unittest.TestCase):
         def stage_different_pin_during_lfs(instance, args, cwd, **kwargs):
             nonlocal changed
             result = original(instance, args, cwd, **kwargs)
-            if (not changed and args[:2] == ["lfs", "pull"]
+            if (not changed and args[:2] == ["lfs", "ls-files"]
                     and Path(cwd).resolve() == self.checkout.resolve()):
                 changed = True
                 self.git(plugin, "checkout", "--detach", alternate)

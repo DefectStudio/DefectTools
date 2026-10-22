@@ -26,7 +26,7 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         registration = ProjectRegistration.from_dict(dict(project_id="Show", name="Show",
             local_uproject=str(self.path / "Show.uproject"), render_farm_root=str(self.path / "Show/renderFarm")))
         save_registered_projects([registration], self.settings)
-        self.app = RenderWorkerV2App(settings_path=self.settings)
+        self.app = RenderWorkerV2App(settings_path=self.settings, automatic_updates=False)
         self.dispatcher = Mock()
         self.enterContext(patch.object(self.app, "_get_dispatcher_client", return_value=self.dispatcher))
         self.app.root.withdraw()
@@ -85,7 +85,7 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         saved["override_local_changes"] = True
         self.settings.write_text(json.dumps(saved))
         self.app._shutdown_application(0)
-        self.app = RenderWorkerV2App(settings_path=self.settings)
+        self.app = RenderWorkerV2App(settings_path=self.settings, automatic_updates=False)
         self.app.root.withdraw()
         self.assertFalse(self.app.override_local_changes_var.get())
 

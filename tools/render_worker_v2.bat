@@ -2,6 +2,8 @@
 setlocal
 set "WORKER_ROOT=%~dp0..\render_v2\worker"
 set "PYTHONPATH=%WORKER_ROOT%\src"
+set "PORTABLE_PIPE_TOOLS_REPO_ROOT=%~dp0.."
+set "DEFECT_WORKER_V2_BATCH_RESTART=1"
 
 rem Project updates/downloads have no worker time limit; the GUI timer applies to Unreal rendering.
 
@@ -39,6 +41,10 @@ if errorlevel 1 (
 "%WORKER_PYTHON%" %WORKER_PYTHON_ARGS% -m portable_pipe_tools.apps.worker_v2_launcher %*
 set "WORKER_EXIT_CODE=%ERRORLEVEL%"
 popd
+if "%WORKER_EXIT_CODE%"=="75" (
+    set "DEFECT_WORKER_V2_RESUME_AFTER_UPDATE=1"
+    goto launch
+)
 if not "%WORKER_EXIT_CODE%"=="0" (
     echo Render Worker V2 exited with code %WORKER_EXIT_CODE%.
     echo Details: %LOCALAPPDATA%\DefectStudio\RenderWorkerV2\logs\worker.log

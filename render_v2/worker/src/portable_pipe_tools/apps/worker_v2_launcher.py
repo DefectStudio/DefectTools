@@ -1,4 +1,4 @@
-"""Python V2 GUI and explicit diagnostic commands; no automatic work on launch."""
+"""Python V2 GUI, safe automatic updates and explicit diagnostic commands."""
 from __future__ import annotations
 
 import argparse
@@ -23,6 +23,10 @@ from portable_pipe_tools.render_farm.company_connection import load_company_work
 from portable_pipe_tools.render_farm.worker_setup import check_worker_setup
 from portable_pipe_tools.render_farm.registered_render import main as render_main
 from portable_pipe_tools.render_farm.v2_gui_settings import save_unreal_editor_preference, save_dropbox_root
+from portable_pipe_tools.render_farm.self_update import (
+    BATCH_RESTART_ENVIRONMENT_VARIABLE, RENDER_WORKER_RESTART_EXIT_CODE,
+    RESUME_AFTER_UPDATE_ENVIRONMENT_VARIABLE,
+)
 from tkinter import messagebox
 
 VERSION = "2.0.0-preview.1"
@@ -73,7 +77,7 @@ def self_test(report_path: Path) -> int:
             project.write_text("{}", encoding="utf-8")
             save_dropbox_root(str(show.parent), settings)
             for launch in range(2):
-                app = RenderWorkerV2App(settings_path=settings)
+                app = RenderWorkerV2App(settings_path=settings, automatic_updates=False)
                 app.root.withdraw()
                 app.root.update_idletasks()
                 if app._listener_state.active or app._busy:
@@ -177,6 +181,22 @@ def claim_once(argv):
     return 0 if report["success"] else 1
 
 
+def run_gui() -> int:
+    resume = os.environ.pop(RESUME_AFTER_UPDATE_ENVIRONMENT_VARIABLE, "") == "1"
+    code = RenderWorkerV2App(auto_start=resume).run()
+    if code != RENDER_WORKER_RESTART_EXIT_CODE or os.environ.get(BATCH_RESTART_ENVIRONMENT_VARIABLE) == "1":
+        return code
+    # Direct `python -m` launches have no batch supervisor. Start a fresh
+    # interpreter so newly installed modules are loaded, then close this one.
+    environment = dict(os.environ, **{RESUME_AFTER_UPDATE_ENVIRONMENT_VARIABLE: "1"})
+    subprocess.Popen(
+        [sys.executable, "-m", "portable_pipe_tools.apps.worker_v2_launcher"],
+        cwd=os.getcwd(), env=environment,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    return 0
+
+
 def main(argv=None):
     multiprocessing.freeze_support()
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -204,7 +224,7 @@ def main(argv=None):
         if argv:
             raise ValueError("Supported commands: --self-test REPORT, check-setup, render, claim-once; omit arguments to open the GUI.")
         logging.info("Starting Render Worker V2 %s", VERSION)
-        return RenderWorkerV2App().run()
+        return run_gui()
     except Exception as error:
         logging.exception("Render Worker V2 failed")
         if not argv:

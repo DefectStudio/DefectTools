@@ -3,7 +3,13 @@
 Run the V2 worker, configure the engine and project registrations, and click **Start Worker**.
 V2 uses only its company SQL dispatcher; there is no coordination-mode switch or
 connection button. The Python distribution includes the company worker profile.
-The worker stays stopped on application launch. Its name defaults to the machine
+The worker checks its own source for updates on application launch. An ordinary
+launch with no update stays stopped; an installed update restarts into fresh
+code and automatically starts listening with the saved configuration. While
+listening, it checks again every two minutes when idle, never during a job.
+Manual Stop and disk-space stops prevent an in-flight update check from
+restarting job processing. The session-only override option starts off again
+after a restart. The worker's name defaults to the machine
 name plus `-V2`; name, polling interval, and render timeout
 persist after starting. **Stop Worker** interrupts the current render and stops
 polling. The existing retry/blacklist behavior handles unsuccessful jobs.
@@ -33,8 +39,22 @@ and published render logs, including when the job is for a show other than the
 first registration. It uses the minimal managed Unreal runtime and a project
 lock. Before each render it pulls the registered project's current branch from
 its upstream using fast-forward only, updates the project's pinned submodules,
-and downloads LFS assets. Updates run while the SQL lease is maintained. Failed
-updates do not launch Unreal and follow the existing job-failure policy. Stop
+and verifies LFS assets against their required sizes and SHA-256 identifiers.
+Complete local assets are reused without creating a second copy in the LFS
+cache. Only missing asset content is downloaded; another verified local copy or
+an existing valid cache object is reused when available. Git comparisons use a
+cache-free LFS clean filter, so status checks do not repopulate the cache.
+
+Preparation checks the combined space needed for downloads and materialized
+files on each project/cache volume, as well as the control/log volume, keeping
+a 1 GiB reserve. Root and recursive submodule assets are planned together before
+downloading. Git commands also stop when an affected volume runs critically low.
+Disk-space failures stop automatic listening and require **Start Worker** after
+space has been freed. A failed local status write does not prevent a best-effort
+failure report to SQL; the worker stops even when that report cannot be delivered.
+
+Updates run while the SQL lease is maintained. Failed
+updates do not launch Unreal. Other failures follow the existing job-failure policy. Stop
 cancels the update process. Missing-project cloning, repository discovery and
 main-project branch switching do not run. Git command logs are in the job's
 `project-sync/logs` folder; the pulled commit is recorded in job/result metadata.

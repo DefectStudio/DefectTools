@@ -17,7 +17,7 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.path = Path(temporary.name)
         self.settings = self.path / "worker.json"
         save_unreal_editor_preference("", self.settings)
-        self.app = RenderWorkerV2App(settings_path=self.settings)
+        self.app = RenderWorkerV2App(settings_path=self.settings, automatic_updates=False)
         self.app.root.withdraw()
         self.addCleanup(lambda: self.app._shutdown_application(0))
 
@@ -84,7 +84,7 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.assert_setup_visibility(True)
         self.app._set_busy(False, "Ready")
         self.app._shutdown_application(0)
-        self.app = RenderWorkerV2App(settings_path=self.settings)
+        self.app = RenderWorkerV2App(settings_path=self.settings, automatic_updates=False)
         self.app.root.withdraw()
         self.assertTrue(self.app.project_list.editing_enabled)
         self.assertEqual("normal", str(self.app.worker_name_entry.cget("state")))
@@ -130,7 +130,7 @@ class WorkerFirstSetupTests(unittest.TestCase):
         self.assertEqual("normal", str(self.app.unreal_editor_cmd_entry.cget("state")))
         self.app._save_engine_field()
         self.app._shutdown_application(0)
-        self.app = RenderWorkerV2App(settings_path=self.settings)
+        self.app = RenderWorkerV2App(settings_path=self.settings, automatic_updates=False)
         self.app.root.withdraw()
         self.assert_setup_visibility(False, root_is_set=True)
 

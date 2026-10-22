@@ -19,11 +19,18 @@ validation reports are historical evidence, not current installation instruction
 
 Unreal, project assets and required plugins must already be installed. The worker
 injects its minimal Unreal runtime into the selected project at render time.
-Automatic project discovery/downloads, startup and updates are not implemented
-by the registered-project GUI. As of September 30, Git for Windows with Git LFS
+Automatic project discovery/downloads are not implemented by the
+registered-project GUI. As of September 30, Git for Windows with Git LFS
 and preconfigured repository authentication are required. Before each render,
 the current project branch is fast-forwarded to its configured upstream, pinned
 submodules are updated recursively, and root/submodule LFS assets are hydrated.
+Existing assets are verified by size and SHA-256 and reused in place, even when
+their hidden LFS cache copies are absent. Preparation downloads only missing
+content and checks the required download/checkout space plus a 1 GiB reserve on
+each affected volume before downloading. Git status/diff checks do not populate
+the LFS cache. A disk-space failure stops automatic listening; free space and
+click **Start Worker** to resume. The worker also stops if a disk-full error
+prevents writing its local job status, rather than claiming that job repeatedly.
 Local tracked edits, detached HEAD, missing upstream, divergence, failed downloads
 or authentication errors block rendering. Untracked files are preserved and no
 branch switch, reset, clean or stash is performed with **Override Local Changes** off. The clone/download checkbox
@@ -46,7 +53,7 @@ managed plugin worktrees removed by the remote are also removed, including their
 local caches. Both queued jobs and manual job-file renders use this option; job
 data cannot enable it.
 
-LFS assets are still downloaded, and actual tracked contents, staged state,
+Missing LFS assets are still downloaded, and actual tracked contents, staged state,
 branch/commit and plugin pins are verified before Unreal starts. Stat-only Git
 modified flags do not block this opt-in path when the actual contents match.
 Missing upstreams, detached HEAD, fetch/LFS failures and unresolved content
@@ -80,6 +87,16 @@ To distribute runtime changes, stop the worker, update its **Defect Tools**
 source checkout, and reopen `tools/render_worker_v2.bat`. The worker installs
 the updated runtime in the registered Unreal project before its next job.
 Updating only the Unreal project does not update the worker's runtime source.
+
+The GUI checks the Defect Tools source checkout on opening, and every two
+minutes while an active worker is idle. It preserves the existing clean-checkout
+and fast-forward-only update safeguards and does not update during a job.
+When an update is installed, the launcher starts a fresh Python process and
+automatically starts listening with the saved engine, projects, and worker name.
+A normal launch that finds no update stays stopped. Manual Stop and a disk-space
+stop take priority over an automatic restart. Override Local Changes remains
+session-only and unchecked after restarting. Diagnostic self-tests perform no
+update checks or automatic job processing.
 
 ## Niagara render finalization workaround
 

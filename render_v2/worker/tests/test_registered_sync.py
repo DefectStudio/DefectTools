@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -123,7 +124,7 @@ class RegisteredSyncTests(unittest.TestCase):
             kwargs["cancelled"] = lambda: clock[0] > 100.0
 
         def slow_lfs(instance, args, cwd, **options):
-            if args[:2] == ["lfs", "pull"]:
+            if args[:2] == ["lfs", "ls-files"]:
                 clock[0] += 7201
             return original(instance, args, cwd, **options)
 
@@ -146,12 +147,36 @@ class RegisteredSyncTests(unittest.TestCase):
     def test_lfs_failure_is_not_ignored(self):
         original = ProjectWorkspace.run
         def fail_lfs(instance, args, cwd, **kwargs):
-            if args[:2] == ["lfs", "pull"]:
+            if args[:2] == ["lfs", "ls-files"]:
                 raise PreparationError("LFS unavailable")
             return original(instance, args, cwd, **kwargs)
         with patch.object(ProjectWorkspace, "run", fail_lfs):
             with self.assertRaisesRegex(PreparationError, "LFS unavailable"):
                 self.sync()
+
+    def test_complete_lfs_asset_with_pruned_cache_is_reused_by_repeated_normal_sync(self):
+        self.git(self.seed, "lfs", "install", "--local")
+        self.git(self.seed, "lfs", "track", "*.bin")
+        payload = b"complete existing asset without cache copy\x00" * 100
+        (self.seed / "texture.bin").write_bytes(payload)
+        latest = self.commit(self.seed, "Publish LFS asset")
+        self.git(self.seed, "push")
+        self.assertEqual(latest, self.sync())
+        media = self.checkout / ".git/lfs/objects"
+        shutil.rmtree(media)
+        original = ProjectWorkspace.run
+        def forbid_download(instance, args, cwd, **kwargs):
+            if args[:2] in (["lfs", "fetch"], ["lfs", "pull"]):
+                self.fail("Complete local assets must not be downloaded into cache")
+            return original(instance, args, cwd, **kwargs)
+        with patch.object(ProjectWorkspace, "run", forbid_download):
+            self.assertEqual(latest, self.sync())
+            self.assertEqual(latest, self.sync())
+        self.assertEqual(payload, (self.checkout / "texture.bin").read_bytes())
+        self.assertFalse(any(path.is_file() for path in media.rglob("*")))
+        (self.checkout / "texture.bin").write_bytes(b"artist's real changed asset")
+        with self.assertRaisesRegex(PreparationError, "local changes"):
+            self.sync()
 
     def test_clean_published_submodule_drift_returns_to_project_pin(self):
         source, checkout, _ = self.add_plugin()

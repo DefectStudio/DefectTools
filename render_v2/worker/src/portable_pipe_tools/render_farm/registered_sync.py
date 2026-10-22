@@ -6,7 +6,10 @@ import shutil
 import time
 
 from portable_pipe_tools.app_runtime import prepare_external_programs
-from portable_pipe_tools.render_farm.project_workspace import ProjectWorkspace, PreparationError, PreparationCancelled
+from portable_pipe_tools.render_farm.project_workspace import (
+    ProjectWorkspace, PreparationError, PreparationCancelled, InsufficientDiskSpace,
+)
+from portable_pipe_tools.render_farm.lfs_hydration import check_disk_space, hydrate_registered_assets, registered_git_config
 
 SYNC_POLICY = "latest_branch_git_pull_ff_only"
 OVERRIDE_SYNC_POLICY = "latest_branch_override_local_changes"
@@ -47,6 +50,35 @@ def _validate_reset_paths(run, directory, commit):
                 _contained_checkout(directory, directory / name)
 
 
+def _prime_override_lfs_stat(run, directory, commit="HEAD", names=None):
+    """Keep correct LFS payloads through a destructive reset without cache copies.
+
+    Only the explicitly authorized override path stages these canonical pointer
+    blobs. Normal mode never stages files. Attribute sourcing prevents local
+    .gitattributes edits from turning payloads into ordinary large Git blobs.
+    """
+    if names is None:
+        metadata = run([f"--attr-source={commit}", "ls-files", "--modified", "-z", "--",
+                        ":(attr:filter=lfs)"], cwd=directory, capture=True)
+        names = [name for name in metadata.split("\0") if name]
+    batch, length = [], 0
+    for name in [*names, None]:
+        if name is not None:
+            _contained_checkout(directory, directory / name)
+            # Deleted assets (or a file replaced by a directory/symlink) have
+            # no payload to preserve. Let the authorized reset restore them;
+            # add --renormalize itself fails on a deleted tracked filename.
+            if not (directory / name).is_file() or (directory / name).is_symlink():
+                continue
+        if batch and (name is None or length + len(name) + 1 > 6000):
+            run([f"--attr-source={commit}", "--literal-pathspecs", "add", "--renormalize", "--", *batch],
+                cwd=directory)
+            batch, length = [], 0
+        if name is not None:
+            batch.append(name)
+            length += len(name) + 1
+
+
 def _override_update(run, directory, uproject, branch, progress):
     remote = run(["config", "--get", f"branch.{branch}.remote"], capture=True)
     merge_ref = run(["config", "--get-all", f"branch.{branch}.merge"], capture=True)
@@ -75,8 +107,10 @@ def _override_update(run, directory, uproject, branch, progress):
     _contained_checkout(directory, directory)
     progress(f"Discarding local tracked changes and untracked files in {directory}; no backup. Routine cleaning excludes ignored files.")
     for checkout, _, _ in reversed(children):
+        _prime_override_lfs_stat(run, checkout)
         run(["reset", "--hard", "--no-recurse-submodules", "HEAD"], cwd=checkout)
         run(["clean", "-fd"], cwd=checkout)
+    _prime_override_lfs_stat(run, directory, commit)
     run(["reset", "--hard", "--no-recurse-submodules", commit])
     run(["clean", "-fd"])
     return commit, children
@@ -120,10 +154,10 @@ def _remove_obsolete_submodules(run, directory, old_children, update, progress, 
         run(update)
 
 
-def _verify_override_update(run, directory, branch, commit, progress):
+def _verify_tracked_update(run, directory, branch, commit):
     if (run(["branch", "--show-current"], capture=True) != branch
             or run(["rev-parse", "HEAD"], capture=True) != commit):
-        raise PreparationError("Project branch or commit changed during override preparation; rendering was not started.")
+        raise PreparationError("Project branch or commit changed during project preparation; rendering was not started.")
     # Compare actual filtered contents, not just stat metadata. LFS hydration
     # can leave status reporting M for an unchanged pointer-backed asset.
     options = ["--exit-code", "--no-ext-diff", "--no-textconv"]
@@ -134,6 +168,10 @@ def _verify_override_update(run, directory, branch, commit, progress):
             raise PreparationError(f"Submodule {checkout.relative_to(directory.resolve())} does not match its project pin.")
         run(["diff", "--cached", *options, "--ignore-submodules=none", "HEAD", "--"], cwd=checkout)
         run(["diff", *options, "--ignore-submodules=all", "HEAD", "--"], cwd=checkout)
+
+
+def _verify_override_update(run, directory, branch, commit, progress):
+    _verify_tracked_update(run, directory, branch, commit)
     for checkout in [directory, *(child[0] for child in _submodule_checkouts(run, directory))]:
         remaining = run(["ls-files", "--others", "--exclude-standard", "--directory", "--no-empty-directory", "-z"],
                         cwd=checkout, capture=True)
@@ -152,12 +190,26 @@ def _check_local_changes(run, directory):
     # worktree differences never hides an intentionally staged gitlink change.
     changes = run(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all"], capture=True)
     staged = run(["diff", "--cached", "--name-only", "--ignore-submodules=none"], capture=True)
+    if changes and not staged:
+        # A pointer replaced by the identical filtered payload can retain an M
+        # stat flag. Verify the actual contents, without staging or caching them.
+        try:
+            run(["diff", "--exit-code", "--no-ext-diff", "--no-textconv",
+                 "--ignore-submodules=all", "HEAD", "--"])
+        except (PreparationCancelled, InsufficientDiskSpace):
+            raise
+        except PreparationError:
+            pass
+        else:
+            changes = ""
     if changes or staged:
         raise PreparationError("Project or submodule has local changes; preserving them and refusing to render. "
                                + " | ".join((changes or staged).splitlines()[:5]))
     submodule_changes = run(["submodule", "foreach", "--quiet", "--recursive",
                             'changes=$(git status --porcelain --untracked-files=no --ignore-submodules=all) || exit; '
                             'staged=$(git diff --cached --name-only --ignore-submodules=none) || exit; '
+                            'if test -n "$changes" && test -z "$staged"; then '
+                            'git diff --quiet --no-ext-diff --no-textconv --ignore-submodules=all HEAD -- && changes=; fi; '
                             'if test -n "$changes$staged"; then '
                             'printf "Submodule %s has local changes\\n%s\\n%s\\n" "$displaypath" "$changes" "$staged"; fi'],
                            capture=True)
@@ -196,11 +248,13 @@ def sync_registered_project(uproject: Path, log_root: Path, *, progress=print,
     """Sync without a time limit by default; caller holds the project lock through render."""
     if type(override_local_changes) is not bool:
         raise ValueError("Override Local Changes must be enabled explicitly with a boolean.")
+    check_disk_space([(Path(uproject).parent, 0), (Path(log_root), 0)])
     prepare_external_programs()
     if not shutil.which("git"):
         raise PreparationError("Install Git for Windows with Git LFS before rendering registered projects.")
     commands = ProjectWorkspace(log_root, progress=progress, cancelled=cancelled,
-                                timeout_seconds=timeout_seconds, discovery_roots=())
+                                timeout_seconds=timeout_seconds, discovery_roots=(),
+                                git_config=registered_git_config())
     commands.deadline = 0.0 if timeout_seconds is None else time.monotonic() + timeout_seconds
     directory = Path(uproject).parent
     def run(args, cwd=None, capture=False):
@@ -239,13 +293,19 @@ def sync_registered_project(uproject: Path, log_root: Path, *, progress=print,
     run(update)
     if override_local_changes:
         _remove_obsolete_submodules(run, directory, old_children, update, progress, cancelled)
-    progress("Downloading current Git LFS assets")
-    run(["lfs", "pull", "--include=", "--exclude="])
-    run(["submodule", "foreach", "--recursive", "git lfs pull --include= --exclude="])
+    progress("Verifying local Git LFS assets before downloading missing content")
+    checkouts = [directory, *(child[0] for child in _submodule_checkouts(run, directory))]
+    materialized = hydrate_registered_assets(run, checkouts, log_root, progress=progress,
+                                             check_cancelled=commands.check_cancelled,
+                                             monitor_paths=lambda paths: setattr(commands, "disk_paths", paths))
     if override_local_changes:
+        for checkout in checkouts:
+            names = [asset.name for asset in materialized if asset.checkout == checkout]
+            _prime_override_lfs_stat(run, checkout, names=names)
         _verify_override_update(run, directory, branch, commit, progress)
     elif run(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=untracked"], capture=True):
-        raise PreparationError("Project has tracked changes after updating; rendering was not started.")
+        _verify_tracked_update(run, directory, branch, commit)
+        progress("Git reports modified-file metadata, but tracked contents and plugin pins match the fetched version; verification passed.")
     commands.check_cancelled()
     if not Path(uproject).is_file():
         raise PreparationError("The registered .uproject was removed by the update. Update its registration before rendering.")

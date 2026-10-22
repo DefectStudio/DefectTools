@@ -19,14 +19,12 @@ from uuid import uuid4
 from portable_pipe_tools.render_farm.project_catalog import ProjectDefinition
 from portable_pipe_tools.render_farm.project_discovery import default_search_roots, editor_project_candidates, repository_candidates, repository_identity
 from portable_pipe_tools.render_farm.unreal_runner import resolve_unreal_editor_cmd
+from portable_pipe_tools.render_farm.preparation_errors import (
+    InsufficientDiskSpace, PreparationCancelled, PreparationError, is_disk_space_error,
+)
 
 
-class PreparationError(RuntimeError):
-    pass
-
-
-class PreparationCancelled(PreparationError):
-    pass
+MINIMUM_GIT_FREE_BYTES = 64 * 1024 ** 2
 
 
 @dataclass(frozen=True)
@@ -70,7 +68,9 @@ class ProjectWorkspace:
     def __init__(self, root: Path, *, progress: Callable[[str], None] = print,
                  cancelled: Callable[[], bool] = lambda: False,
                  timeout_seconds: float | None = 7200, cache_roots: tuple[Path, ...] = (),
-                 discovery_roots: tuple[Path, ...] | None = None):
+                 discovery_roots: tuple[Path, ...] | None = None,
+                 git_config: dict[str, str] | None = None,
+                 disk_paths: tuple[Path, ...] = ()):
         self.root = Path(root).resolve()
         if timeout_seconds is not None and (
                 type(timeout_seconds) not in (int, float)
@@ -80,6 +80,8 @@ class ProjectWorkspace:
         self.cancelled = cancelled
         self.timeout_seconds = timeout_seconds
         self.cache_roots = cache_roots
+        self.git_config = dict(git_config or {})
+        self.disk_paths = tuple(disk_paths)
         self.discovery_roots = default_search_roots() if discovery_roots is None else discovery_roots
         self.deadline = 0.0
 
@@ -91,11 +93,19 @@ class ProjectWorkspace:
 
     def run(self, args: list[str], cwd: Path, *, capture: bool = False) -> str:
         self.check_cancelled()
+        self._check_emergency_disk_space(cwd)
         logs = self.root / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         log = logs / f"git-{uuid4().hex}.log"
         environment = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never",
                            GIT_LFS_SKIP_SMUDGE="1")
+        config_count = int(environment.get("GIT_CONFIG_COUNT", "0"))
+        for key, value in self.git_config.items():
+            environment[f"GIT_CONFIG_KEY_{config_count}"] = key
+            environment[f"GIT_CONFIG_VALUE_{config_count}"] = value
+            config_count += 1
+        if self.git_config:
+            environment["GIT_CONFIG_COUNT"] = str(config_count)
         if not capture:
             environment["GIT_LFS_FORCE_PROGRESS"] = "1"
         with log.open("wb") as output:
@@ -106,9 +116,13 @@ class ProjectWorkspace:
             )
             started = time.monotonic()
             next_update = started + 30
+            next_disk_check = started + 1
             try:
                 while process.poll() is None:
                     self.check_cancelled()
+                    if time.monotonic() >= next_disk_check:
+                        self._check_emergency_disk_space(cwd)
+                        next_disk_check = time.monotonic() + 1
                     if time.monotonic() >= next_update:
                         detail = ""
                         if args[:2] in (["lfs", "fetch"], ["lfs", "checkout"]):
@@ -139,8 +153,28 @@ class ProjectWorkspace:
             with log.open("rb") as stream:
                 stream.seek(max(0, log.stat().st_size - 2500))
                 detail = stream.read().decode("utf-8", errors="replace")
-            raise PreparationError(f"Git {args[0]} failed; log: {log}\n{detail}")
+            error_type = InsufficientDiskSpace if is_disk_space_error(detail) else PreparationError
+            raise error_type(f"Git {args[0]} failed; log: {log}\n{detail}")
         return log.read_text(encoding="utf-8", errors="replace").strip() if capture else ""
+
+    def _check_emergency_disk_space(self, cwd: Path) -> None:
+        # Preflight accounts for planned downloads. This catches another process
+        # filling either the project or control/log volume during a Git command.
+        checked_devices = set()
+        for requested in (Path(cwd), self.root, *self.disk_paths):
+            existing = Path(requested)
+            while not existing.exists() and existing.parent != existing:
+                existing = existing.parent
+            device = existing.stat().st_dev
+            if device in checked_devices:
+                continue
+            checked_devices.add(device)
+            free = shutil.disk_usage(existing).free
+            if free < MINIMUM_GIT_FREE_BYTES:
+                raise InsufficientDiskSpace(
+                    f"{existing} has only {free / 1024 ** 2:.0f} MiB free. "
+                    "Free disk space and restart the worker."
+                )
 
     @contextmanager
     def acquire(self, project: ProjectDefinition, *, engine: Path | None = None):

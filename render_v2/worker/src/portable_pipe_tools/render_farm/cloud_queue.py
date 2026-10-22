@@ -28,6 +28,9 @@ from portable_pipe_tools.render_farm.queue import (
     utc_now,
     write_json_atomic,
 )
+from portable_pipe_tools.render_farm.preparation_errors import (
+    InsufficientDiskSpace, is_disk_space_error,
+)
 
 
 PENDING_DISPATCHER_UPDATE_FILENAME = "dispatcher_update_pending.json"
@@ -222,6 +225,8 @@ def publish_cloud_render_logs(
             if (claimed_folder / filename).is_file()
         ]
     except OSError as error:
+        if is_disk_space_error(error):
+            raise
         LOGGER.warning(
             "Could not inspect worker-local render logs for Dropbox publication: "
             "%s: %s",
@@ -249,6 +254,8 @@ def publish_cloud_render_logs(
             transient_winerrors=TRANSIENT_WINDOWS_PUBLISH_ERRORS,
         )
     except OSError as error:
+        if is_disk_space_error(error):
+            raise
         LOGGER.warning(
             "Could not create the Dropbox render log folder; D1 job completion "
             "will continue: %s (%s: %s)",
@@ -264,6 +271,8 @@ def publish_cloud_render_logs(
         try:
             _copy_render_log_atomic(source, destination)
         except OSError as error:
+            if is_disk_space_error(error):
+                raise
             LOGGER.warning(
                 "Could not publish render log to Dropbox; D1 job completion "
                 "will continue: %s -> %s (%s: %s)",
@@ -356,23 +365,48 @@ def finish_cloud_claimed_job(
     result_details: dict[str, Any] | None,
     shared_farm_root: str | Path,
 ) -> Path:
+    if not success and is_disk_space_error(reason):
+        # Do not require a writable local receipt before releasing this lease.
+        # The affected listener stops; another healthy worker can retry the job.
+        try:
+            dispatcher.fail_job(
+                lease.job_id, worker_name, lease.lease_token,
+                reason=reason, retryable=True,
+                result=dict(result_details or {}, job_snapshot=dict(job)),
+            )
+        except Exception:
+            LOGGER.exception("Could not report disk-space failure to Dispatcher; worker will stop")
+        raise InsufficientDiskSpace(reason)
     cloud_result = _cloud_result_details(
         claimed_folder,
         job,
         result_details,
     )
-    published_logs = (
-        publish_cloud_render_logs(
-            claimed_folder=claimed_folder,
-            shared_farm_root=shared_farm_root,
-            job=job,
-            worker_name=worker_name,
-            success=success,
+    try:
+        published_logs = (
+            publish_cloud_render_logs(
+                claimed_folder=claimed_folder,
+                shared_farm_root=shared_farm_root,
+                job=job,
+                worker_name=worker_name,
+                success=success,
+            )
+            if result_details is not None
+            and result_details.get("simulated") is False
+            else []
         )
-        if result_details is not None
-        and result_details.get("simulated") is False
-        else []
-    )
+    except OSError as error:
+        if is_disk_space_error(error):
+            try:
+                _send_pending_update(dispatcher, {
+                    "action": "complete" if success else "fail",
+                    "job_id": lease.job_id, "worker_id": worker_name,
+                    "lease_token": lease.lease_token, "reason": reason,
+                    "retryable": not success, "result": cloud_result,
+                })
+            except Exception:
+                LOGGER.exception("Could not report terminal result after log archive disk filled; worker will stop")
+        raise
     if published_logs:
         archive_folder = published_logs[0].parent
         cloud_result["dropbox_render_log_relative_folder"] = archive_folder.relative_to(
@@ -393,16 +427,24 @@ def finish_cloud_claimed_job(
         "result": cloud_result,
         "invalid_package": False,
     }
-    write_json_atomic(_pending_path(claimed_folder), pending)
-    final_folder = finish_claimed_job(
-        paths=paths,
-        claimed_folder=claimed_folder,
-        job=job,
-        worker_name=worker_name,
-        success=success,
-        reason=reason,
-        result_details=cloud_result,
-    )
+    try:
+        write_json_atomic(_pending_path(claimed_folder), pending)
+        final_folder = finish_claimed_job(
+            paths=paths,
+            claimed_folder=claimed_folder,
+            job=job,
+            worker_name=worker_name,
+            success=success,
+            reason=reason,
+            result_details=cloud_result,
+        )
+    except OSError as error:
+        if is_disk_space_error(error):
+            try:
+                _send_pending_update(dispatcher, pending)
+            except Exception:
+                LOGGER.exception("Could not report terminal result after local disk filled; worker will stop")
+        raise
     final_pending_path = _pending_path(final_folder)
     _send_pending_update(dispatcher, pending)
     _remove_pending_update(final_pending_path)
