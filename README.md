@@ -14,6 +14,14 @@ Initial goals:
 - Support file-server pipeline workflows
 - Eventually integrate with ClickUp, Natron, DaVinci, RV, SyncSketch, and UnrealTools
 
+## Manual Render Hero Chooser
+
+Launch `tools\ManualRenderHeroChooser.bat` to choose a show, sequence, and rendered
+EXR version for each shot, then click its **Hero** button to replace that shot's
+Unreal `_hero` folder with unversioned frames. The source render is kept, and the
+folder/show/sequence choices are remembered locally. Unreal does not need to be
+open. See [usage and copy behavior](docs/ManualRenderHeroChooser.md).
+
 ## Auto Comp - Natron GUI concept
 
 Launch the static Auto Comp interface concept:
