@@ -24,9 +24,12 @@ registered-project GUI. As of September 30, Git for Windows with Git LFS
 and preconfigured repository authentication are required. Before each render,
 the current project branch is fast-forwarded to its configured upstream, pinned
 submodules are updated recursively, and root/submodule LFS assets are hydrated.
-Existing assets are verified by size and SHA-256 and reused in place, even when
-their hidden LFS cache copies are absent. Preparation downloads only missing
-content and checks the required download/checkout space plus a 1 GiB reserve on
+Complete assets use the same checkout's Git index and change tracking, combined
+with LFS checkout metadata and expected-size checks. The worker reuses those
+files in place without a repeated full-project hash scan, even when their hidden
+cache copies are absent. Small or suspect files are verified by content; sources
+are checked by SHA-256 when restoring missing files. Preparation downloads only
+missing content and checks the required download/checkout space plus a 1 GiB reserve on
 each affected volume before downloading. Git status/diff checks do not populate
 the LFS cache. A disk-space failure stops automatic listening; free space and
 click **Start Worker** to resume. The worker also stops if a disk-full error
@@ -91,7 +94,8 @@ Updating only the Unreal project does not update the worker's runtime source.
 The GUI checks the Defect Tools source checkout on opening, and every two
 minutes while an active worker is idle. It preserves the existing clean-checkout
 and fast-forward-only update safeguards and does not update during a job.
-When an update is installed, the launcher starts a fresh Python process and
+When an update is installed, or an idle check finds that another tool updated
+the checkout beyond the running worker's version, the launcher starts a fresh Python process and
 automatically starts listening with the saved engine, projects, and worker name.
 A normal launch that finds no update stays stopped. Manual Stop and a disk-space
 stop take priority over an automatic restart. Override Local Changes remains

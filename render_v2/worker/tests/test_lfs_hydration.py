@@ -1,5 +1,6 @@
 """Regression coverage for reusing assets after an LFS cache was pruned."""
 
+import base64
 import hashlib
 import io
 import json
@@ -13,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from portable_pipe_tools.render_farm.lfs_hydration import (
-    check_disk_space, hydrate_registered_assets, registered_git_config,
+    _file_matches, check_disk_space, hydrate_registered_assets, registered_git_config,
 )
 from portable_pipe_tools.render_farm.lfs_pointer_filter import pointer_for_chunks, process_filter
 from portable_pipe_tools.render_farm.project_workspace import InsufficientDiskSpace, PreparationError
@@ -28,13 +29,15 @@ class LfsHydrationTests(unittest.TestCase):
         self.payload = b"Already downloaded project asset\x00" * 100
         self.oid = hashlib.sha256(self.payload).hexdigest()
         self.items = []
+        self.index_flags = {}
         self.calls = []
 
-    def asset(self, name, *, content=None, cached=False):
+    def asset(self, name, *, content=None, cached=False, native_checkout=False):
         path = self.root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(self.payload if content is None else content)
-        self.items.append({"name": name, "oid": self.oid, "size": len(self.payload)})
+        self.items.append({"name": name, "oid": self.oid, "size": len(self.payload),
+                           "checkout": native_checkout})
         if cached:
             self.cache_asset()
         return path
@@ -51,6 +54,9 @@ class LfsHydrationTests(unittest.TestCase):
             return json.dumps({"files": self.items})
         if args == ["lfs", "env"]:
             return f"LocalMediaDir={self.media}"
+        if args == ["ls-files", "-v", "-z"]:
+            return "".join(f"{self.index_flags.get(item['name'], 'H')} {item['name']}\0"
+                           for item in self.items if self.index_flags.get(item["name"], "H") is not None)
         if args[:2] == ["lfs", "fetch"]:
             self.cache_asset()
             return ""
@@ -65,6 +71,149 @@ class LfsHydrationTests(unittest.TestCase):
         self.hydrate()
         self.assertEqual(self.payload, path.read_bytes())
         self.assertFalse(self.media.exists())
+        self.assertFalse(any(args[:2] == ["lfs", "fetch"] for args in self.calls))
+
+    def test_git_verified_full_asset_is_reused_without_reading_or_hashing(self):
+        path = self.asset("Content/already here.uasset", native_checkout=True)
+        with patch.object(Path, "open", side_effect=AssertionError("Full assets must not be reread")), \
+             patch("portable_pipe_tools.render_farm.lfs_hydration.hashlib.sha256",
+                   side_effect=AssertionError("Git already verified this asset")):
+            self.assertEqual([], self.hydrate(git_verified=True))
+        self.assertEqual(self.payload, path.read_bytes())
+        self.assertFalse(self.media.exists())
+        self.assertFalse(any(args[:2] == ["lfs", "fetch"] for args in self.calls))
+
+    def test_native_checkout_flag_alone_does_not_bypass_strict_verification(self):
+        path = self.asset("Content/changed.uasset", content=b"x" * len(self.payload), native_checkout=True)
+        with self.assertRaisesRegex(PreparationError, "local changes"):
+            self.hydrate()
+        self.assertEqual(b"x" * len(self.payload), path.read_bytes())
+        self.assertFalse(self.media.exists())
+
+    def test_assumed_unchanged_and_skip_worktree_edits_are_not_trusted(self):
+        path = self.asset("Content/hidden edit.uasset", content=b"x" * len(self.payload), native_checkout=True)
+        for flag in ("h", "S", "s"):
+            with self.subTest(flag=flag):
+                self.index_flags[path.relative_to(self.root).as_posix()] = flag
+                with self.assertRaisesRegex(PreparationError, "local changes"):
+                    self.hydrate(git_verified=True)
+        self.assertEqual(b"x" * len(self.payload), path.read_bytes())
+        self.assertFalse(self.media.exists())
+
+    def test_only_flagged_assets_are_hashed_and_unchanged_ones_are_reused(self):
+        self.asset("Content/normal full asset.uasset", native_checkout=True)
+        suspect = self.asset("Content/flagged full asset.uasset", native_checkout=True)
+        for flag in ("h", "S", "s"):
+            with self.subTest(flag=flag):
+                self.index_flags[suspect.relative_to(self.root).as_posix()] = flag
+                with patch("portable_pipe_tools.render_farm.lfs_hydration._file_matches",
+                           wraps=_file_matches) as matches:
+                    self.hydrate(git_verified=True)
+                self.assertEqual([suspect], [call.args[0] for call in matches.call_args_list])
+        self.assertFalse(self.media.exists())
+        self.assertFalse(any(args[:2] == ["lfs", "fetch"] for args in self.calls))
+        self.assertEqual(3, self.calls.count(["ls-files", "-v", "-z"]))
+
+    def test_asset_missing_from_index_listing_is_not_trusted(self):
+        path = self.asset("Content/missing index entry.uasset", content=b"x" * len(self.payload),
+                          native_checkout=True)
+        self.index_flags[path.relative_to(self.root).as_posix()] = None
+        with self.assertRaisesRegex(PreparationError, "local changes"):
+            self.hydrate(git_verified=True)
+        self.assertEqual(b"x" * len(self.payload), path.read_bytes())
+        self.assertFalse(self.media.exists())
+
+    def test_git_verified_file_without_native_checkout_flag_is_still_hashed(self):
+        path = self.asset("Content/changed.uasset", content=b"x" * len(self.payload))
+        with self.assertRaisesRegex(PreparationError, "local changes"):
+            self.hydrate(git_verified=True)
+        self.assertEqual(b"x" * len(self.payload), path.read_bytes())
+        self.assertFalse(self.media.exists())
+
+    def test_git_verified_wrong_size_asset_is_preserved(self):
+        path = self.asset("Content/changed.uasset", content=b"wrong size", native_checkout=True)
+        with self.assertRaisesRegex(PreparationError, "local changes"):
+            self.hydrate(git_verified=True)
+        self.assertEqual(b"wrong size", path.read_bytes())
+        self.assertFalse(self.media.exists())
+
+    def test_git_verified_missing_file_is_downloaded_and_materialized(self):
+        path = self.asset("Content/missing.uasset", native_checkout=True)
+        path.unlink()
+        self.hydrate(git_verified=True)
+        self.assertEqual(self.payload, path.read_bytes())
+        self.assertTrue(any(args[:2] == ["lfs", "fetch"] for args in self.calls))
+
+    def test_small_pointer_matching_payload_size_is_not_trusted_as_full_content(self):
+        size = next(size for size in range(100, 200)
+                    if len(pointer_for_chunks([b"x" * size])) == size)
+        self.payload = b"x" * size
+        self.oid = hashlib.sha256(self.payload).hexdigest()
+        pointer = pointer_for_chunks([self.payload])
+        path = self.asset("Content/small.uasset", content=pointer, native_checkout=True)
+        self.hydrate(git_verified=True)
+        self.assertEqual(self.payload, path.read_bytes())
+        self.assertTrue(any(args[:2] == ["lfs", "fetch"] for args in self.calls))
+
+    def test_git_reused_copy_source_is_hashed_before_destination_is_replaced(self):
+        self.asset("Content/source.uasset", content=b"x" * len(self.payload), native_checkout=True)
+        pointer = pointer_for_chunks([self.payload])
+        destination = self.asset("Content/destination.uasset", content=pointer)
+        with self.assertRaisesRegex(PreparationError, "changed or is corrupt"):
+            self.hydrate(git_verified=True)
+        self.assertEqual(pointer, destination.read_bytes())
+        self.assertFalse(self.media.exists())
+        self.assertFalse(list(destination.parent.glob(".*.worker-lfs-*.tmp")))
+
+    def test_cancellation_is_checked_before_reading_metadata(self):
+        with self.assertRaisesRegex(PreparationError, "cancelled"):
+            hydrate_registered_assets(self.git_run, [self.root], self.root / "logs",
+                                      progress=lambda _: None,
+                                      check_cancelled=lambda: (_ for _ in ()).throw(PreparationError("cancelled")))
+        self.assertEqual([], self.calls)
+
+    def test_progress_is_reported_inside_a_single_long_content_hash(self):
+        self.payload = b"x" * (9 * 1024 * 1024)
+        self.oid = hashlib.sha256(self.payload).hexdigest()
+        self.asset("Content/large.uasset")
+        messages = []
+        ticks = iter(range(0, 1000, 31))
+        with patch("portable_pipe_tools.render_farm.lfs_hydration.time.monotonic",
+                   side_effect=lambda: next(ticks)):
+            hydrate_registered_assets(self.git_run, [self.root], self.root / "logs",
+                                      progress=messages.append, check_cancelled=lambda: None)
+        self.assertGreaterEqual(sum("Checking local LFS asset 1/1" in message for message in messages), 3)
+
+    def test_git_verified_hydration_rejects_paths_outside_checkout(self):
+        self.items.append({"name": "../outside.uasset", "oid": self.oid,
+                           "size": len(self.payload), "checkout": True})
+        with self.assertRaisesRegex(PreparationError, "Unsafe or invalid"):
+            self.hydrate(git_verified=True)
+        self.assertFalse(any(args[:2] == ["lfs", "fetch"] for args in self.calls))
+
+    def test_git_verified_hydration_rejects_outside_directory_junction(self):
+        outside = tempfile.TemporaryDirectory(prefix="worker-lfs-outside-")
+        self.addCleanup(outside.cleanup)
+        target = Path(outside.name).resolve()
+        pointer = pointer_for_chunks([self.payload])
+        protected = target / "asset.uasset"
+        protected.write_bytes(pointer)
+        link = self.root / "Content"
+        if os.name == "nt":
+            quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+            command = f"New-Item -ItemType Junction -Path {quote(link)} -Value {quote(target)} -ErrorAction Stop | Out-Null"
+            encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
+            result = subprocess.run(["powershell", "-NoProfile", "-EncodedCommand", encoded],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(0, result.returncode, result.stderr)
+        else:
+            link.symlink_to(target, target_is_directory=True)
+        self.addCleanup(lambda: link.unlink() if link.is_symlink() else os.rmdir(link))
+        self.items.append({"name": "Content/asset.uasset", "oid": self.oid,
+                           "size": len(self.payload), "checkout": True})
+        with self.assertRaisesRegex(PreparationError, "Unsafe or invalid"):
+            self.hydrate(git_verified=True)
+        self.assertEqual(pointer, protected.read_bytes())
         self.assertFalse(any(args[:2] == ["lfs", "fetch"] for args in self.calls))
 
     def test_same_size_modified_asset_is_preserved_without_downloading(self):
@@ -204,6 +353,58 @@ class CacheFreeFilterTests(unittest.TestCase):
             asset.write_bytes(b"modified local asset\x00" * 100)
             self.assertIn("asset.bin", git(*args, "status", "--porcelain"))
             self.assertFalse((root / ".git/lfs/objects").exists())
+
+    def test_real_index_flags_cannot_hide_same_size_edits_from_hydration(self):
+        from portable_pipe_tools.render_farm.project_workspace import ProjectWorkspace
+        from portable_pipe_tools.render_farm.registered_sync import _check_local_changes
+        with tempfile.TemporaryDirectory(prefix="worker-hidden-lfs-edit-") as temporary:
+            root = Path(temporary).resolve()
+            environment = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+            def git(*args):
+                result = subprocess.run(["git", "-C", str(root), *args], env=environment,
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(0, result.returncode, result.stderr)
+                return result.stdout
+            git("init", "-b", "main")
+            git("config", "user.name", "Worker test")
+            git("config", "user.email", "worker@example.test")
+            git("lfs", "install", "--local")
+            git("lfs", "track", "*.bin")
+            asset = root / "asset with spaces.bin"
+            payload = b"original" * 1000
+            edited = b"changed!" * 1000
+            asset.write_bytes(payload)
+            git("add", ".")
+            git("commit", "-m", "fixture")
+            media = root / ".git/lfs/objects"
+            shutil.rmtree(media)
+            runner = ProjectWorkspace(root / "logs", git_config=registered_git_config(), discovery_roots=())
+            def run(args, cwd=None, capture=False):
+                return runner.run(args, cwd or root, capture=capture)
+            for flag in ("--assume-unchanged", "--skip-worktree"):
+                with self.subTest(flag=flag):
+                    git("update-index", "--no-assume-unchanged", "--", asset.name)
+                    git("update-index", "--no-skip-worktree", "--", asset.name)
+                    asset.write_bytes(payload)
+                    git("update-index", flag, "--", asset.name)
+                    _check_local_changes(run, root)
+                    with patch("portable_pipe_tools.render_farm.lfs_hydration._file_matches",
+                               wraps=_file_matches) as matches:
+                        hydrate_registered_assets(run, [root], root / "logs", progress=lambda _: None,
+                                                  check_cancelled=lambda: None, git_verified=True)
+                    self.assertEqual([asset], [call.args[0] for call in matches.call_args_list])
+                    # Native LFS metadata can create an empty store directory.
+                    self.assertFalse(any(path.is_file() for path in media.rglob("*")))
+                    asset.write_bytes(edited)
+                    # The ordinary Git checks really do report this hidden edit
+                    # as clean; hydration must verify only the flagged subset.
+                    _check_local_changes(run, root)
+                    self.assertTrue(json.loads(run(["lfs", "ls-files", "--json"], capture=True))["files"][0]["checkout"])
+                    with self.assertRaisesRegex(PreparationError, "local changes"):
+                        hydrate_registered_assets(run, [root], root / "logs", progress=lambda _: None,
+                                                  check_cancelled=lambda: None, git_verified=True)
+                    self.assertEqual(edited, asset.read_bytes())
+                    self.assertFalse(any(path.is_file() for path in media.rglob("*")))
 
     def test_real_targeted_fetch_does_not_download_ready_asset_with_same_basename(self):
         from portable_pipe_tools.render_farm.project_workspace import ProjectWorkspace

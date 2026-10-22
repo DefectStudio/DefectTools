@@ -169,14 +169,28 @@ class RegisteredSyncTests(unittest.TestCase):
             if args[:2] in (["lfs", "fetch"], ["lfs", "pull"]):
                 self.fail("Complete local assets must not be downloaded into cache")
             return original(instance, args, cwd, **kwargs)
-        with patch.object(ProjectWorkspace, "run", forbid_download):
+        with patch.object(ProjectWorkspace, "run", forbid_download), \
+             patch("portable_pipe_tools.render_farm.lfs_hydration._file_matches",
+                   side_effect=AssertionError("Git-verified full assets must not be hashed again by hydration")):
             self.assertEqual(latest, self.sync())
             self.assertEqual(latest, self.sync())
         self.assertEqual(payload, (self.checkout / "texture.bin").read_bytes())
         self.assertFalse(any(path.is_file() for path in media.rglob("*")))
-        (self.checkout / "texture.bin").write_bytes(b"artist's real changed asset")
-        with self.assertRaisesRegex(PreparationError, "local changes"):
-            self.sync()
+        changed = b"X" + payload[1:]
+        (self.checkout / "texture.bin").write_bytes(changed)
+        with patch("portable_pipe_tools.render_farm.registered_sync.hydrate_registered_assets") as hydrate:
+            with self.assertRaisesRegex(PreparationError, "local changes"):
+                self.sync()
+            hydrate.assert_not_called()
+        self.assertEqual(changed, (self.checkout / "texture.bin").read_bytes())
+        self.git(self.checkout, "add", "texture.bin")
+        staged = self.git(self.checkout, "diff", "--cached", "--raw")
+        with patch("portable_pipe_tools.render_farm.registered_sync.hydrate_registered_assets") as hydrate:
+            with self.assertRaisesRegex(PreparationError, "local changes"):
+                self.sync()
+            hydrate.assert_not_called()
+        self.assertEqual(staged, self.git(self.checkout, "diff", "--cached", "--raw"))
+        self.assertEqual(changed, (self.checkout / "texture.bin").read_bytes())
 
     def test_clean_published_submodule_drift_returns_to_project_pin(self):
         source, checkout, _ = self.add_plugin()

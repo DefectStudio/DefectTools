@@ -38,6 +38,7 @@ class WorkerV2UpdateTests(unittest.TestCase):
             "_automatic_start_after_id": None, "_periodic_update_after_id": None,
             "_restart_after_id": None, "_restart_requires_active_listener": False,
             "_active_stage": WorkerStage.WAITING, "_listener_configuration": object(),
+            "_worker_git_commit": "a" * 40,
         }.items():
             setattr(self.app, name, value)
         self.app._listener_state = ContinuousWorkerState()
@@ -113,6 +114,33 @@ class WorkerV2UpdateTests(unittest.TestCase):
         self.assertTrue(self.app._restart_requires_active_listener)
         self.app._restart_after_update()
         self.app._shutdown_application.assert_called_once_with(RENDER_WORKER_RESTART_EXIT_CODE)
+
+    def test_checkout_updated_outside_worker_restarts_loaded_old_code(self):
+        result = update_result()
+        result.git_pull.commit_before = "b" * 40
+        result.git_pull.commit_after = "b" * 40
+        self.app._periodic_update_succeeded(result)
+        self.assertTrue(self.app._restart_pending)
+        self.assertTrue(self.app._restart_requires_active_listener)
+        self.app._schedule_listener_check_now.assert_not_called()
+        self.app.root.after.assert_called_once_with(750, self.app._restart_after_update)
+        self.assertEqual("a" * 40, self.app._worker_git_commit)
+        self.app._restart_after_update()
+        self.app._shutdown_application.assert_called_once_with(RENDER_WORKER_RESTART_EXIT_CODE)
+
+    def test_stop_preserved_when_checkout_updated_outside_worker(self):
+        result = update_result()
+        result.git_pull.commit_before = "b" * 40
+        result.git_pull.commit_after = "b" * 40
+        self.app._listener_state.active = False
+        self.app._periodic_update_succeeded(result)
+        self.assertTrue(self.app._restart_pending)
+        self.app.root.after.assert_not_called()
+        self.app._shutdown_application.assert_not_called()
+        self.assertEqual("a" * 40, self.app._worker_git_commit)
+        self.app._listener_state.start()
+        self.app._periodic_update_succeeded(result)
+        self.app.root.after.assert_called_once_with(750, self.app._restart_after_update)
 
     def test_stop_while_update_is_in_progress_prevents_restart(self):
         self.app._listener_state.active = False

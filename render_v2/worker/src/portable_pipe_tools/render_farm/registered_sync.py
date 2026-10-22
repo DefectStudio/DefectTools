@@ -293,11 +293,12 @@ def sync_registered_project(uproject: Path, log_root: Path, *, progress=print,
     run(update)
     if override_local_changes:
         _remove_obsolete_submodules(run, directory, old_children, update, progress, cancelled)
-    progress("Verifying local Git LFS assets before downloading missing content")
+    progress("Checking Git LFS metadata and looking for missing local assets")
     checkouts = [directory, *(child[0] for child in _submodule_checkouts(run, directory))]
     materialized = hydrate_registered_assets(run, checkouts, log_root, progress=progress,
                                              check_cancelled=commands.check_cancelled,
-                                             monitor_paths=lambda paths: setattr(commands, "disk_paths", paths))
+                                             monitor_paths=lambda paths: setattr(commands, "disk_paths", paths),
+                                             git_verified=True)
     if override_local_changes:
         for checkout in checkouts:
             names = [asset.name for asset in materialized if asset.checkout == checkout]

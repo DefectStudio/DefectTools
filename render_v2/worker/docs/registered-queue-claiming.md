@@ -39,11 +39,14 @@ and published render logs, including when the job is for a show other than the
 first registration. It uses the minimal managed Unreal runtime and a project
 lock. Before each render it pulls the registered project's current branch from
 its upstream using fast-forward only, updates the project's pinned submodules,
-and verifies LFS assets against their required sizes and SHA-256 identifiers.
-Complete local assets are reused without creating a second copy in the LFS
-cache. Only missing asset content is downloaded; another verified local copy or
-an existing valid cache object is reused when available. Git comparisons use a
-cache-free LFS clean filter, so status checks do not repopulate the cache.
+and checks LFS assets using that checkout's existing Git index and change tracking.
+Complete files that pass Git's checks, LFS checkout metadata and expected-size
+checks are reused without rereading every asset or creating cache copies. Small
+or suspect files are verified by content. Only missing asset content is downloaded;
+another local copy or an existing valid cache object is reused when available,
+with SHA-256 verification while restoring it. Git comparisons use a cache-free
+LFS clean filter, so status checks do not repopulate the cache. Metadata and asset
+checks report progress and remain cancellable.
 
 Preparation checks the combined space needed for downloads and materialized
 files on each project/cache volume, as well as the control/log volume, keeping

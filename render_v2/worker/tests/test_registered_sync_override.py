@@ -321,7 +321,9 @@ class RegisteredSyncOverrideTests(unittest.TestCase):
             if args[:2] in (["lfs", "fetch"], ["lfs", "pull"]):
                 self.fail("Override must reuse complete local assets without downloading cache copies")
             return original(instance, args, cwd, **kwargs)
-        with patch.object(ProjectWorkspace, "run", forbid_download):
+        with patch.object(ProjectWorkspace, "run", forbid_download), \
+             patch("portable_pipe_tools.render_farm.lfs_hydration._file_matches",
+                   side_effect=AssertionError("Git-verified full assets must not be hashed again by hydration")):
             self.assertEqual(latest, self.sync(override_local_changes=True))
         self.assertEqual(payload, (self.checkout / "texture.bin").read_bytes())
         self.assertFalse(any(path.is_file() for path in media.rglob("*")))

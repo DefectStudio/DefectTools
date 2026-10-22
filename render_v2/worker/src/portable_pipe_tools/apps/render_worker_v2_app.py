@@ -708,13 +708,15 @@ class RenderWorkerV2App:
         result: RenderWorkerUpdateResult,
     ) -> None:
         git_pull = result.git_pull
+        # A changed checkout does not change code already loaded in this process.
+        # Preserve its revision even when Stop cancels the pending restart.
+        loaded_commit = self._worker_git_commit
         self._worker_git_branch = git_pull.branch
-        self._worker_git_commit = git_pull.commit_after
-        if result.update_installed:
+        if result.update_installed or (loaded_commit and loaded_commit != git_pull.commit_after):
             self._log(
                 "Periodic update installed: "
                 f"branch={git_pull.branch}, "
-                f"commit={git_pull.commit_before[:12]} -> "
+                f"commit={(loaded_commit or git_pull.commit_before)[:12]} -> "
                 f"{git_pull.commit_after[:12]}"
             )
             self._restart_pending = True
@@ -730,7 +732,7 @@ class RenderWorkerV2App:
             self._restart_requires_active_listener = True
             self.status_var.set("Render Worker updated while waiting — restarting")
             self._log(
-                "Restarting while idle so the newly pulled worker code is loaded."
+                "Restarting while idle so the updated worker code is loaded."
             )
             self._refresh_control_states()
             self._restart_after_id = self.root.after(
@@ -739,6 +741,7 @@ class RenderWorkerV2App:
             )
             return
 
+        self._worker_git_commit = git_pull.commit_after
         self._log(
             "Periodic update check found no changes: "
             f"branch={git_pull.branch}, commit={git_pull.commit_after[:12]}"
