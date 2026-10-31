@@ -45,6 +45,10 @@ public:
     UFUNCTION(BlueprintCallable, Category="OnlyClouds|Editor", meta=(DisplayName="Add Cloud Preset"))
     static FOnlyCloudsEditorActionResult AddCloudPreset();
 
+    /** Adds the placed low-fog Blueprint with its saved cemetery recipe and editable volume guide. */
+    UFUNCTION(BlueprintCallable, Category="OnlyClouds|Editor", meta=(DisplayName="Add Low Fog Preset"))
+    static FOnlyCloudsEditorActionResult AddLowFogPreset();
+
     /** Shows the same notification and log message used by the original OnlyClouds menu. */
     UFUNCTION(BlueprintCallable, Category="OnlyClouds|Editor", meta=(DisplayName="Report OnlyClouds Action Result"))
     static void ReportActionResult(const FOnlyCloudsEditorActionResult& Result);

@@ -37,6 +37,7 @@ struct FOnlyCloudsEditorActionResult;
 	DECLARE_FUNCTION(execDescribeRegisteredMenu); \
 	DECLARE_FUNCTION(execExecuteRegisteredMenuAction); \
 	DECLARE_FUNCTION(execReportActionResult); \
+	DECLARE_FUNCTION(execAddLowFogPreset); \
 	DECLARE_FUNCTION(execAddCloudPreset); \
 	DECLARE_FUNCTION(execAddLayeredWorldClouds); \
 	DECLARE_FUNCTION(execAddBasicLightRigg);

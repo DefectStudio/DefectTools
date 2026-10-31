@@ -5,7 +5,9 @@
 		"CloudGeneratorToolsModule.cpp.obj",
 		"UltraDynamicSkyOnlyClouds.cpp.obj",
 		"FlexibleCloudAnimationTest.cpp.obj",
+		"OnlyCloudsDetailEdgeTest.cpp.obj",
 		"OnlyCloudsLayersTest.cpp.obj",
+		"OnlyCloudsLowFogTest.cpp.obj",
 		"OnlyCloudsPlacementTest.cpp.obj",
 		"OnlyCloudsRecipeScaleTest.cpp.obj"
 	],

@@ -301,6 +301,62 @@ DEFINE_FUNCTION(UOnlyCloudsEditorLibrary::execAddLayeredWorldClouds)
 }
 // ********** End Class UOnlyCloudsEditorLibrary Function AddLayeredWorldClouds ********************
 
+// ********** Begin Class UOnlyCloudsEditorLibrary Function AddLowFogPreset ************************
+#ifdef UHT_STATICS
+#error UHT_STATICS already defined
+#endif
+#define UHT_STATICS Z_Construct_UFunction_UOnlyCloudsEditorLibrary_AddLowFogPreset_Statics
+struct UHT_STATICS
+{
+	struct OnlyCloudsEditorLibrary_eventAddLowFogPreset_Parms
+	{
+		FOnlyCloudsEditorActionResult ReturnValue;
+	};
+#if WITH_METADATA
+	static constexpr UECodeGen_Private::FMetaDataPairParam Type_MetaData[] = {
+		{ "Category", "OnlyClouds|Editor" },
+		{ "Comment", "/** Adds the placed low-fog Blueprint with its saved cemetery recipe and editable volume guide. */" },
+		{ "DisplayName", "Add Low Fog Preset" },
+		{ "ModuleRelativePath", "Public/OnlyCloudsEditorLibrary.h" },
+		{ "ToolTip", "Adds the placed low-fog Blueprint with its saved cemetery recipe and editable volume guide." },
+	};
+#endif // WITH_METADATA
+
+// ********** Begin Function AddLowFogPreset constinit property declarations ***********************
+	static const UECodeGen_Private::FStructPropertyParams NewProp_ReturnValue;
+	static const UECodeGen_Private::FPropertyParamsBase* const PropPointers[];
+// ********** End Function AddLowFogPreset constinit property declarations *************************
+	static const UECodeGen_Private::FFunctionParams FuncParams;
+};
+
+// ********** Begin Function AddLowFogPreset Property Definitions **********************************
+const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_ReturnValue = { "ReturnValue", nullptr, (EPropertyFlags)0x0010000000000580, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(OnlyCloudsEditorLibrary_eventAddLowFogPreset_Parms, ReturnValue), Z_Construct_UScriptStruct_FOnlyCloudsEditorActionResult, METADATA_PARAMS(0, nullptr) }; // 191130fa04dd24e65269442c820aded00b0f9f17
+const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] = {
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_ReturnValue,
+};
+static_assert(UE_ARRAY_COUNT(UHT_STATICS::PropPointers) < 2048);
+// ********** End Function AddLowFogPreset Property Definitions ************************************
+const UECodeGen_Private::FFunctionParams UHT_STATICS::FuncParams = { { (FTypeConstructFunc*)Z_Construct_UClass_UOnlyCloudsEditorLibrary, nullptr, "AddLowFogPreset", UHT_STATICS::PropPointers, UE_ARRAY_COUNT(UHT_STATICS::PropPointers), DataSizeOf<UHT_STATICS::OnlyCloudsEditorLibrary_eventAddLowFogPreset_Parms>(), RF_Public|RF_Transient|RF_MarkAsNative, (EFunctionFlags)0x04022401, 0, 0, METADATA_PARAMS(UE_ARRAY_COUNT(UHT_STATICS::Type_MetaData), UHT_STATICS::Type_MetaData)},  };
+static_assert(sizeof(UHT_STATICS::OnlyCloudsEditorLibrary_eventAddLowFogPreset_Parms) < MAX_uint16);
+UFunction* Z_Construct_UFunction_UOnlyCloudsEditorLibrary_AddLowFogPreset(ETypeConstructPhase Phase)
+{
+	static UFunction* ReturnFunction = nullptr;
+	if (!ReturnFunction)
+	{
+		UECodeGen_Private::ConstructUFunction(&ReturnFunction, UHT_STATICS::FuncParams);
+	}
+	return ReturnFunction;
+}
+#undef UHT_STATICS
+DEFINE_FUNCTION(UOnlyCloudsEditorLibrary::execAddLowFogPreset)
+{
+	P_FINISH;
+	P_NATIVE_BEGIN;
+	*(FOnlyCloudsEditorActionResult*)Z_Param__Result=UOnlyCloudsEditorLibrary::AddLowFogPreset();
+	P_NATIVE_END;
+}
+// ********** End Class UOnlyCloudsEditorLibrary Function AddLowFogPreset **************************
+
 // ********** Begin Class UOnlyCloudsEditorLibrary Function DescribeRegisteredMenu *****************
 #ifdef UHT_STATICS
 #error UHT_STATICS already defined
@@ -614,6 +670,7 @@ struct UHT_STATICS
 		{ .NameUTF8 = UTF8TEXT("AddBasicLightRigg"), .Pointer = &UOnlyCloudsEditorLibrary::execAddBasicLightRigg },
 		{ .NameUTF8 = UTF8TEXT("AddCloudPreset"), .Pointer = &UOnlyCloudsEditorLibrary::execAddCloudPreset },
 		{ .NameUTF8 = UTF8TEXT("AddLayeredWorldClouds"), .Pointer = &UOnlyCloudsEditorLibrary::execAddLayeredWorldClouds },
+		{ .NameUTF8 = UTF8TEXT("AddLowFogPreset"), .Pointer = &UOnlyCloudsEditorLibrary::execAddLowFogPreset },
 		{ .NameUTF8 = UTF8TEXT("DescribeRegisteredMenu"), .Pointer = &UOnlyCloudsEditorLibrary::execDescribeRegisteredMenu },
 		{ .NameUTF8 = UTF8TEXT("ExecuteRegisteredMenuAction"), .Pointer = &UOnlyCloudsEditorLibrary::execExecuteRegisteredMenuAction },
 		{ .NameUTF8 = UTF8TEXT("RedoLastEditorTransaction"), .Pointer = &UOnlyCloudsEditorLibrary::execRedoLastEditorTransaction },
@@ -625,6 +682,7 @@ struct UHT_STATICS
 		{ &Z_Construct_UFunction_UOnlyCloudsEditorLibrary_AddBasicLightRigg, "AddBasicLightRigg" }, // 9851459fd6a89c706a513b1dc112d029b1121ec9
 		{ &Z_Construct_UFunction_UOnlyCloudsEditorLibrary_AddCloudPreset, "AddCloudPreset" }, // b4d81e93c464d5ae412cef17d0c43c748514de1c
 		{ &Z_Construct_UFunction_UOnlyCloudsEditorLibrary_AddLayeredWorldClouds, "AddLayeredWorldClouds" }, // 825ab7f16635539ec08d1ae0c8738af7629bc4a3
+		{ &Z_Construct_UFunction_UOnlyCloudsEditorLibrary_AddLowFogPreset, "AddLowFogPreset" }, // 1c9c763b33b8630db8cfd8085fdc16fdab1abbe0
 		{ &Z_Construct_UFunction_UOnlyCloudsEditorLibrary_DescribeRegisteredMenu, "DescribeRegisteredMenu" }, // 71dea94648e8fed34e38be48101e980911f1476f
 		{ &Z_Construct_UFunction_UOnlyCloudsEditorLibrary_ExecuteRegisteredMenuAction, "ExecuteRegisteredMenuAction" }, // d1b2f32239f3bd9cc31b74d7d6a5aa7b12e59060
 		{ &Z_Construct_UFunction_UOnlyCloudsEditorLibrary_RedoLastEditorTransaction, "RedoLastEditorTransaction" }, // 8c22c641dfa76159f364d5a242621250cb679753
@@ -712,10 +770,10 @@ struct UHT_STATICS
 		{ Z_Construct_UScriptStruct_FOnlyCloudsEditorActionResult, Z_Construct_UScriptStruct_FOnlyCloudsEditorActionResult_Statics::NewStructOps, TEXT("OnlyCloudsEditorActionResult"),&Z_Registration_Info_UScriptStruct_FOnlyCloudsEditorActionResult, CONSTRUCT_RELOAD_VERSION_INFO(FStructReloadVersionInfo, sizeof(FOnlyCloudsEditorActionResult), 420557050U) },
 	};
 	static constexpr FClassRegisterCompiledInInfo ClassInfo[] = {
-		{ Z_Construct_UClass_UOnlyCloudsEditorLibrary, TEXT("UOnlyCloudsEditorLibrary"), &Z_Registration_Info_UClass_UOnlyCloudsEditorLibrary, CONSTRUCT_RELOAD_VERSION_INFO(FClassReloadVersionInfo, sizeof(UOnlyCloudsEditorLibrary), 1027779360U) },
+		{ Z_Construct_UClass_UOnlyCloudsEditorLibrary, TEXT("UOnlyCloudsEditorLibrary"), &Z_Registration_Info_UClass_UOnlyCloudsEditorLibrary, CONSTRUCT_RELOAD_VERSION_INFO(FClassReloadVersionInfo, sizeof(UOnlyCloudsEditorLibrary), 1589810903U) },
 	};
 }; // UHT_STATICS 
-static FRegisterCompiledInInfo Z_CompiledInDeferFile_FID_HostProject_Plugins_QuickWidgetTools_Source_OnlyCloudsEditor_Public_OnlyCloudsEditorLibrary_h__Script_OnlyCloudsEditor_a0ccb0cff0c5d5134532158e412f2fb5a41d12bc{
+static FRegisterCompiledInInfo Z_CompiledInDeferFile_FID_HostProject_Plugins_QuickWidgetTools_Source_OnlyCloudsEditor_Public_OnlyCloudsEditorLibrary_h__Script_OnlyCloudsEditor_47f7844cc71038f05423aa9b0db2c3feb794e3c5{
 	TEXT("/Script/OnlyCloudsEditor"),
 	UHT_STATICS::ClassInfo, UE_ARRAY_COUNT(UHT_STATICS::ClassInfo),
 	UHT_STATICS::ScriptStructInfo, UE_ARRAY_COUNT(UHT_STATICS::ScriptStructInfo),

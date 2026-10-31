@@ -8,7 +8,7 @@ public class OnlyCloudsEditor : ModuleRules
         PublicDependencyModuleNames.AddRange(new [] { "Core", "CoreUObject", "Engine" });
         PrivateDependencyModuleNames.AddRange(new [] {
             "CloudGeneratorTools", "UnrealEd", "LevelEditor", "ToolMenus",
-            "Slate", "SlateCore", "EditorFramework", "Json"
+            "Slate", "SlateCore", "EditorFramework", "Json", "UMG", "Blutility"
         });
     }
 }

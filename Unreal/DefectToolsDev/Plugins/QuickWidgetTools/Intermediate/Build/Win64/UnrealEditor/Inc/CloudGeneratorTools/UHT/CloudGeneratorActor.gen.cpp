@@ -41,10 +41,12 @@ CLOUDGENERATORTOOLS_API UEnum* Z_Construct_UEnum_CloudGeneratorTools_ECloudGuide
 CLOUDGENERATORTOOLS_API UEnum* Z_Construct_UEnum_CloudGeneratorTools_ECloudNoiseLayout(ETypeConstructPhase);
 CLOUDGENERATORTOOLS_API UEnum* Z_Construct_UEnum_CloudGeneratorTools_ECloudPreviewQuality(ETypeConstructPhase);
 CLOUDGENERATORTOOLS_API UEnum* Z_Construct_UEnum_CloudGeneratorTools_ECloudStyle(ETypeConstructPhase);
+CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_ALowFogGeneratorActor(ETypeConstructPhase);
 CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_ACloudGeneratorActor(ETypeConstructPhase);
 CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_ACloudGuideActor(ETypeConstructPhase);
 CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_UCloudGuideShapeComponent(ETypeConstructPhase);
 CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_UCloudRecipePreset(ETypeConstructPhase);
+CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_ALowFogGeneratorActor(ETypeConstructPhase);
 // ********** End Same Module References ***********************************************************
 #define UHT_STRUCT_BASE(INIT) UE::CodeGen::ConstInit::TCompiledInObjectPtr<const FStructBaseChain>(UE::Private::AsStructBaseChain(INIT))
 
@@ -64,6 +66,8 @@ struct UHT_STATICS
 		{ "BlueprintType", "true" },
 		{ "Box.DisplayName", "Box" },
 		{ "Box.Name", "ECloudGuideShape::Box" },
+		{ "Cylinder.DisplayName", "Cylinder / Circle" },
+		{ "Cylinder.Name", "ECloudGuideShape::Cylinder" },
 		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
 		{ "Sphere.DisplayName", "Sphere" },
 		{ "Sphere.Name", "ECloudGuideShape::Sphere" },
@@ -72,6 +76,7 @@ struct UHT_STATICS
 	static constexpr UECodeGen_Private::FEnumeratorParam Enumerators[] = {
 		{ "ECloudGuideShape::Sphere", (int64)ECloudGuideShape::Sphere },
 		{ "ECloudGuideShape::Box", (int64)ECloudGuideShape::Box },
+		{ "ECloudGuideShape::Cylinder", (int64)ECloudGuideShape::Cylinder },
 	};
 	static const UECodeGen_Private::FEnumParams EnumParams;
 }; // struct UHT_STATICS 
@@ -483,7 +488,7 @@ struct UHT_STATICS
 // ********** Begin ScriptStruct FCloudGuideRecipe Property Definitions ****************************
 const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_LocalTransform = { "LocalTransform", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudGuideRecipe, LocalTransform), Z_Construct_UScriptStruct_FTransform, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_LocalTransform_MetaData), NewProp_LocalTransform_MetaData) };
 const UECodeGen_Private::FBytePropertyParams UHT_STATICS::NewProp_Shape_Underlying = { "UnderlyingType", nullptr, (EPropertyFlags)0x0000000000000000, UECodeGen_Private::EPropertyGenFlags::Byte, nullptr, nullptr, 1, 0, nullptr, METADATA_PARAMS(0, nullptr) };
-const UECodeGen_Private::FEnumPropertyParams UHT_STATICS::NewProp_Shape = { "Shape", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Enum, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudGuideRecipe, Shape), Z_Construct_UEnum_CloudGeneratorTools_ECloudGuideShape, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Shape_MetaData), NewProp_Shape_MetaData) }; // 6d71168086afd1364f37306fe0b7b4945e7177fa
+const UECodeGen_Private::FEnumPropertyParams UHT_STATICS::NewProp_Shape = { "Shape", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Enum, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudGuideRecipe, Shape), Z_Construct_UEnum_CloudGeneratorTools_ECloudGuideShape, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Shape_MetaData), NewProp_Shape_MetaData) }; // ac0aab7d4520279dc6baac7b87b5d2ead8a0dc07
 const UECodeGen_Private::FBytePropertyParams UHT_STATICS::NewProp_Operation_Underlying = { "UnderlyingType", nullptr, (EPropertyFlags)0x0000000000000000, UECodeGen_Private::EPropertyGenFlags::Byte, nullptr, nullptr, 1, 0, nullptr, METADATA_PARAMS(0, nullptr) };
 const UECodeGen_Private::FEnumPropertyParams UHT_STATICS::NewProp_Operation = { "Operation", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Enum, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudGuideRecipe, Operation), Z_Construct_UEnum_CloudGeneratorTools_ECloudGuideOperation, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Operation_MetaData), NewProp_Operation_MetaData) }; // 8a45f973b54fed74d1a9e7d7bf389916af6abf41
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_SoftnessCm = { "SoftnessCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudGuideRecipe, SoftnessCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_SoftnessCm_MetaData), NewProp_SoftnessCm_MetaData) };
@@ -546,9 +551,9 @@ struct UHT_STATICS
 #if WITH_METADATA
 	static constexpr UECodeGen_Private::FMetaDataPairParam Type_MetaData[] = {
 		{ "BlueprintType", "true" },
-		{ "Comment", "/** Deterministic editable recipe, independent of actor location and render quality. */" },
+		{ "Comment", "/** Deterministic editable recipe, independent of actor placement and sampling-quality mode. */" },
 		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
-		{ "ToolTip", "Deterministic editable recipe, independent of actor location and render quality." },
+		{ "ToolTip", "Deterministic editable recipe, independent of actor placement and sampling-quality mode." },
 	};
 	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_Version_MetaData[] = {
 		{ "Category", "Cloud" },
@@ -578,6 +583,24 @@ struct UHT_STATICS
 		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
 	};
 	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_SkyFill_MetaData[] = {
+		{ "Category", "Cloud" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_VolumeResolution_MetaData[] = {
+		{ "Category", "Cloud" },
+		{ "ClampMax", "512" },
+		{ "ClampMin", "32" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_bEdgeFallOff_MetaData[] = {
+		{ "Category", "Cloud" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_EdgeFallOffDistanceCm_MetaData[] = {
+		{ "Category", "Cloud" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_EdgeFallOffContrast_MetaData[] = {
 		{ "Category", "Cloud" },
 		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
 	};
@@ -749,6 +772,26 @@ struct UHT_STATICS
 		{ "Category", "Cloud" },
 		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
 	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_bGroundFog_MetaData[] = {
+		{ "Category", "Low Fog" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_GroundOffsetCm_MetaData[] = {
+		{ "Category", "Low Fog" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_GroundFadeCm_MetaData[] = {
+		{ "Category", "Low Fog" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_FogHeightCm_MetaData[] = {
+		{ "Category", "Low Fog" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_HeightFalloff_MetaData[] = {
+		{ "Category", "Low Fog" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+	};
 	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_CloudMaterial_MetaData[] = {
 		{ "Category", "Cloud" },
 		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
@@ -764,6 +807,14 @@ struct UHT_STATICS
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_Seed;
 	static const UECodeGen_Private::FStructPropertyParams NewProp_CloudColor;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_SkyFill;
+	static const UECodeGen_Private::FIntPropertyParams NewProp_VolumeResolution;
+	static void NewProp_bEdgeFallOff_SetBit(void* Obj)
+	{
+		((FCloudRecipe*)Obj)->bEdgeFallOff = 1;
+	}
+	static const UECodeGen_Private::FBoolPropertyParams NewProp_bEdgeFallOff;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_EdgeFallOffDistanceCm;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_EdgeFallOffContrast;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_BillowSizeCm;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_BillowDepthCm;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_BillowStrength;
@@ -814,6 +865,15 @@ struct UHT_STATICS
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_InteriorVariation;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_VerticalDensityGradient;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_VerticalReferenceHeightCm;
+	static void NewProp_bGroundFog_SetBit(void* Obj)
+	{
+		((FCloudRecipe*)Obj)->bGroundFog = 1;
+	}
+	static const UECodeGen_Private::FBoolPropertyParams NewProp_bGroundFog;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_GroundOffsetCm;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_GroundFadeCm;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_FogHeightCm;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_HeightFalloff;
 	static const UECodeGen_Private::FSoftObjectPropertyParams NewProp_CloudMaterial;
 	static const UECodeGen_Private::FPropertyParamsBase* const PropPointers[];
 // ********** End ScriptStruct FCloudRecipe constinit property declarations ************************
@@ -827,12 +887,16 @@ struct UHT_STATICS
 // ********** Begin ScriptStruct FCloudRecipe Property Definitions *********************************
 const UECodeGen_Private::FIntPropertyParams UHT_STATICS::NewProp_Version = { "Version", nullptr, (EPropertyFlags)0x0010000000020015, UECodeGen_Private::EPropertyGenFlags::Int, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, Version), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Version_MetaData), NewProp_Version_MetaData) };
 const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_GeneratorScale = { "GeneratorScale", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, GeneratorScale), Z_Construct_UScriptStruct_FVector, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_GeneratorScale_MetaData), NewProp_GeneratorScale_MetaData) };
-const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_Guides_Inner = { "Guides", nullptr, (EPropertyFlags)0x0000000000000000, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, 0, Z_Construct_UScriptStruct_FCloudGuideRecipe, METADATA_PARAMS(0, nullptr) }; // f97f8a0d47be9fa834ac59cc651602ce832a7d7d
-const UECodeGen_Private::FArrayPropertyParams UHT_STATICS::NewProp_Guides = { "Guides", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Array, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, Guides), EArrayPropertyFlags::None, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Guides_MetaData), NewProp_Guides_MetaData) }; // f97f8a0d47be9fa834ac59cc651602ce832a7d7d
+const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_Guides_Inner = { "Guides", nullptr, (EPropertyFlags)0x0000000000000000, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, 0, Z_Construct_UScriptStruct_FCloudGuideRecipe, METADATA_PARAMS(0, nullptr) }; // ad6d052b9a90a9480d91633a8d5c23331bd9b682
+const UECodeGen_Private::FArrayPropertyParams UHT_STATICS::NewProp_Guides = { "Guides", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Array, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, Guides), EArrayPropertyFlags::None, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Guides_MetaData), NewProp_Guides_MetaData) }; // ad6d052b9a90a9480d91633a8d5c23331bd9b682
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_Density = { "Density", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, Density), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Density_MetaData), NewProp_Density_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_Seed = { "Seed", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, Seed), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Seed_MetaData), NewProp_Seed_MetaData) };
 const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_CloudColor = { "CloudColor", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, CloudColor), Z_Construct_UScriptStruct_FLinearColor, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_CloudColor_MetaData), NewProp_CloudColor_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_SkyFill = { "SkyFill", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, SkyFill), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_SkyFill_MetaData), NewProp_SkyFill_MetaData) };
+const UECodeGen_Private::FIntPropertyParams UHT_STATICS::NewProp_VolumeResolution = { "VolumeResolution", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Int, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, VolumeResolution), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_VolumeResolution_MetaData), NewProp_VolumeResolution_MetaData) };
+const UECodeGen_Private::FBoolPropertyParams UHT_STATICS::NewProp_bEdgeFallOff = { "bEdgeFallOff", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Bool | UECodeGen_Private::EPropertyGenFlags::NativeBool, nullptr, nullptr, 1, sizeof(bool), sizeof(FCloudRecipe), &UHT_STATICS::NewProp_bEdgeFallOff_SetBit, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_bEdgeFallOff_MetaData), NewProp_bEdgeFallOff_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_EdgeFallOffDistanceCm = { "EdgeFallOffDistanceCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, EdgeFallOffDistanceCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_EdgeFallOffDistanceCm_MetaData), NewProp_EdgeFallOffDistanceCm_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_EdgeFallOffContrast = { "EdgeFallOffContrast", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, EdgeFallOffContrast), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_EdgeFallOffContrast_MetaData), NewProp_EdgeFallOffContrast_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_BillowSizeCm = { "BillowSizeCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, BillowSizeCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_BillowSizeCm_MetaData), NewProp_BillowSizeCm_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_BillowDepthCm = { "BillowDepthCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, BillowDepthCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_BillowDepthCm_MetaData), NewProp_BillowDepthCm_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_BillowStrength = { "BillowStrength", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, BillowStrength), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_BillowStrength_MetaData), NewProp_BillowStrength_MetaData) };
@@ -879,6 +943,11 @@ const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_WispDirection
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_InteriorVariation = { "InteriorVariation", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, InteriorVariation), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_InteriorVariation_MetaData), NewProp_InteriorVariation_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_VerticalDensityGradient = { "VerticalDensityGradient", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, VerticalDensityGradient), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_VerticalDensityGradient_MetaData), NewProp_VerticalDensityGradient_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_VerticalReferenceHeightCm = { "VerticalReferenceHeightCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, VerticalReferenceHeightCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_VerticalReferenceHeightCm_MetaData), NewProp_VerticalReferenceHeightCm_MetaData) };
+const UECodeGen_Private::FBoolPropertyParams UHT_STATICS::NewProp_bGroundFog = { "bGroundFog", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Bool | UECodeGen_Private::EPropertyGenFlags::NativeBool, nullptr, nullptr, 1, sizeof(bool), sizeof(FCloudRecipe), &UHT_STATICS::NewProp_bGroundFog_SetBit, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_bGroundFog_MetaData), NewProp_bGroundFog_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_GroundOffsetCm = { "GroundOffsetCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, GroundOffsetCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_GroundOffsetCm_MetaData), NewProp_GroundOffsetCm_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_GroundFadeCm = { "GroundFadeCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, GroundFadeCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_GroundFadeCm_MetaData), NewProp_GroundFadeCm_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_FogHeightCm = { "FogHeightCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, FogHeightCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_FogHeightCm_MetaData), NewProp_FogHeightCm_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_HeightFalloff = { "HeightFalloff", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, HeightFalloff), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_HeightFalloff_MetaData), NewProp_HeightFalloff_MetaData) };
 const UECodeGen_Private::FSoftObjectPropertyParams UHT_STATICS::NewProp_CloudMaterial = { "CloudMaterial", nullptr, (EPropertyFlags)0x0014000000000005, UECodeGen_Private::EPropertyGenFlags::SoftObject, nullptr, nullptr, 1, STRUCT_OFFSET(FCloudRecipe, CloudMaterial), Z_Construct_UClass_UMaterialInterface, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_CloudMaterial_MetaData), NewProp_CloudMaterial_MetaData) };
 const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] = {
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_Version,
@@ -889,6 +958,10 @@ const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] 
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_Seed,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_CloudColor,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_SkyFill,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_VolumeResolution,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_bEdgeFallOff,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_EdgeFallOffDistanceCm,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_EdgeFallOffContrast,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_BillowSizeCm,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_BillowDepthCm,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_BillowStrength,
@@ -935,6 +1008,11 @@ const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] 
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_InteriorVariation,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_VerticalDensityGradient,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_VerticalReferenceHeightCm,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_bGroundFog,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_GroundOffsetCm,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_GroundFadeCm,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_FogHeightCm,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_HeightFalloff,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_CloudMaterial,
 };
 static_assert(UE_ARRAY_COUNT(UHT_STATICS::PropPointers) < 2048);
@@ -1011,7 +1089,7 @@ struct UHT_STATICS
 }; // struct UHT_STATICS
 
 // ********** Begin Class UCloudRecipePreset Property Definitions **********************************
-const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_Recipe = { "Recipe", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(UCloudRecipePreset, Recipe), Z_Construct_UScriptStruct_FCloudRecipe, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Recipe_MetaData), NewProp_Recipe_MetaData) }; // 24454c819ca86f61eca43e191606be15fa6d8b92
+const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_Recipe = { "Recipe", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(UCloudRecipePreset, Recipe), Z_Construct_UScriptStruct_FCloudRecipe, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Recipe_MetaData), NewProp_Recipe_MetaData) }; // eac2aac1d182dc0ae3279860db356b445ec4977d
 const UECodeGen_Private::FStrPropertyParams UHT_STATICS::NewProp_Description = { "Description", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Str, nullptr, nullptr, 1, STRUCT_OFFSET(UCloudRecipePreset, Description), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Description_MetaData), NewProp_Description_MetaData) };
 const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] = {
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_Recipe,
@@ -1287,7 +1365,7 @@ struct UHT_STATICS
 // ********** Begin Class ACloudGuideActor Property Definitions ************************************
 const UECodeGen_Private::FObjectPropertyParams UHT_STATICS::NewProp_GuideShape = { "GuideShape", nullptr, (EPropertyFlags)0x01140000000a001d, UECodeGen_Private::EPropertyGenFlags::Object | UECodeGen_Private::EPropertyGenFlags::ObjectPtr, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGuideActor, GuideShape), Z_Construct_UClass_UCloudGuideShapeComponent, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_GuideShape_MetaData), NewProp_GuideShape_MetaData) };
 const UECodeGen_Private::FBytePropertyParams UHT_STATICS::NewProp_Shape_Underlying = { "UnderlyingType", nullptr, (EPropertyFlags)0x0000000000000000, UECodeGen_Private::EPropertyGenFlags::Byte, nullptr, nullptr, 1, 0, nullptr, METADATA_PARAMS(0, nullptr) };
-const UECodeGen_Private::FEnumPropertyParams UHT_STATICS::NewProp_Shape = { "Shape", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Enum, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGuideActor, Shape), Z_Construct_UEnum_CloudGeneratorTools_ECloudGuideShape, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Shape_MetaData), NewProp_Shape_MetaData) }; // 6d71168086afd1364f37306fe0b7b4945e7177fa
+const UECodeGen_Private::FEnumPropertyParams UHT_STATICS::NewProp_Shape = { "Shape", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Enum, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGuideActor, Shape), Z_Construct_UEnum_CloudGeneratorTools_ECloudGuideShape, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Shape_MetaData), NewProp_Shape_MetaData) }; // ac0aab7d4520279dc6baac7b87b5d2ead8a0dc07
 const UECodeGen_Private::FBytePropertyParams UHT_STATICS::NewProp_Operation_Underlying = { "UnderlyingType", nullptr, (EPropertyFlags)0x0000000000000000, UECodeGen_Private::EPropertyGenFlags::Byte, nullptr, nullptr, 1, 0, nullptr, METADATA_PARAMS(0, nullptr) };
 const UECodeGen_Private::FEnumPropertyParams UHT_STATICS::NewProp_Operation = { "Operation", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Enum, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGuideActor, Operation), Z_Construct_UEnum_CloudGeneratorTools_ECloudGuideOperation, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Operation_MetaData), NewProp_Operation_MetaData) }; // 8a45f973b54fed74d1a9e7d7bf389916af6abf41
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_SoftnessCm = { "SoftnessCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGuideActor, SoftnessCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_SoftnessCm_MetaData), NewProp_SoftnessCm_MetaData) };
@@ -1445,7 +1523,7 @@ struct UHT_STATICS
 };
 
 // ********** Begin Function ApplyRecipe Property Definitions **************************************
-const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_Recipe = { "Recipe", nullptr, (EPropertyFlags)0x0010000008000182, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(CloudGeneratorActor_eventApplyRecipe_Parms, Recipe), Z_Construct_UScriptStruct_FCloudRecipe, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Recipe_MetaData), NewProp_Recipe_MetaData) }; // 24454c819ca86f61eca43e191606be15fa6d8b92
+const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_Recipe = { "Recipe", nullptr, (EPropertyFlags)0x0010000008000182, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(CloudGeneratorActor_eventApplyRecipe_Parms, Recipe), Z_Construct_UScriptStruct_FCloudRecipe, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Recipe_MetaData), NewProp_Recipe_MetaData) }; // eac2aac1d182dc0ae3279860db356b445ec4977d
 const UECodeGen_Private::FBoolPropertyParams UHT_STATICS::NewProp_ReturnValue = { "ReturnValue", nullptr, (EPropertyFlags)0x0010000000000580, UECodeGen_Private::EPropertyGenFlags::Bool | UECodeGen_Private::EPropertyGenFlags::NativeBool, nullptr, nullptr, 1, sizeof(bool), sizeof(CloudGeneratorActor_eventApplyRecipe_Parms), &UHT_STATICS::NewProp_ReturnValue_SetBit, METADATA_PARAMS(0, nullptr) };
 const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] = {
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_Recipe,
@@ -1501,7 +1579,7 @@ struct UHT_STATICS
 };
 
 // ********** Begin Function CaptureRecipe Property Definitions ************************************
-const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_ReturnValue = { "ReturnValue", nullptr, (EPropertyFlags)0x0010000000000580, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(CloudGeneratorActor_eventCaptureRecipe_Parms, ReturnValue), Z_Construct_UScriptStruct_FCloudRecipe, METADATA_PARAMS(0, nullptr) }; // 24454c819ca86f61eca43e191606be15fa6d8b92
+const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_ReturnValue = { "ReturnValue", nullptr, (EPropertyFlags)0x0010000000000580, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(CloudGeneratorActor_eventCaptureRecipe_Parms, ReturnValue), Z_Construct_UScriptStruct_FCloudRecipe, METADATA_PARAMS(0, nullptr) }; // eac2aac1d182dc0ae3279860db356b445ec4977d
 const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] = {
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_ReturnValue,
 };
@@ -1920,6 +1998,32 @@ struct UHT_STATICS
 		{ "UIMax", "2" },
 		{ "UIMin", "0" },
 	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_bEdgeFallOff_MetaData[] = {
+		{ "Category", "Cloud Appearance|Edge Fall Off" },
+		{ "DisplayName", "Edge Fall Off" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+		{ "ToolTip", "Fade inward from the additive guide boundary while preserving the interior. Low-fog cylinders and boxes use their horizontal perimeter; spheres and ordinary clouds use the full 3D boundary." },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_EdgeFallOffDistanceCm_MetaData[] = {
+		{ "Category", "Cloud Appearance|Edge Fall Off" },
+		{ "ClampMin", "0" },
+		{ "DisplayName", "Edge Fall Off Distance" },
+		{ "EditCondition", "bEdgeFallOff" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+		{ "ToolTip", "Distance inward from the shape boundary, in centimeters. The shader limits it to each shape's usable inner radius so its center can reach full density. Zero makes a hard edge." },
+		{ "Units", "cm" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_EdgeFallOffContrast_MetaData[] = {
+		{ "Category", "Cloud Appearance|Edge Fall Off" },
+		{ "ClampMax", "100" },
+		{ "ClampMin", "0.01" },
+		{ "DisplayName", "Edge Fall Off Contrast" },
+		{ "EditCondition", "bEdgeFallOff" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+		{ "ToolTip", "Curve steepness inside the falloff distance. 1 is linear, values above 1 concentrate density toward the core, and values below 1 fill the transition sooner." },
+		{ "UIMax", "8" },
+		{ "UIMin", "0.1" },
+	};
 	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_BillowSizeCm_MetaData[] = {
 		{ "Category", "Cloud Detail" },
 		{ "ClampMin", "0.1" },
@@ -2202,6 +2306,16 @@ struct UHT_STATICS
 		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
 		{ "ToolTip", "Cinematic improves volume and shadow sampling. It preserves the shape, seed and density and costs more to render." },
 	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_VolumeResolution_MetaData[] = {
+		{ "Category", "Cloud Quality" },
+		{ "ClampMax", "512" },
+		{ "ClampMin", "32" },
+		{ "DisplayName", "Volume Resolution" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+		{ "ToolTip", "Voxels per axis; X, Y and Z change together, from 32 to 512. Higher values can improve fine volume detail at greater memory and rendering cost; renderer sampling limits may cap the visible gain. Guide size, world-space noise scale and density stay unchanged. Saved in presets; adjustable while locked." },
+		{ "UIMax", "512" },
+		{ "UIMin", "32" },
+	};
 	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_CloudStyle_MetaData[] = {
 		{ "Category", "Cloud Appearance" },
 		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
@@ -2254,6 +2368,40 @@ struct UHT_STATICS
 		{ "ToolTip", "Height of the vertical density profile above the generator. This stays fixed when guides move." },
 		{ "Units", "cm" },
 	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_bGroundFog_MetaData[] = {
+		{ "Category", "Low Fog" },
+		{ "DisplayName", "Ground Fog" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+		{ "ToolTip", "Use the low-fog material's ground mask and shallow volume bounds. The ground plane follows the generator's world Z; it does not conform to terrain." },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_GroundOffsetCm_MetaData[] = {
+		{ "Category", "Low Fog" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+		{ "ToolTip", "Ground plane height above the generator's world Z. Negative values lower it." },
+		{ "Units", "cm" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_GroundFadeCm_MetaData[] = {
+		{ "Category", "Low Fog" },
+		{ "ClampMin", "0" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+		{ "ToolTip", "Soft transition above the ground plane. Zero makes a hard floor." },
+		{ "Units", "cm" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_FogHeightCm_MetaData[] = {
+		{ "Category", "Low Fog" },
+		{ "ClampMin", "0.1" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+		{ "ToolTip", "Maximum fog height above the ground plane. The rolling noise and guides shape the fog beneath this ceiling." },
+		{ "Units", "cm" },
+	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_HeightFalloff_MetaData[] = {
+		{ "Category", "Low Fog" },
+		{ "ClampMin", "0.01" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+		{ "ToolTip", "Density fade toward the fog ceiling. Larger values keep more density close to the floor." },
+		{ "UIMax", "8" },
+		{ "UIMin", "0.1" },
+	};
 	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_Preset_MetaData[] = {
 		{ "Category", "Cloud Presets" },
 		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
@@ -2302,6 +2450,10 @@ struct UHT_STATICS
 		{ "Category", "Cloud Generator" },
 		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
 	};
+	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_BoundsHalfExtentsCm_MetaData[] = {
+		{ "Category", "Cloud Generator" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+	};
 	static constexpr UECodeGen_Private::FMetaDataPairParam NewProp_BoundsCenterRelativeToAnchorCm_MetaData[] = {
 		{ "Category", "Cloud Generator" },
 		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
@@ -2339,6 +2491,13 @@ struct UHT_STATICS
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_Seed;
 	static const UECodeGen_Private::FStructPropertyParams NewProp_CloudColor;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_SkyFill;
+	static void NewProp_bEdgeFallOff_SetBit(void* Obj)
+	{
+		((ACloudGeneratorActor*)Obj)->bEdgeFallOff = 1;
+	}
+	static const UECodeGen_Private::FBoolPropertyParams NewProp_bEdgeFallOff;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_EdgeFallOffDistanceCm;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_EdgeFallOffContrast;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_BillowSizeCm;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_BillowDepthCm;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_BillowStrength;
@@ -2383,6 +2542,7 @@ struct UHT_STATICS
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_UnionGrowthLimitCm;
 	static const UECodeGen_Private::FBytePropertyParams NewProp_Quality_Underlying;
 	static const UECodeGen_Private::FEnumPropertyParams NewProp_Quality;
+	static const UECodeGen_Private::FIntPropertyParams NewProp_VolumeResolution;
 	static const UECodeGen_Private::FBytePropertyParams NewProp_CloudStyle_Underlying;
 	static const UECodeGen_Private::FEnumPropertyParams NewProp_CloudStyle;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_WispStrength;
@@ -2391,6 +2551,15 @@ struct UHT_STATICS
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_InteriorVariation;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_VerticalDensityGradient;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_VerticalReferenceHeightCm;
+	static void NewProp_bGroundFog_SetBit(void* Obj)
+	{
+		((ACloudGeneratorActor*)Obj)->bGroundFog = 1;
+	}
+	static const UECodeGen_Private::FBoolPropertyParams NewProp_bGroundFog;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_GroundOffsetCm;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_GroundFadeCm;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_FogHeightCm;
+	static const UECodeGen_Private::FFloatPropertyParams NewProp_HeightFalloff;
 	static const UECodeGen_Private::FObjectPropertyParams NewProp_Preset;
 	static void NewProp_bUseDefaultPresetOnFirstPlacement_SetBit(void* Obj)
 	{
@@ -2409,6 +2578,7 @@ struct UHT_STATICS
 	static const UECodeGen_Private::FStrPropertyParams NewProp_PreviewStatus;
 	static const UECodeGen_Private::FIntPropertyParams NewProp_ActiveGuideCount;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_BoundsHalfExtentCm;
+	static const UECodeGen_Private::FStructPropertyParams NewProp_BoundsHalfExtentsCm;
 	static const UECodeGen_Private::FStructPropertyParams NewProp_BoundsCenterRelativeToAnchorCm;
 	static const UECodeGen_Private::FFloatPropertyParams NewProp_ComputedExtinctionScale;
 	static const UECodeGen_Private::FObjectPropertyParams NewProp_GuideDataTexture;
@@ -2438,8 +2608,8 @@ struct UHT_STATICS
 	static FTypeConstructFunc* DependentSingletons[];
 	static constexpr FClassFunctionLinkInfo FuncInfo[] = {
 		{ &Z_Construct_UFunction_ACloudGeneratorActor_AddGuide, "AddGuide" }, // 023949ae809ae2a535685408a3857cffe1cf66f2
-		{ &Z_Construct_UFunction_ACloudGeneratorActor_ApplyRecipe, "ApplyRecipe" }, // 96e45626c14775cbb49a057fa6c3b5efabf233f3
-		{ &Z_Construct_UFunction_ACloudGeneratorActor_CaptureRecipe, "CaptureRecipe" }, // 9131a6b50f6bd33d713d6dedc504ee0e8163de8a
+		{ &Z_Construct_UFunction_ACloudGeneratorActor_ApplyRecipe, "ApplyRecipe" }, // 81cda07d3137b778ace1b47622d2cbca481c149e
+		{ &Z_Construct_UFunction_ACloudGeneratorActor_CaptureRecipe, "CaptureRecipe" }, // 3811e66cb5abfbcf116d73126d5c8cf520e08397
 		{ &Z_Construct_UFunction_ACloudGeneratorActor_GenerateVariation, "GenerateVariation" }, // 07b967bb6428b79ffc16c0dcb32d5d1576a56be2
 		{ &Z_Construct_UFunction_ACloudGeneratorActor_GetEncodedGuideData, "GetEncodedGuideData" }, // b2d6b0478b690a7ae8c0a289549a3fed89a10a70
 		{ &Z_Construct_UFunction_ACloudGeneratorActor_LoadPreset, "LoadPreset" }, // 3a3d49cf0fcb0a80c5622226e16e564195b982fa
@@ -2465,6 +2635,9 @@ const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_Density = { "
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_Seed = { "Seed", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, Seed), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Seed_MetaData), NewProp_Seed_MetaData) };
 const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_CloudColor = { "CloudColor", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, CloudColor), Z_Construct_UScriptStruct_FLinearColor, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_CloudColor_MetaData), NewProp_CloudColor_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_SkyFill = { "SkyFill", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, SkyFill), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_SkyFill_MetaData), NewProp_SkyFill_MetaData) };
+const UECodeGen_Private::FBoolPropertyParams UHT_STATICS::NewProp_bEdgeFallOff = { "bEdgeFallOff", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Bool | UECodeGen_Private::EPropertyGenFlags::NativeBool, nullptr, nullptr, 1, sizeof(bool), sizeof(ACloudGeneratorActor), &UHT_STATICS::NewProp_bEdgeFallOff_SetBit, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_bEdgeFallOff_MetaData), NewProp_bEdgeFallOff_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_EdgeFallOffDistanceCm = { "EdgeFallOffDistanceCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, EdgeFallOffDistanceCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_EdgeFallOffDistanceCm_MetaData), NewProp_EdgeFallOffDistanceCm_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_EdgeFallOffContrast = { "EdgeFallOffContrast", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, EdgeFallOffContrast), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_EdgeFallOffContrast_MetaData), NewProp_EdgeFallOffContrast_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_BillowSizeCm = { "BillowSizeCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, BillowSizeCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_BillowSizeCm_MetaData), NewProp_BillowSizeCm_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_BillowDepthCm = { "BillowDepthCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, BillowDepthCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_BillowDepthCm_MetaData), NewProp_BillowDepthCm_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_BillowStrength = { "BillowStrength", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, BillowStrength), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_BillowStrength_MetaData), NewProp_BillowStrength_MetaData) };
@@ -2505,6 +2678,7 @@ const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_UnionBlendCm 
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_UnionGrowthLimitCm = { "UnionGrowthLimitCm", nullptr, (EPropertyFlags)0x0010040000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, UnionGrowthLimitCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_UnionGrowthLimitCm_MetaData), NewProp_UnionGrowthLimitCm_MetaData) };
 const UECodeGen_Private::FBytePropertyParams UHT_STATICS::NewProp_Quality_Underlying = { "UnderlyingType", nullptr, (EPropertyFlags)0x0000000000000000, UECodeGen_Private::EPropertyGenFlags::Byte, nullptr, nullptr, 1, 0, nullptr, METADATA_PARAMS(0, nullptr) };
 const UECodeGen_Private::FEnumPropertyParams UHT_STATICS::NewProp_Quality = { "Quality", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Enum, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, Quality), Z_Construct_UEnum_CloudGeneratorTools_ECloudPreviewQuality, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Quality_MetaData), NewProp_Quality_MetaData) }; // 731be7cd69d8913698130fa31abf11b1808acf7f
+const UECodeGen_Private::FIntPropertyParams UHT_STATICS::NewProp_VolumeResolution = { "VolumeResolution", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Int, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, VolumeResolution), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_VolumeResolution_MetaData), NewProp_VolumeResolution_MetaData) };
 const UECodeGen_Private::FBytePropertyParams UHT_STATICS::NewProp_CloudStyle_Underlying = { "UnderlyingType", nullptr, (EPropertyFlags)0x0000000000000000, UECodeGen_Private::EPropertyGenFlags::Byte, nullptr, nullptr, 1, 0, nullptr, METADATA_PARAMS(0, nullptr) };
 const UECodeGen_Private::FEnumPropertyParams UHT_STATICS::NewProp_CloudStyle = { "CloudStyle", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Enum, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, CloudStyle), Z_Construct_UEnum_CloudGeneratorTools_ECloudStyle, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_CloudStyle_MetaData), NewProp_CloudStyle_MetaData) }; // 38df397519e8039a981a5369f52fb9e26d032611
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_WispStrength = { "WispStrength", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, WispStrength), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_WispStrength_MetaData), NewProp_WispStrength_MetaData) };
@@ -2513,6 +2687,11 @@ const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_WispDirection
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_InteriorVariation = { "InteriorVariation", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, InteriorVariation), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_InteriorVariation_MetaData), NewProp_InteriorVariation_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_VerticalDensityGradient = { "VerticalDensityGradient", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, VerticalDensityGradient), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_VerticalDensityGradient_MetaData), NewProp_VerticalDensityGradient_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_VerticalReferenceHeightCm = { "VerticalReferenceHeightCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, VerticalReferenceHeightCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_VerticalReferenceHeightCm_MetaData), NewProp_VerticalReferenceHeightCm_MetaData) };
+const UECodeGen_Private::FBoolPropertyParams UHT_STATICS::NewProp_bGroundFog = { "bGroundFog", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Bool | UECodeGen_Private::EPropertyGenFlags::NativeBool, nullptr, nullptr, 1, sizeof(bool), sizeof(ACloudGeneratorActor), &UHT_STATICS::NewProp_bGroundFog_SetBit, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_bGroundFog_MetaData), NewProp_bGroundFog_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_GroundOffsetCm = { "GroundOffsetCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, GroundOffsetCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_GroundOffsetCm_MetaData), NewProp_GroundOffsetCm_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_GroundFadeCm = { "GroundFadeCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, GroundFadeCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_GroundFadeCm_MetaData), NewProp_GroundFadeCm_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_FogHeightCm = { "FogHeightCm", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, FogHeightCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_FogHeightCm_MetaData), NewProp_FogHeightCm_MetaData) };
+const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_HeightFalloff = { "HeightFalloff", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, HeightFalloff), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_HeightFalloff_MetaData), NewProp_HeightFalloff_MetaData) };
 const UECodeGen_Private::FObjectPropertyParams UHT_STATICS::NewProp_Preset = { "Preset", nullptr, (EPropertyFlags)0x0114000000000005, UECodeGen_Private::EPropertyGenFlags::Object | UECodeGen_Private::EPropertyGenFlags::ObjectPtr, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, Preset), Z_Construct_UClass_UCloudRecipePreset, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_Preset_MetaData), NewProp_Preset_MetaData) };
 const UECodeGen_Private::FBoolPropertyParams UHT_STATICS::NewProp_bUseDefaultPresetOnFirstPlacement = { "bUseDefaultPresetOnFirstPlacement", nullptr, (EPropertyFlags)0x0010040000010015, UECodeGen_Private::EPropertyGenFlags::Bool | UECodeGen_Private::EPropertyGenFlags::NativeBool, nullptr, nullptr, 1, sizeof(bool), sizeof(ACloudGeneratorActor), &UHT_STATICS::NewProp_bUseDefaultPresetOnFirstPlacement_SetBit, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_bUseDefaultPresetOnFirstPlacement_MetaData), NewProp_bUseDefaultPresetOnFirstPlacement_MetaData) };
 const UECodeGen_Private::FStrPropertyParams UHT_STATICS::NewProp_PresetName = { "PresetName", nullptr, (EPropertyFlags)0x0010000000000005, UECodeGen_Private::EPropertyGenFlags::Str, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, PresetName), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_PresetName_MetaData), NewProp_PresetName_MetaData) };
@@ -2523,11 +2702,12 @@ const UECodeGen_Private::FSoftObjectPropertyParams UHT_STATICS::NewProp_CloudMat
 const UECodeGen_Private::FStrPropertyParams UHT_STATICS::NewProp_PreviewStatus = { "PreviewStatus", nullptr, (EPropertyFlags)0x0010000000022815, UECodeGen_Private::EPropertyGenFlags::Str, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, PreviewStatus), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_PreviewStatus_MetaData), NewProp_PreviewStatus_MetaData) };
 const UECodeGen_Private::FIntPropertyParams UHT_STATICS::NewProp_ActiveGuideCount = { "ActiveGuideCount", nullptr, (EPropertyFlags)0x0010040000022815, UECodeGen_Private::EPropertyGenFlags::Int, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, ActiveGuideCount), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_ActiveGuideCount_MetaData), NewProp_ActiveGuideCount_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_BoundsHalfExtentCm = { "BoundsHalfExtentCm", nullptr, (EPropertyFlags)0x0010040000022815, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, BoundsHalfExtentCm), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_BoundsHalfExtentCm_MetaData), NewProp_BoundsHalfExtentCm_MetaData) };
+const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_BoundsHalfExtentsCm = { "BoundsHalfExtentsCm", nullptr, (EPropertyFlags)0x0010040000022815, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, BoundsHalfExtentsCm), Z_Construct_UScriptStruct_FVector, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_BoundsHalfExtentsCm_MetaData), NewProp_BoundsHalfExtentsCm_MetaData) };
 const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_BoundsCenterRelativeToAnchorCm = { "BoundsCenterRelativeToAnchorCm", nullptr, (EPropertyFlags)0x0010040000022815, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, BoundsCenterRelativeToAnchorCm), Z_Construct_UScriptStruct_FVector, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_BoundsCenterRelativeToAnchorCm_MetaData), NewProp_BoundsCenterRelativeToAnchorCm_MetaData) };
 const UECodeGen_Private::FFloatPropertyParams UHT_STATICS::NewProp_ComputedExtinctionScale = { "ComputedExtinctionScale", nullptr, (EPropertyFlags)0x0010040000022815, UECodeGen_Private::EPropertyGenFlags::Float, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, ComputedExtinctionScale), METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_ComputedExtinctionScale_MetaData), NewProp_ComputedExtinctionScale_MetaData) };
 const UECodeGen_Private::FObjectPropertyParams UHT_STATICS::NewProp_GuideDataTexture = { "GuideDataTexture", nullptr, (EPropertyFlags)0x0114040000222815, UECodeGen_Private::EPropertyGenFlags::Object | UECodeGen_Private::EPropertyGenFlags::ObjectPtr, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, GuideDataTexture), Z_Construct_UClass_UTexture2D, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_GuideDataTexture_MetaData), NewProp_GuideDataTexture_MetaData) };
 const UECodeGen_Private::FBoolPropertyParams UHT_STATICS::NewProp_bDefaultPresetPlacementHandled = { "bDefaultPresetPlacementHandled", nullptr, (EPropertyFlags)0x0040000000000000, UECodeGen_Private::EPropertyGenFlags::Bool | UECodeGen_Private::EPropertyGenFlags::NativeBool, nullptr, nullptr, 1, sizeof(bool), sizeof(ACloudGeneratorActor), &UHT_STATICS::NewProp_bDefaultPresetPlacementHandled_SetBit, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_bDefaultPresetPlacementHandled_MetaData), NewProp_bDefaultPresetPlacementHandled_MetaData) };
-const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_LockedRecipe = { "LockedRecipe", nullptr, (EPropertyFlags)0x0040000000000000, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, LockedRecipe), Z_Construct_UScriptStruct_FCloudRecipe, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_LockedRecipe_MetaData), NewProp_LockedRecipe_MetaData) }; // 24454c819ca86f61eca43e191606be15fa6d8b92
+const UECodeGen_Private::FStructPropertyParams UHT_STATICS::NewProp_LockedRecipe = { "LockedRecipe", nullptr, (EPropertyFlags)0x0040000000000000, UECodeGen_Private::EPropertyGenFlags::Struct, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, LockedRecipe), Z_Construct_UScriptStruct_FCloudRecipe, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_LockedRecipe_MetaData), NewProp_LockedRecipe_MetaData) }; // eac2aac1d182dc0ae3279860db356b445ec4977d
 const UECodeGen_Private::FObjectPropertyParams UHT_STATICS::NewProp_DynamicMaterial = { "DynamicMaterial", nullptr, (EPropertyFlags)0x0144000000202000, UECodeGen_Private::EPropertyGenFlags::Object | UECodeGen_Private::EPropertyGenFlags::ObjectPtr, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, DynamicMaterial), Z_Construct_UClass_UMaterialInstanceDynamic, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_DynamicMaterial_MetaData), NewProp_DynamicMaterial_MetaData) };
 const UECodeGen_Private::FObjectPropertyParams UHT_STATICS::NewProp_CurrentBaseMaterial = { "CurrentBaseMaterial", nullptr, (EPropertyFlags)0x0144000000202000, UECodeGen_Private::EPropertyGenFlags::Object | UECodeGen_Private::EPropertyGenFlags::ObjectPtr, nullptr, nullptr, 1, STRUCT_OFFSET(ACloudGeneratorActor, CurrentBaseMaterial), Z_Construct_UClass_UMaterialInterface, METADATA_PARAMS(UE_ARRAY_COUNT(NewProp_CurrentBaseMaterial_MetaData), NewProp_CurrentBaseMaterial_MetaData) };
 const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] = {
@@ -2539,6 +2719,9 @@ const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] 
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_Seed,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_CloudColor,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_SkyFill,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_bEdgeFallOff,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_EdgeFallOffDistanceCm,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_EdgeFallOffContrast,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_BillowSizeCm,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_BillowDepthCm,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_BillowStrength,
@@ -2579,6 +2762,7 @@ const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] 
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_UnionGrowthLimitCm,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_Quality_Underlying,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_Quality,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_VolumeResolution,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_CloudStyle_Underlying,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_CloudStyle,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_WispStrength,
@@ -2587,6 +2771,11 @@ const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] 
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_InteriorVariation,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_VerticalDensityGradient,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_VerticalReferenceHeightCm,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_bGroundFog,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_GroundOffsetCm,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_GroundFadeCm,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_FogHeightCm,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_HeightFalloff,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_Preset,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_bUseDefaultPresetOnFirstPlacement,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_PresetName,
@@ -2597,6 +2786,7 @@ const UECodeGen_Private::FPropertyParamsBase* const UHT_STATICS::PropPointers[] 
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_PreviewStatus,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_ActiveGuideCount,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_BoundsHalfExtentCm,
+	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_BoundsHalfExtentsCm,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_BoundsCenterRelativeToAnchorCm,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_ComputedExtinctionScale,
 	(const UECodeGen_Private::FPropertyParamsBase*)&UHT_STATICS::NewProp_GuideDataTexture,
@@ -2670,6 +2860,91 @@ DEFINE_VTABLE_PTR_HELPER_CTOR_NS(, ACloudGeneratorActor);
 ACloudGeneratorActor::~ACloudGeneratorActor() {}
 // ********** End Class ACloudGeneratorActor *******************************************************
 
+// ********** Begin Class ALowFogGeneratorActor ****************************************************
+#ifdef UHT_STATICS
+#error UHT_STATICS already defined
+#endif
+#define UHT_STATICS Z_Construct_UClass_ALowFogGeneratorActor_Statics
+struct UHT_STATICS
+{
+#if WITH_METADATA
+	static constexpr UECodeGen_Private::FMetaDataPairParam Type_MetaData[] = {
+		{ "BlueprintType", "true" },
+		{ "Comment", "/** Placed low-fog variant with the complete editable cloud-recipe workflow. */" },
+		{ "HideCategories", "Replication Networking Input Collision HLOD Physics Replication Networking Input Collision HLOD Physics" },
+		{ "IncludePath", "CloudGeneratorActor.h" },
+		{ "IsBlueprintBase", "true" },
+		{ "ModuleRelativePath", "Public/CloudGeneratorActor.h" },
+		{ "ToolTip", "Placed low-fog variant with the complete editable cloud-recipe workflow." },
+	};
+#endif // WITH_METADATA
+
+// ********** Begin Class ALowFogGeneratorActor constinit property declarations ********************
+// ********** End Class ALowFogGeneratorActor constinit property declarations **********************
+	static FTypeConstructFunc* DependentSingletons[];
+	static constexpr FCppClassTypeInfoStatic StaticCppClassTypeInfo = {
+		TCppClassTypeTraits<ALowFogGeneratorActor>::IsAbstract,
+	};
+	static const UECodeGen_Private::FClassParams ClassParams;
+}; // struct UHT_STATICS
+FTypeConstructFunc* UHT_STATICS::DependentSingletons[] = {
+	(FTypeConstructFunc*)Z_Construct_UClass_ACloudGeneratorActor,
+	(FTypeConstructFunc*)Z_Construct_UPackage__Script_CloudGeneratorTools,
+};
+static_assert(UE_ARRAY_COUNT(UHT_STATICS::DependentSingletons) < 16);
+const UECodeGen_Private::FClassParams UHT_STATICS::ClassParams = {
+	&Z_Construct_UClass_ALowFogGeneratorActor,
+	"Engine",
+	&StaticCppClassTypeInfo,
+	DependentSingletons,
+	nullptr,
+	nullptr,
+	nullptr,
+	UE_ARRAY_COUNT(DependentSingletons),
+	0,
+	0,
+	0,
+	0x009000A4u,
+	METADATA_PARAMS(UE_ARRAY_COUNT(UHT_STATICS::Type_MetaData), UHT_STATICS::Type_MetaData)
+};
+FClassRegistrationInfo Z_Registration_Info_UClass_ALowFogGeneratorActor;
+UClass* Z_Construct_UClass_ALowFogGeneratorActor(ETypeConstructPhase Phase)
+{
+	if (Phase == ETypeConstructPhase::Inner)
+	{
+		using TClass = ALowFogGeneratorActor;
+		if (!Z_Registration_Info_UClass_ALowFogGeneratorActor.InnerSingleton)
+		{
+			GetPrivateStaticClassBody(
+				TClass::StaticPackage(),
+				TEXT("LowFogGeneratorActor"),
+				Z_Registration_Info_UClass_ALowFogGeneratorActor.InnerSingleton,
+				nullptr,
+				DataSizeOf<TClass>(),
+				alignof(TClass),
+				TClass::StaticClassFlags,
+				TClass::StaticClassCastFlags(),
+				TClass::StaticConfigName(),
+				(UClass::ClassConstructorType)InternalConstructor<TClass>,
+				(UClass::ClassVTableHelperCtorCallerType)InternalVTableHelperCtorCaller<TClass>,
+				UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(TClass),
+				&TClass::Super::StaticClass,
+				&TClass::WithinClass::StaticClass
+			);
+		}
+		return Z_Registration_Info_UClass_ALowFogGeneratorActor.InnerSingleton;
+	}
+	if (!Z_Registration_Info_UClass_ALowFogGeneratorActor.OuterSingleton)
+	{
+		UECodeGen_Private::ConstructUClass(Z_Registration_Info_UClass_ALowFogGeneratorActor.OuterSingleton, UHT_STATICS::ClassParams);
+	}
+	return Z_Registration_Info_UClass_ALowFogGeneratorActor.OuterSingleton;
+}
+#undef UHT_STATICS
+DEFINE_VTABLE_PTR_HELPER_CTOR_NS(, ALowFogGeneratorActor);
+ALowFogGeneratorActor::~ALowFogGeneratorActor() {}
+// ********** End Class ALowFogGeneratorActor ******************************************************
+
 // ********** Begin Registration *******************************************************************
 #ifdef UHT_STATICS
 #error UHT_STATICS already defined
@@ -2678,7 +2953,7 @@ ACloudGeneratorActor::~ACloudGeneratorActor() {}
 struct UHT_STATICS
 {
 	static constexpr FEnumRegisterCompiledInInfo EnumInfo[] = {
-		{ Z_Construct_UEnum_CloudGeneratorTools_ECloudGuideShape, TEXT("ECloudGuideShape"), &ZRIE_ECloudGuideShape, CONSTRUCT_RELOAD_VERSION_INFO(FEnumReloadVersionInfo, 1836127872U) },
+		{ Z_Construct_UEnum_CloudGeneratorTools_ECloudGuideShape, TEXT("ECloudGuideShape"), &ZRIE_ECloudGuideShape, CONSTRUCT_RELOAD_VERSION_INFO(FEnumReloadVersionInfo, 2886380413U) },
 		{ Z_Construct_UEnum_CloudGeneratorTools_ECloudGuideOperation, TEXT("ECloudGuideOperation"), &ZRIE_ECloudGuideOperation, CONSTRUCT_RELOAD_VERSION_INFO(FEnumReloadVersionInfo, 2319841651U) },
 		{ Z_Construct_UEnum_CloudGeneratorTools_ECloudPreviewQuality, TEXT("ECloudPreviewQuality"), &ZRIE_ECloudPreviewQuality, CONSTRUCT_RELOAD_VERSION_INFO(FEnumReloadVersionInfo, 1931208653U) },
 		{ Z_Construct_UEnum_CloudGeneratorTools_ECloudStyle, TEXT("ECloudStyle"), &ZRIE_ECloudStyle, CONSTRUCT_RELOAD_VERSION_INFO(FEnumReloadVersionInfo, 954153333U) },
@@ -2686,17 +2961,18 @@ struct UHT_STATICS
 		{ Z_Construct_UEnum_CloudGeneratorTools_ECloudNoiseLayout, TEXT("ECloudNoiseLayout"), &ZRIE_ECloudNoiseLayout, CONSTRUCT_RELOAD_VERSION_INFO(FEnumReloadVersionInfo, 223140197U) },
 	};
 	static constexpr FStructRegisterCompiledInInfo ScriptStructInfo[] = {
-		{ Z_Construct_UScriptStruct_FCloudGuideRecipe, Z_Construct_UScriptStruct_FCloudGuideRecipe_Statics::NewStructOps, TEXT("CloudGuideRecipe"),&Z_Registration_Info_UScriptStruct_FCloudGuideRecipe, CONSTRUCT_RELOAD_VERSION_INFO(FStructReloadVersionInfo, sizeof(FCloudGuideRecipe), 4185885197U) },
-		{ Z_Construct_UScriptStruct_FCloudRecipe, Z_Construct_UScriptStruct_FCloudRecipe_Statics::NewStructOps, TEXT("CloudRecipe"),&Z_Registration_Info_UScriptStruct_FCloudRecipe, CONSTRUCT_RELOAD_VERSION_INFO(FStructReloadVersionInfo, sizeof(FCloudRecipe), 608521345U) },
+		{ Z_Construct_UScriptStruct_FCloudGuideRecipe, Z_Construct_UScriptStruct_FCloudGuideRecipe_Statics::NewStructOps, TEXT("CloudGuideRecipe"),&Z_Registration_Info_UScriptStruct_FCloudGuideRecipe, CONSTRUCT_RELOAD_VERSION_INFO(FStructReloadVersionInfo, sizeof(FCloudGuideRecipe), 2909603115U) },
+		{ Z_Construct_UScriptStruct_FCloudRecipe, Z_Construct_UScriptStruct_FCloudRecipe_Statics::NewStructOps, TEXT("CloudRecipe"),&Z_Registration_Info_UScriptStruct_FCloudRecipe, CONSTRUCT_RELOAD_VERSION_INFO(FStructReloadVersionInfo, sizeof(FCloudRecipe), 3938626241U) },
 	};
 	static constexpr FClassRegisterCompiledInInfo ClassInfo[] = {
-		{ Z_Construct_UClass_UCloudRecipePreset, TEXT("UCloudRecipePreset"), &Z_Registration_Info_UClass_UCloudRecipePreset, CONSTRUCT_RELOAD_VERSION_INFO(FClassReloadVersionInfo, sizeof(UCloudRecipePreset), 2122148061U) },
+		{ Z_Construct_UClass_UCloudRecipePreset, TEXT("UCloudRecipePreset"), &Z_Registration_Info_UClass_UCloudRecipePreset, CONSTRUCT_RELOAD_VERSION_INFO(FClassReloadVersionInfo, sizeof(UCloudRecipePreset), 4088851202U) },
 		{ Z_Construct_UClass_UCloudGuideShapeComponent, TEXT("UCloudGuideShapeComponent"), &Z_Registration_Info_UClass_UCloudGuideShapeComponent, CONSTRUCT_RELOAD_VERSION_INFO(FClassReloadVersionInfo, sizeof(UCloudGuideShapeComponent), 3543417050U) },
-		{ Z_Construct_UClass_ACloudGuideActor, TEXT("ACloudGuideActor"), &Z_Registration_Info_UClass_ACloudGuideActor, CONSTRUCT_RELOAD_VERSION_INFO(FClassReloadVersionInfo, sizeof(ACloudGuideActor), 1337792034U) },
-		{ Z_Construct_UClass_ACloudGeneratorActor, TEXT("ACloudGeneratorActor"), &Z_Registration_Info_UClass_ACloudGeneratorActor, CONSTRUCT_RELOAD_VERSION_INFO(FClassReloadVersionInfo, sizeof(ACloudGeneratorActor), 2343275948U) },
+		{ Z_Construct_UClass_ACloudGuideActor, TEXT("ACloudGuideActor"), &Z_Registration_Info_UClass_ACloudGuideActor, CONSTRUCT_RELOAD_VERSION_INFO(FClassReloadVersionInfo, sizeof(ACloudGuideActor), 2494293691U) },
+		{ Z_Construct_UClass_ACloudGeneratorActor, TEXT("ACloudGeneratorActor"), &Z_Registration_Info_UClass_ACloudGeneratorActor, CONSTRUCT_RELOAD_VERSION_INFO(FClassReloadVersionInfo, sizeof(ACloudGeneratorActor), 3462435410U) },
+		{ Z_Construct_UClass_ALowFogGeneratorActor, TEXT("ALowFogGeneratorActor"), &Z_Registration_Info_UClass_ALowFogGeneratorActor, CONSTRUCT_RELOAD_VERSION_INFO(FClassReloadVersionInfo, sizeof(ALowFogGeneratorActor), 3605272103U) },
 	};
 }; // UHT_STATICS 
-static FRegisterCompiledInInfo Z_CompiledInDeferFile_FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h__Script_CloudGeneratorTools_4027da4b1e109ef60fd8efed180c9e56bbd7f30c{
+static FRegisterCompiledInInfo Z_CompiledInDeferFile_FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h__Script_CloudGeneratorTools_741036d18330bbe5ce67f55e4a9b785513cb765c{
 	TEXT("/Script/CloudGeneratorTools"),
 	UHT_STATICS::ClassInfo, UE_ARRAY_COUNT(UHT_STATICS::ClassInfo),
 	UHT_STATICS::ScriptStructInfo, UE_ARRAY_COUNT(UHT_STATICS::ScriptStructInfo),

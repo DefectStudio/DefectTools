@@ -10,6 +10,9 @@
 
 # Ignore build caches, but distribute the packaged runtime objects, manifests,
 # generated headers and import libraries needed by precompiled plugin users.
+# Reopen the directory excluded by parent project rules so the allowlist below
+# can take effect. Keep all other Intermediate files ignored.
+!/Intermediate/
 /Intermediate/**
 !/Intermediate/**/
 !/Intermediate/Build/Win64/UnrealEditor/Inc/CloudGeneratorTools/UHT/*.h

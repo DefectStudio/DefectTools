@@ -48,6 +48,8 @@ private:
             LOCTEXT("WorldCloudsTip", "Add BP_UDSOnlyClouds at the world origin. Existing visible world-cloud renderers are preserved."), TEXT("ClassIcon.VolumetricCloud"));
         AddAction(TEXT("AddCloudPreset"), LOCTEXT("CloudPreset", "Add Cloud Preset"),
             LOCTEXT("CloudPresetTip", "Add BP_CloudPreset at the world origin with the saved Cumulus cloud and editable guides."), TEXT("ClassIcon.Volume"));
+        AddAction(TEXT("AddLowFogPreset"), LOCTEXT("LowFogPreset", "Add Low Fog Preset"),
+            LOCTEXT("LowFogPresetTip", "Add BP_LowFogPreset at the world origin with rolling cemetery fog and an editable shape guide."), TEXT("ClassIcon.ExponentialHeightFog"));
 
         // The editable WBP_08_FX_Tools buttons own the visible UI. Keep this
         // internal menu for the existing action-dispatch validation API only;

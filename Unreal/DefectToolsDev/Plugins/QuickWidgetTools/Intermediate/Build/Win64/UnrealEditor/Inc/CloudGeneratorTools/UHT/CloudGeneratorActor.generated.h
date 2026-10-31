@@ -24,7 +24,7 @@ struct FLinearColor;
 struct Z_Construct_UScriptStruct_FCloudGuideRecipe_Statics;
 CLOUDGENERATORTOOLS_API UScriptStruct* Z_Construct_UScriptStruct_FCloudGuideRecipe(ETypeConstructPhase);
 
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_66_GENERATED_BODY \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_67_GENERATED_BODY \
 	friend struct ::Z_Construct_UScriptStruct_FCloudGuideRecipe_Statics; \
 	UE_NODEBUG static UScriptStruct* StaticStruct() { return Z_Construct_UScriptStruct_FCloudGuideRecipe(ETypeConstructPhase::Inner); }
 
@@ -36,7 +36,7 @@ struct FCloudGuideRecipe;
 struct Z_Construct_UScriptStruct_FCloudRecipe_Statics;
 CLOUDGENERATORTOOLS_API UScriptStruct* Z_Construct_UScriptStruct_FCloudRecipe(ETypeConstructPhase);
 
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_79_GENERATED_BODY \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_80_GENERATED_BODY \
 	friend struct ::Z_Construct_UScriptStruct_FCloudRecipe_Statics; \
 	UE_NODEBUG static UScriptStruct* StaticStruct() { return Z_Construct_UScriptStruct_FCloudRecipe(ETypeConstructPhase::Inner); }
 
@@ -48,7 +48,7 @@ struct FCloudRecipe;
 struct Z_Construct_UClass_UCloudRecipePreset_Statics;
 CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_UCloudRecipePreset(ETypeConstructPhase);
 
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_138_INCLASS_NO_PURE_DECLS \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_148_INCLASS_NO_PURE_DECLS \
 private: \
 	friend struct ::Z_Construct_UClass_UCloudRecipePreset_Statics; \
 	friend CLOUDGENERATORTOOLS_API UClass* ::Z_Construct_UClass_UCloudRecipePreset(ETypeConstructPhase); \
@@ -57,7 +57,7 @@ public: \
 	DECLARE_SERIALIZER(UCloudRecipePreset)
 
 
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_138_ENHANCED_CONSTRUCTORS \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_148_ENHANCED_CONSTRUCTORS \
 	/** Standard constructor, called after all reflected properties have been initialized */ \
 	NO_API UCloudRecipePreset(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get()); \
 	/** Deleted move- and copy-constructors, should never be used */ \
@@ -67,43 +67,6 @@ public: \
 	DEFINE_VTABLE_PTR_HELPER_CTOR_CALLER(UCloudRecipePreset); \
 	DEFINE_DEFAULT_OBJECT_INITIALIZER_CONSTRUCTOR_CALL(UCloudRecipePreset) \
 	NO_API virtual ~UCloudRecipePreset();
-
-
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_135_PROLOG
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_138_GENERATED_BODY \
-PRAGMA_DISABLE_DEPRECATION_WARNINGS \
-public: \
-	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_138_INCLASS_NO_PURE_DECLS \
-	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_138_ENHANCED_CONSTRUCTORS \
-private: \
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-
-class UCloudRecipePreset;
-
-// ********** End Class UCloudRecipePreset *********************************************************
-
-// ********** Begin Class UCloudGuideShapeComponent ************************************************
-struct Z_Construct_UClass_UCloudGuideShapeComponent_Statics;
-CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_UCloudGuideShapeComponent(ETypeConstructPhase);
-
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_148_INCLASS_NO_PURE_DECLS \
-private: \
-	friend struct ::Z_Construct_UClass_UCloudGuideShapeComponent_Statics; \
-	friend CLOUDGENERATORTOOLS_API UClass* ::Z_Construct_UClass_UCloudGuideShapeComponent(ETypeConstructPhase); \
-public: \
-	DECLARE_CLASS2(UCloudGuideShapeComponent, UPrimitiveComponent, COMPILED_IN_FLAGS(0 | CLASS_Config), CASTCLASS_None, TEXT("/Script/CloudGeneratorTools"), Z_Construct_UClass_UCloudGuideShapeComponent) \
-	DECLARE_SERIALIZER(UCloudGuideShapeComponent)
-
-
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_148_ENHANCED_CONSTRUCTORS \
-	/** Deleted move- and copy-constructors, should never be used */ \
-	UCloudGuideShapeComponent(UCloudGuideShapeComponent&&) = delete; \
-	UCloudGuideShapeComponent(const UCloudGuideShapeComponent&) = delete; \
-	DECLARE_VTABLE_PTR_HELPER_CTOR(NO_API, UCloudGuideShapeComponent); \
-	DEFINE_VTABLE_PTR_HELPER_CTOR_CALLER(UCloudGuideShapeComponent); \
-	DEFINE_DEFAULT_CONSTRUCTOR_CALL(UCloudGuideShapeComponent) \
-	NO_API virtual ~UCloudGuideShapeComponent();
 
 
 #define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_145_PROLOG
@@ -116,19 +79,56 @@ private: \
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 
+class UCloudRecipePreset;
+
+// ********** End Class UCloudRecipePreset *********************************************************
+
+// ********** Begin Class UCloudGuideShapeComponent ************************************************
+struct Z_Construct_UClass_UCloudGuideShapeComponent_Statics;
+CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_UCloudGuideShapeComponent(ETypeConstructPhase);
+
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_158_INCLASS_NO_PURE_DECLS \
+private: \
+	friend struct ::Z_Construct_UClass_UCloudGuideShapeComponent_Statics; \
+	friend CLOUDGENERATORTOOLS_API UClass* ::Z_Construct_UClass_UCloudGuideShapeComponent(ETypeConstructPhase); \
+public: \
+	DECLARE_CLASS2(UCloudGuideShapeComponent, UPrimitiveComponent, COMPILED_IN_FLAGS(0 | CLASS_Config), CASTCLASS_None, TEXT("/Script/CloudGeneratorTools"), Z_Construct_UClass_UCloudGuideShapeComponent) \
+	DECLARE_SERIALIZER(UCloudGuideShapeComponent)
+
+
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_158_ENHANCED_CONSTRUCTORS \
+	/** Deleted move- and copy-constructors, should never be used */ \
+	UCloudGuideShapeComponent(UCloudGuideShapeComponent&&) = delete; \
+	UCloudGuideShapeComponent(const UCloudGuideShapeComponent&) = delete; \
+	DECLARE_VTABLE_PTR_HELPER_CTOR(NO_API, UCloudGuideShapeComponent); \
+	DEFINE_VTABLE_PTR_HELPER_CTOR_CALLER(UCloudGuideShapeComponent); \
+	DEFINE_DEFAULT_CONSTRUCTOR_CALL(UCloudGuideShapeComponent) \
+	NO_API virtual ~UCloudGuideShapeComponent();
+
+
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_155_PROLOG
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_158_GENERATED_BODY \
+PRAGMA_DISABLE_DEPRECATION_WARNINGS \
+public: \
+	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_158_INCLASS_NO_PURE_DECLS \
+	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_158_ENHANCED_CONSTRUCTORS \
+private: \
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+
 class UCloudGuideShapeComponent;
 
 // ********** End Class UCloudGuideShapeComponent **************************************************
 
 // ********** Begin Class ACloudGuideActor *********************************************************
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_159_RPC_WRAPPERS_NO_PURE_DECLS \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_169_RPC_WRAPPERS_NO_PURE_DECLS \
 	DECLARE_FUNCTION(execNotifyGenerator);
 
 
 struct Z_Construct_UClass_ACloudGuideActor_Statics;
 CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_ACloudGuideActor(ETypeConstructPhase);
 
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_159_INCLASS_NO_PURE_DECLS \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_169_INCLASS_NO_PURE_DECLS \
 private: \
 	friend struct ::Z_Construct_UClass_ACloudGuideActor_Statics; \
 	friend CLOUDGENERATORTOOLS_API UClass* ::Z_Construct_UClass_ACloudGuideActor(ETypeConstructPhase); \
@@ -137,7 +137,7 @@ public: \
 	DECLARE_SERIALIZER(ACloudGuideActor)
 
 
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_159_ENHANCED_CONSTRUCTORS \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_169_ENHANCED_CONSTRUCTORS \
 	/** Deleted move- and copy-constructors, should never be used */ \
 	ACloudGuideActor(ACloudGuideActor&&) = delete; \
 	ACloudGuideActor(const ACloudGuideActor&) = delete; \
@@ -147,13 +147,13 @@ public: \
 	NO_API virtual ~ACloudGuideActor();
 
 
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_156_PROLOG
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_159_GENERATED_BODY \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_166_PROLOG
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_169_GENERATED_BODY \
 PRAGMA_DISABLE_DEPRECATION_WARNINGS \
 public: \
-	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_159_RPC_WRAPPERS_NO_PURE_DECLS \
-	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_159_INCLASS_NO_PURE_DECLS \
-	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_159_ENHANCED_CONSTRUCTORS \
+	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_169_RPC_WRAPPERS_NO_PURE_DECLS \
+	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_169_INCLASS_NO_PURE_DECLS \
+	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_169_ENHANCED_CONSTRUCTORS \
 private: \
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
@@ -163,7 +163,7 @@ class ACloudGuideActor;
 // ********** End Class ACloudGuideActor ***********************************************************
 
 // ********** Begin Class ACloudGeneratorActor *****************************************************
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_204_RPC_WRAPPERS_NO_PURE_DECLS \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_214_RPC_WRAPPERS_NO_PURE_DECLS \
 	DECLARE_FUNCTION(execGetEncodedGuideData); \
 	DECLARE_FUNCTION(execRefreshCloud); \
 	DECLARE_FUNCTION(execAddGuide); \
@@ -180,7 +180,7 @@ class ACloudGuideActor;
 struct Z_Construct_UClass_ACloudGeneratorActor_Statics;
 CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_ACloudGeneratorActor(ETypeConstructPhase);
 
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_204_INCLASS_NO_PURE_DECLS \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_214_INCLASS_NO_PURE_DECLS \
 private: \
 	friend struct ::Z_Construct_UClass_ACloudGeneratorActor_Statics; \
 	friend CLOUDGENERATORTOOLS_API UClass* ::Z_Construct_UClass_ACloudGeneratorActor(ETypeConstructPhase); \
@@ -189,7 +189,7 @@ public: \
 	DECLARE_SERIALIZER(ACloudGeneratorActor)
 
 
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_204_ENHANCED_CONSTRUCTORS \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_214_ENHANCED_CONSTRUCTORS \
 	/** Deleted move- and copy-constructors, should never be used */ \
 	ACloudGeneratorActor(ACloudGeneratorActor&&) = delete; \
 	ACloudGeneratorActor(const ACloudGeneratorActor&) = delete; \
@@ -199,13 +199,13 @@ public: \
 	NO_API virtual ~ACloudGeneratorActor();
 
 
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_201_PROLOG
-#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_204_GENERATED_BODY \
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_211_PROLOG
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_214_GENERATED_BODY \
 PRAGMA_DISABLE_DEPRECATION_WARNINGS \
 public: \
-	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_204_RPC_WRAPPERS_NO_PURE_DECLS \
-	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_204_INCLASS_NO_PURE_DECLS \
-	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_204_ENHANCED_CONSTRUCTORS \
+	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_214_RPC_WRAPPERS_NO_PURE_DECLS \
+	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_214_INCLASS_NO_PURE_DECLS \
+	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_214_ENHANCED_CONSTRUCTORS \
 private: \
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
@@ -214,13 +214,51 @@ class ACloudGeneratorActor;
 
 // ********** End Class ACloudGeneratorActor *******************************************************
 
+// ********** Begin Class ALowFogGeneratorActor ****************************************************
+struct Z_Construct_UClass_ALowFogGeneratorActor_Statics;
+CLOUDGENERATORTOOLS_API UClass* Z_Construct_UClass_ALowFogGeneratorActor(ETypeConstructPhase);
+
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_467_INCLASS_NO_PURE_DECLS \
+private: \
+	friend struct ::Z_Construct_UClass_ALowFogGeneratorActor_Statics; \
+	friend CLOUDGENERATORTOOLS_API UClass* ::Z_Construct_UClass_ALowFogGeneratorActor(ETypeConstructPhase); \
+public: \
+	DECLARE_CLASS2(ALowFogGeneratorActor, ACloudGeneratorActor, COMPILED_IN_FLAGS(0 | CLASS_Config), CASTCLASS_None, TEXT("/Script/CloudGeneratorTools"), Z_Construct_UClass_ALowFogGeneratorActor) \
+	DECLARE_SERIALIZER(ALowFogGeneratorActor)
+
+
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_467_ENHANCED_CONSTRUCTORS \
+	/** Deleted move- and copy-constructors, should never be used */ \
+	ALowFogGeneratorActor(ALowFogGeneratorActor&&) = delete; \
+	ALowFogGeneratorActor(const ALowFogGeneratorActor&) = delete; \
+	DECLARE_VTABLE_PTR_HELPER_CTOR(NO_API, ALowFogGeneratorActor); \
+	DEFINE_VTABLE_PTR_HELPER_CTOR_CALLER(ALowFogGeneratorActor); \
+	DEFINE_DEFAULT_CONSTRUCTOR_CALL(ALowFogGeneratorActor) \
+	NO_API virtual ~ALowFogGeneratorActor();
+
+
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_464_PROLOG
+#define FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_467_GENERATED_BODY \
+PRAGMA_DISABLE_DEPRECATION_WARNINGS \
+public: \
+	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_467_INCLASS_NO_PURE_DECLS \
+	FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h_467_ENHANCED_CONSTRUCTORS \
+private: \
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+
+class ALowFogGeneratorActor;
+
+// ********** End Class ALowFogGeneratorActor ******************************************************
+
 #undef CURRENT_FILE_ID
 #define CURRENT_FILE_ID FID_HostProject_Plugins_QuickWidgetTools_Source_CloudGeneratorTools_Public_CloudGeneratorActor_h
 
 // ********** Begin Enum ECloudGuideShape **********************************************************
 #define FOREACH_ENUM_ECLOUDGUIDESHAPE(op) \
 	op(ECloudGuideShape::Sphere) \
-	op(ECloudGuideShape::Box) 
+	op(ECloudGuideShape::Box) \
+	op(ECloudGuideShape::Cylinder) 
 
 enum class ECloudGuideShape : uint8;
 template<> struct TIsUEnumClass<ECloudGuideShape> { enum { Value = true }; };

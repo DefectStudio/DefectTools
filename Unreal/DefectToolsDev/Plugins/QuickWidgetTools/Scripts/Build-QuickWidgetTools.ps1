@@ -97,6 +97,9 @@ $requiredContent = @(
     'Content\OnlyClouds\PlacedClouds\BP_CloudPreset.uasset',
     'Content\OnlyClouds\PlacedClouds\Presets\CP_Cumulus.uasset',
     'Content\OnlyClouds\PlacedClouds\Presets\CP_Cumulonimbus.uasset',
+    'Content\OnlyClouds\LowFog\BP_LowFogPreset.uasset',
+    'Content\OnlyClouds\LowFog\Presets\CP_LowFog_Cemetery.uasset',
+    'Content\OnlyClouds\LowFog\Materials\M_LowFogVolume.uasset',
     'Content\OnlyClouds\Templates\LVL_BasicLiteRigg.umap'
 )
 foreach ($relative in $requiredContent) { Assert-File (Join-Path $pluginRootPath $relative) }

@@ -18,6 +18,7 @@
 #include "Engine/StaticMeshActor.h"
 #include "Engine/PostProcessVolume.h"
 #include "Components/VolumetricCloudComponent.h"
+#include "Materials/MaterialInterface.h"
 #include "UObject/StrongObjectPtr.h"
 #include "ToolMenus.h"
 #include "Framework/Commands/UIAction.h"
@@ -37,6 +38,8 @@ namespace OnlyCloudsEditor
     static constexpr const TCHAR* WorldCloudClassPath = TEXT("/QuickWidgetTools/OnlyClouds/WorldClouds/BP_UDSOnlyClouds.BP_UDSOnlyClouds_C");
     static constexpr const TCHAR* PresetCloudClassPath = TEXT("/QuickWidgetTools/OnlyClouds/PlacedClouds/BP_CloudPreset.BP_CloudPreset_C");
     static constexpr const TCHAR* CumulusPath = TEXT("/QuickWidgetTools/OnlyClouds/PlacedClouds/Presets/CP_Cumulus.CP_Cumulus");
+    static constexpr const TCHAR* LowFogClassPath = TEXT("/QuickWidgetTools/OnlyClouds/LowFog/BP_LowFogPreset.BP_LowFogPreset_C");
+    static constexpr const TCHAR* LowFogPresetPath = TEXT("/QuickWidgetTools/OnlyClouds/LowFog/Presets/CP_LowFog_Cemetery.CP_LowFog_Cemetery");
 
     // Stored only during synchronous dispatch of an actual registered menu delegate.
     static FOnlyCloudsEditorActionResult LastActionResult;
@@ -139,6 +142,7 @@ namespace OnlyCloudsEditor
         if (Name == TEXT("AddBasicLightRigg")) LastActionResult = UOnlyCloudsEditorLibrary::AddBasicLightRigg();
         else if (Name == TEXT("AddLayeredWorldClouds")) LastActionResult = UOnlyCloudsEditorLibrary::AddLayeredWorldClouds();
         else if (Name == TEXT("AddCloudPreset")) LastActionResult = UOnlyCloudsEditorLibrary::AddCloudPreset();
+        else if (Name == TEXT("AddLowFogPreset")) LastActionResult = UOnlyCloudsEditorLibrary::AddLowFogPreset();
         else LastActionResult = Fail(TEXT("Unknown OnlyClouds toolbar action."));
         UOnlyCloudsEditorLibrary::ReportActionResult(LastActionResult);
         // A normal action invocation has no result reader. Do not retain world objects
@@ -305,6 +309,47 @@ FOnlyCloudsEditorActionResult UOnlyCloudsEditorLibrary::AddCloudPreset()
     return Result;
 }
 
+FOnlyCloudsEditorActionResult UOnlyCloudsEditorLibrary::AddLowFogPreset()
+{
+    using namespace OnlyCloudsEditor;
+    UWorld* World; ULevel* Level; UEditorActorSubsystem* Actors; FString Error;
+    if (!GetDestination(World, Level, Actors, Error)) return Fail(Error);
+    UClass* Class = LoadClass<ALowFogGeneratorActor>(nullptr, LowFogClassPath);
+    UCloudRecipePreset* Preset = LoadObject<UCloudRecipePreset>(nullptr, LowFogPresetPath);
+    if (!Class || !Preset || Preset->Recipe.Guides.IsEmpty() || !Preset->Recipe.bGroundFog)
+        return Fail(TEXT("BP_LowFogPreset or its saved cemetery fog recipe could not be loaded."));
+    if (!Preset->Recipe.CloudMaterial.LoadSynchronous())
+        return Fail(TEXT("The saved low-fog volume material could not be loaded. Restore the material before adding fog."));
+    const ALowFogGeneratorActor* Defaults = Class->GetDefaultObject<ALowFogGeneratorActor>();
+    if (!Defaults || Defaults->Preset != Preset || !Defaults->bUseDefaultPresetOnFirstPlacement)
+        return Fail(TEXT("BP_LowFogPreset is missing its first-placement cemetery fog configuration."));
+
+    const TArray<AActor*> PreviousSelection = Actors->GetSelectedLevelActors();
+    FScopedTransaction Transaction(LOCTEXT("AddLowFogPresetTransaction", "OnlyClouds: Add Low Fog Preset"));
+    World->Modify(); Level->Modify();
+    ALowFogGeneratorActor* Fog = Cast<ALowFogGeneratorActor>(Actors->SpawnActorFromClass(Class, FVector::ZeroVector, FRotator::ZeroRotator, false));
+    if (!IsValid(Fog)) { Transaction.Cancel(); return Fail(TEXT("Unreal could not spawn BP_LowFogPreset.")); }
+    // The one-shot native initializer owns recipe application and guide creation.
+    if (Fog->Guides.Num() != Preset->Recipe.Guides.Num() || !Fog->bGroundFog)
+    {
+        // Destroyed intentionally leaves a generator's guides editable in the level.
+        // This failed creation must instead remove every guide owned by its new actor.
+        const TArray<TObjectPtr<ACloudGuideActor>> IncompleteGuides = Fog->Guides;
+        for (ACloudGuideActor* Guide : IncompleteGuides)
+            if (IsValid(Guide) && Guide->Generator == Fog) World->EditorDestroyActor(Guide, true);
+        World->EditorDestroyActor(Fog, true);
+        Transaction.Cancel(); Select(Actors, PreviousSelection);
+        return Fail(TEXT("The cemetery fog preset did not initialize completely. The incomplete fog was removed."));
+    }
+    Fog->SetFlags(RF_Transactional); Fog->Modify(); Fog->SetActorLabel(TEXT("BP_LowFogPreset"));
+    Fog->MarkPackageDirty();
+    Select(Actors, {Fog});
+    FOnlyCloudsEditorActionResult Result;
+    Result.bSuccess = true; Result.bCreated = true; Result.Actors.Add(Fog);
+    Result.Message = TEXT("Added BP_LowFogPreset with the saved rolling cemetery fog and editable shape guide. Move the generator to the ground surface.");
+    return Result;
+}
+
 void UOnlyCloudsEditorLibrary::ReportActionResult(const FOnlyCloudsEditorActionResult& Result)
 {
     OnlyCloudsEditor::ReportResult(Result);
@@ -342,7 +387,7 @@ FString UOnlyCloudsEditorLibrary::DescribeRegisteredMenu()
     Data->SetStringField(TEXT("insert_after"), Section ? Section->InsertPosition.Name.ToString() : TEXT(""));
     Data->SetBoolField(TEXT("works_without_uds"), Menu != nullptr);
     TArray<TSharedPtr<FJsonValue>> Entries;
-    for (FName Name : { FName(TEXT("AddBasicLightRigg")), FName(TEXT("AddLayeredWorldClouds")), FName(TEXT("AddCloudPreset")) })
+    for (FName Name : { FName(TEXT("AddBasicLightRigg")), FName(TEXT("AddLayeredWorldClouds")), FName(TEXT("AddCloudPreset")), FName(TEXT("AddLowFogPreset")) })
     {
         TSharedRef<FJsonObject> Info = MakeShared<FJsonObject>();
         const FToolMenuEntry* Entry = FindMenuEntry(Menu, Name);

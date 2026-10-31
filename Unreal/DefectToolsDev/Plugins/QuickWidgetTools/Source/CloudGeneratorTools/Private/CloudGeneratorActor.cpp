@@ -106,6 +106,14 @@ namespace CloudGenerator
                     DrawWireBox(PDI, GetLocalToWorld(), FBox(FVector(-GuideUnitRadius), FVector(GuideUnitRadius)),
                         DrawColor, SDPG_World, Thickness);
                 }
+                else if (Shape == ECloudGuideShape::Cylinder)
+                {
+                    // Retain independent radial X/Y and height Z scale for elliptical cylinders.
+                    const FMatrix& Matrix = GetLocalToWorld();
+                    DrawWireCylinder(PDI, Matrix.GetOrigin(), Matrix.GetScaledAxis(EAxis::X),
+                        Matrix.GetScaledAxis(EAxis::Y), Matrix.GetScaledAxis(EAxis::Z), DrawColor,
+                        GuideUnitRadius, GuideUnitRadius, 48, SDPG_World, Thickness, 0.0f, true);
+                }
                 else
                 {
                     // Unlike a collision SphereComponent, this outline retains nonuniform scale.
@@ -264,6 +272,36 @@ ACloudGeneratorActor::ACloudGeneratorActor()
     CloudMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/QuickWidgetTools/OnlyClouds/PlacedClouds/Materials/M_CloudVolume_FlexibleGuides.M_CloudVolume_FlexibleGuides")));
 }
 
+ALowFogGeneratorActor::ALowFogGeneratorActor()
+{
+    bGroundFog = true;
+    bEdgeFallOff = true;
+    EdgeFallOffDistanceCm = 80.0f;
+    FogHeightCm = 82.03125f;
+    Density = 1.4f;
+    BillowSizeCm = 100.0f;
+    BillowDepthCm = 35.0f;
+    BillowStrength = 0.8f;
+    DetailSizeCm = 24.0f;
+    DetailStrength = 0.35f;
+    BillowStyle = ECloudBillowStyle::SoftRolling;
+    NoiseTiling = FVector(1.0, 1.0, 1.6);
+    WarpAmount = 0.2f;
+    bAnimated = true;
+    OffsetSpeedX = 8.0f;
+    OffsetSpeedY = 2.0f;
+    OffsetSpeedZ = 0.8f;
+    PhaseSpeed = 0.07f;
+    InteriorVariation = 0.55f;
+    WispStrength = 0.3f;
+    WispStretch = FVector(2.0, 1.0, 1.0);
+    UnionBlendCm = 15.0f;
+    UnionGrowthLimitCm = 7.5f;
+    PresetName = TEXT("MyLowFog");
+    PresetSaveDirectory = TEXT("/Game/OnlyClouds/LowFogPresets");
+    CloudMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/QuickWidgetTools/OnlyClouds/LowFog/Materials/M_LowFogVolume.M_LowFogVolume")));
+}
+
 void ACloudGeneratorActor::RegisterGuide(ACloudGuideActor* Guide)
 {
     if (bDestroyingGenerator || !IsValid(Guide) || Guide->GetWorld() != GetWorld())
@@ -356,6 +394,15 @@ void ACloudGeneratorActor::AddGuide()
     }
 #endif
     FTransform SpawnTransform(FQuat::Identity, GetActorLocation() + FVector(0.0, 0.0, 700.0), FVector(6.0));
+    ECloudGuideShape NewShape = ECloudGuideShape::Sphere;
+    if (bGroundFog)
+    {
+        const double Height = CloudGenerator::SafeFloat(FogHeightCm, 82.03125f, 0.1f, CloudGenerator::MaxDimensionCm);
+        const double Ground = CloudGenerator::SafeFloat(GroundOffsetCm, 0.0f, -CloudGenerator::MaxPositionCm, CloudGenerator::MaxPositionCm);
+        SpawnTransform = FTransform(FQuat::Identity, GetActorLocation() + FVector(0.0, 0.0, Ground + Height * 0.5),
+            FVector(3.28125, 3.28125, Height / (2.0 * CloudGenerator::GuideUnitRadius)));
+        NewShape = ECloudGuideShape::Cylinder;
+    }
     for (int32 Index = Guides.Num() - 1; Index >= 0; --Index)
     {
         const ACloudGuideActor* Previous = Guides[Index];
@@ -365,6 +412,7 @@ void ACloudGeneratorActor::AddGuide()
             const FVector Scale = Previous->GetActorScale3D().GetAbs().ComponentMax(FVector(0.001));
             const double Offset = FMath::Max(50.0, Scale.GetMin() * CloudGenerator::GuideUnitRadius * 0.85);
             SpawnTransform = FTransform(Previous->GetActorQuat(), Previous->GetActorLocation() + FVector(Offset, 0.0, 0.0), Scale);
+            if (bGroundFog) NewShape = Previous->Shape;
             break;
         }
     }
@@ -379,6 +427,7 @@ void ACloudGeneratorActor::AddGuide()
         return;
     }
     Guide->Generator = this;
+    Guide->Shape = NewShape;
     Guide->AttachToComponent(SceneRoot, FAttachmentTransformRules::KeepWorldTransform);
     RegisterGuide(Guide);
     Guide->NotifyGenerator();
@@ -506,10 +555,16 @@ bool ACloudGeneratorActor::UpdateMaterial()
     DynamicMaterial->SetTextureParameterValue(TEXT("GuideData"), GuideDataTexture);
     DynamicMaterial->SetScalarParameterValue(TEXT("GuideCount"), ActiveGuideCount);
     DynamicMaterial->SetScalarParameterValue(TEXT("BoundsHalfExtentCm"), BoundsHalfExtentCm);
+    DynamicMaterial->SetScalarParameterValue(TEXT("VolumeHalfResolution"), VolumeResolution * 0.5f);
+    DynamicMaterial->SetVectorParameterValue(TEXT("BoundsHalfExtentsCm"), FLinearColor(
+        BoundsHalfExtentsCm.X, BoundsHalfExtentsCm.Y, BoundsHalfExtentsCm.Z, 0.0f));
     DynamicMaterial->SetVectorParameterValue(TEXT("BoundsCenterRelativeToAnchor"), FLinearColor(
         BoundsCenterRelativeToAnchorCm.X, BoundsCenterRelativeToAnchorCm.Y, BoundsCenterRelativeToAnchorCm.Z, 0.0f));
     DynamicMaterial->SetScalarParameterValue(TEXT("ExtinctionScale"), ComputedExtinctionScale);
     DynamicMaterial->SetScalarParameterValue(TEXT("Density"), CloudGenerator::SafeFloat(Density, 2.6f, 0.0f, 100.0f));
+    DynamicMaterial->SetScalarParameterValue(TEXT("EdgeFallOff"), bEdgeFallOff ? 1.0f : 0.0f);
+    DynamicMaterial->SetScalarParameterValue(TEXT("EdgeFallOffDistanceCm"), CloudGenerator::SafeFloat(EdgeFallOffDistanceCm, 100.0f, 0.0f, CloudGenerator::MaxDimensionCm));
+    DynamicMaterial->SetScalarParameterValue(TEXT("EdgeFallOffContrast"), CloudGenerator::SafeFloat(EdgeFallOffContrast, 1.0f, 0.01f, 100.0f));
     DynamicMaterial->SetScalarParameterValue(TEXT("Seed"), CloudGenerator::SafeFloat(Seed, 1.0f, -1000000.0f, 1000000.0f));
     DynamicMaterial->SetScalarParameterValue(TEXT("BillowSizeCm"), CloudGenerator::SafeFloat(BillowSizeCm, 228.78f, 0.1f, CloudGenerator::MaxDimensionCm));
     DynamicMaterial->SetScalarParameterValue(TEXT("BillowDepthCm"), CloudGenerator::SafeFloat(BillowDepthCm, 550.0f, 0.0f, CloudGenerator::MaxDimensionCm));
@@ -556,6 +611,11 @@ bool ACloudGeneratorActor::UpdateMaterial()
     DynamicMaterial->SetScalarParameterValue(TEXT("InteriorVariation"), CloudGenerator::SafeFloat(InteriorVariation, 0.0f, 0.0f, 1.0f));
     DynamicMaterial->SetScalarParameterValue(TEXT("VerticalDensityGradient"), CloudGenerator::SafeFloat(VerticalDensityGradient, 0.0f, -1.0f, 1.0f));
     DynamicMaterial->SetScalarParameterValue(TEXT("VerticalReferenceHeightCm"), CloudGenerator::SafeFloat(VerticalReferenceHeightCm, 3000.0f, 1.0f, CloudGenerator::MaxDimensionCm));
+    DynamicMaterial->SetScalarParameterValue(TEXT("GroundFog"), bGroundFog ? 1.0f : 0.0f);
+    DynamicMaterial->SetScalarParameterValue(TEXT("GroundOffsetCm"), CloudGenerator::SafeFloat(GroundOffsetCm, 0.0f, -CloudGenerator::MaxPositionCm, CloudGenerator::MaxPositionCm));
+    DynamicMaterial->SetScalarParameterValue(TEXT("GroundFadeCm"), CloudGenerator::SafeFloat(GroundFadeCm, 3.0f, 0.0f, CloudGenerator::MaxDimensionCm));
+    DynamicMaterial->SetScalarParameterValue(TEXT("FogHeightCm"), CloudGenerator::SafeFloat(FogHeightCm, 82.03125f, 0.1f, CloudGenerator::MaxDimensionCm));
+    DynamicMaterial->SetScalarParameterValue(TEXT("HeightFalloff"), CloudGenerator::SafeFloat(HeightFalloff, 1.8f, 0.01f, 100.0f));
     UpdateAnimationMaterial(true);
     return true;
 }
@@ -686,6 +746,7 @@ void ACloudGeneratorActor::RefreshCloud()
     NewData.SetNumZeroed(GuideDataWidth * MaxGuides);
     ActiveGuideCount = 0;
     BoundsHalfExtentCm = 0.0f;
+    BoundsHalfExtentsCm = FVector::ZeroVector;
     BoundsCenterRelativeToAnchorCm = FVector::ZeroVector;
     ComputedExtinctionScale = 0.0f;
     const FVector Anchor = GetActorLocation();
@@ -769,7 +830,8 @@ void ACloudGeneratorActor::RefreshCloud()
             ++PositiveCount;
         }
         const int32 Row = ActiveGuideCount++ * GuideDataWidth;
-        const float Kind = (bSphere ? 1.0f : 2.0f) * (bPositive ? 1.0f : -1.0f);
+        const float ShapeKind = bSphere ? 1.0f : (Guide->Shape == ECloudGuideShape::Cylinder ? 3.0f : 2.0f);
+        const float Kind = ShapeKind * (bPositive ? 1.0f : -1.0f);
         NewData[Row] = FLinearColor(Center.X, Center.Y, Center.Z, Kind);
         NewData[Row + 1] = FLinearColor(Radii.X, Radii.Y, Radii.Z, FMath::Clamp(Guide->SoftnessCm, 0.0f, static_cast<float>(CloudGenerator::MaxDimensionCm)));
         NewData[Row + 2] = FLinearColor(Rotation.X, Rotation.Y, Rotation.Z, Rotation.W);
@@ -803,8 +865,21 @@ void ACloudGeneratorActor::RefreshCloud()
         }
         return;
     }
+    if (bGroundFog)
+    {
+        const double Ground = CloudGenerator::SafeFloat(GroundOffsetCm, 0.0f, -CloudGenerator::MaxPositionCm, CloudGenerator::MaxPositionCm);
+        const double Height = CloudGenerator::SafeFloat(FogHeightCm, 82.03125f, 0.1f, CloudGenerator::MaxDimensionCm);
+        PositiveBounds.Min.Z = FMath::Max(PositiveBounds.Min.Z, Ground);
+        PositiveBounds.Max.Z = FMath::Min(PositiveBounds.Max.Z, Ground + Height);
+        if (PositiveBounds.Min.Z >= PositiveBounds.Max.Z)
+        {
+            CloudVolume->SetVisibility(false);
+            PreviewStatus = TEXT("Move an additive guide into the low-fog height range.");
+            return;
+        }
+    }
     const double RawHalfExtent = FMath::Max(0.1, PositiveBounds.GetExtent().GetMax());
-    // Two voxel widths plus a small numerical margin around the analytically inflated bounds.
+    // Keep the baseline 128-voxel padding fixed in world space: resolution changes only sampling.
     const double HalfExtent = FMath::Max(50.0, RawHalfExtent * (1.0 + 2.0 / 64.0) + 1.0);
     if (!FMath::IsFinite(HalfExtent) || HalfExtent > CloudGenerator::MaxPositionCm)
     {
@@ -813,10 +888,16 @@ void ACloudGeneratorActor::RefreshCloud()
         return;
     }
     BoundsHalfExtentCm = static_cast<float>(HalfExtent);
+    BoundsHalfExtentsCm = bGroundFog
+        ? (PositiveBounds.GetExtent() * (1.0 + 2.0 / 64.0) + FVector(1.0)).ComponentMax(FVector(1.0))
+        : FVector(HalfExtent);
     BoundsCenterRelativeToAnchorCm = PositiveBounds.GetCenter();
-    ComputedExtinctionScale = static_cast<float>(0.08 * HalfExtent / 1271.0);
+    const double HalfResolution = VolumeResolution * 0.5;
+    // Extinction is integrated over local voxel distance. Compensate for the
+    // uniform change in voxel coordinates so optical density is resolution-independent.
+    ComputedExtinctionScale = static_cast<float>((0.08 * HalfExtent / 1271.0) * (128.0 / VolumeResolution));
     CloudVolume->SetWorldLocationAndRotation(Anchor + BoundsCenterRelativeToAnchorCm, FQuat::Identity, false, nullptr, ETeleportType::TeleportPhysics);
-    CloudVolume->SetWorldScale3D(FVector(HalfExtent / 64.0));
+    CloudVolume->SetWorldScale3D(BoundsHalfExtentsCm / HalfResolution);
     if (!UpdateMaterial())
     {
         CloudVolume->SetVisibility(false);
@@ -926,17 +1007,21 @@ void ACloudGeneratorActor::PostEditUndo()
 
 void ACloudGeneratorActor::ApplyQuality()
 {
-    // Fixed volume resolution keeps local coordinates, density and all shape data identical.
+    // Artist resolution changes sampling; RefreshCloud compensates local bounds,
+    // material coordinates and extinction so the authored volume remains fixed.
+    VolumeResolution = FMath::Clamp(VolumeResolution, 32, 512);
+    const FIntVector DesiredResolution(VolumeResolution);
     const float Step = Quality == ECloudPreviewQuality::Cinematic ? 0.5f : 1.0f;
     const float ShadowStep = Quality == ECloudPreviewQuality::Cinematic ? 1.0f : 2.0f;
     const float Lighting = Quality == ECloudPreviewQuality::Cinematic ? 1.0f : 2.0f;
     if (CloudVolume->StepFactor != Step || CloudVolume->ShadowStepFactor != ShadowStep ||
-        CloudVolume->LightingDownsampleFactor != Lighting || CloudVolume->VolumeResolution != FIntVector(128))
+        CloudVolume->LightingDownsampleFactor != Lighting || CloudVolume->VolumeResolution != DesiredResolution)
     {
         CloudVolume->StepFactor = Step;
         CloudVolume->ShadowStepFactor = ShadowStep;
         CloudVolume->LightingDownsampleFactor = Lighting;
-        CloudVolume->VolumeResolution = FIntVector(128);
+        CloudVolume->VolumeResolution = DesiredResolution;
+        CloudVolume->UpdateBounds();
         CloudVolume->MarkRenderStateDirty();
     }
 }
@@ -948,6 +1033,7 @@ FCloudRecipe ACloudGeneratorActor::CaptureRecipe() const
     Recipe.GeneratorScale = GetActorScale3D();
 #define COPY_CLOUD_FIELD(Name) Recipe.Name = Name;
     COPY_CLOUD_FIELD(Density) COPY_CLOUD_FIELD(Seed) COPY_CLOUD_FIELD(CloudColor) COPY_CLOUD_FIELD(SkyFill)
+    COPY_CLOUD_FIELD(VolumeResolution) COPY_CLOUD_FIELD(bEdgeFallOff) COPY_CLOUD_FIELD(EdgeFallOffDistanceCm) COPY_CLOUD_FIELD(EdgeFallOffContrast)
     COPY_CLOUD_FIELD(BillowSizeCm) COPY_CLOUD_FIELD(BillowDepthCm) COPY_CLOUD_FIELD(BillowStrength)
     COPY_CLOUD_FIELD(DetailSizeCm) COPY_CLOUD_FIELD(DetailStrength) COPY_CLOUD_FIELD(UnionBlendCm) COPY_CLOUD_FIELD(UnionGrowthLimitCm)
     COPY_CLOUD_FIELD(BillowStyle) COPY_CLOUD_FIELD(CustomShapeNoiseTexture) COPY_CLOUD_FIELD(CustomDetailNoiseTexture)
@@ -959,7 +1045,11 @@ FCloudRecipe ACloudGeneratorActor::CaptureRecipe() const
     COPY_CLOUD_FIELD(LevelsInputLow) COPY_CLOUD_FIELD(LevelsInputMid) COPY_CLOUD_FIELD(LevelsInputHigh) COPY_CLOUD_FIELD(LevelsOutputLow) COPY_CLOUD_FIELD(LevelsOutputHigh)
     COPY_CLOUD_FIELD(CloudStyle) COPY_CLOUD_FIELD(WispStrength) COPY_CLOUD_FIELD(WispStretch) COPY_CLOUD_FIELD(WispDirectionDegrees)
     COPY_CLOUD_FIELD(InteriorVariation) COPY_CLOUD_FIELD(VerticalDensityGradient) COPY_CLOUD_FIELD(VerticalReferenceHeightCm) COPY_CLOUD_FIELD(CloudMaterial)
+    COPY_CLOUD_FIELD(bGroundFog) COPY_CLOUD_FIELD(GroundOffsetCm) COPY_CLOUD_FIELD(GroundFadeCm) COPY_CLOUD_FIELD(FogHeightCm) COPY_CLOUD_FIELD(HeightFalloff)
 #undef COPY_CLOUD_FIELD
+    Recipe.VolumeResolution = FMath::Clamp(Recipe.VolumeResolution, 32, 512);
+    Recipe.EdgeFallOffDistanceCm = CloudGenerator::SafeFloat(Recipe.EdgeFallOffDistanceCm, 100.0f, 0.0f, CloudGenerator::MaxDimensionCm);
+    Recipe.EdgeFallOffContrast = CloudGenerator::SafeFloat(Recipe.EdgeFallOffContrast, 1.0f, 0.01f, 100.0f);
     for (const ACloudGuideActor* Guide : Guides)
     {
         if (!IsValid(Guide) || Guide->IsActorBeingDestroyed() || Guide->Generator != this || Recipe.Guides.Num() >= MaxGuides)
@@ -981,6 +1071,7 @@ void ACloudGeneratorActor::ApplyAppearance(const FCloudRecipe& Recipe)
 {
 #define COPY_CLOUD_FIELD(Name) Name = Recipe.Name;
     COPY_CLOUD_FIELD(Density) COPY_CLOUD_FIELD(Seed) COPY_CLOUD_FIELD(CloudColor) COPY_CLOUD_FIELD(SkyFill)
+    COPY_CLOUD_FIELD(VolumeResolution) COPY_CLOUD_FIELD(bEdgeFallOff) COPY_CLOUD_FIELD(EdgeFallOffDistanceCm) COPY_CLOUD_FIELD(EdgeFallOffContrast)
     COPY_CLOUD_FIELD(BillowSizeCm) COPY_CLOUD_FIELD(BillowDepthCm) COPY_CLOUD_FIELD(BillowStrength)
     COPY_CLOUD_FIELD(DetailSizeCm) COPY_CLOUD_FIELD(DetailStrength) COPY_CLOUD_FIELD(UnionBlendCm) COPY_CLOUD_FIELD(UnionGrowthLimitCm)
     COPY_CLOUD_FIELD(BillowStyle) COPY_CLOUD_FIELD(CustomShapeNoiseTexture) COPY_CLOUD_FIELD(CustomDetailNoiseTexture)
@@ -992,7 +1083,11 @@ void ACloudGeneratorActor::ApplyAppearance(const FCloudRecipe& Recipe)
     COPY_CLOUD_FIELD(LevelsInputLow) COPY_CLOUD_FIELD(LevelsInputMid) COPY_CLOUD_FIELD(LevelsInputHigh) COPY_CLOUD_FIELD(LevelsOutputLow) COPY_CLOUD_FIELD(LevelsOutputHigh)
     COPY_CLOUD_FIELD(CloudStyle) COPY_CLOUD_FIELD(WispStrength) COPY_CLOUD_FIELD(WispStretch) COPY_CLOUD_FIELD(WispDirectionDegrees)
     COPY_CLOUD_FIELD(InteriorVariation) COPY_CLOUD_FIELD(VerticalDensityGradient) COPY_CLOUD_FIELD(VerticalReferenceHeightCm) COPY_CLOUD_FIELD(CloudMaterial)
+    COPY_CLOUD_FIELD(bGroundFog) COPY_CLOUD_FIELD(GroundOffsetCm) COPY_CLOUD_FIELD(GroundFadeCm) COPY_CLOUD_FIELD(FogHeightCm) COPY_CLOUD_FIELD(HeightFalloff)
 #undef COPY_CLOUD_FIELD
+    VolumeResolution = FMath::Clamp(VolumeResolution, 32, 512);
+    EdgeFallOffDistanceCm = CloudGenerator::SafeFloat(EdgeFallOffDistanceCm, 100.0f, 0.0f, CloudGenerator::MaxDimensionCm);
+    EdgeFallOffContrast = CloudGenerator::SafeFloat(EdgeFallOffContrast, 1.0f, 0.01f, 100.0f);
     UpdateAnimationMaterial();
 }
 
@@ -1248,7 +1343,11 @@ void ACloudGeneratorActor::UnlockCloud()
 void ACloudGeneratorActor::RestoreLockedRecipe()
 {
     TGuardValue<bool> Guard(bRestoringRecipe, true);
+    // Resolution is a rendering choice even though presets remember it. Locking
+    // protects the appearance and guides while allowing quality adjustments.
+    const int32 CurrentResolution = VolumeResolution;
     ApplyAppearance(LockedRecipe);
+    VolumeResolution = CurrentResolution;
     TArray<TObjectPtr<ACloudGuideActor>> RestoredGuides;
     for (const FCloudGuideRecipe& Recipe : LockedRecipe.Guides)
     {

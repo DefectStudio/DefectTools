@@ -17,8 +17,9 @@ class ACloudGuideActor;
 UENUM(BlueprintType)
 enum class ECloudGuideShape : uint8
 {
-    Sphere UMETA(DisplayName = "Sphere"),
-    Box UMETA(DisplayName = "Box")
+    Sphere = 0 UMETA(DisplayName = "Sphere"),
+    Box = 1 UMETA(DisplayName = "Box"),
+    Cylinder = 2 UMETA(DisplayName = "Cylinder / Circle")
 };
 
 UENUM(BlueprintType)
@@ -72,7 +73,7 @@ struct CLOUDGENERATORTOOLS_API FCloudGuideRecipe
     UPROPERTY() FGuid GuideId;
 };
 
-/** Deterministic editable recipe, independent of actor location and render quality. */
+/** Deterministic editable recipe, independent of actor placement and sampling-quality mode. */
 USTRUCT(BlueprintType)
 struct CLOUDGENERATORTOOLS_API FCloudRecipe
 {
@@ -86,6 +87,10 @@ struct CLOUDGENERATORTOOLS_API FCloudRecipe
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") float Seed = 1.0f;
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") FLinearColor CloudColor = FLinearColor(0.95f, 0.97f, 1.0f, 1.0f);
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") float SkyFill = 0.45f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud", meta = (ClampMin = "32", ClampMax = "512")) int32 VolumeResolution = 128;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") bool bEdgeFallOff = false;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") float EdgeFallOffDistanceCm = 100.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") float EdgeFallOffContrast = 1.0f;
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") float BillowSizeCm = 228.78f;
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") float BillowDepthCm = 550.0f;
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") float BillowStrength = 1.0f;
@@ -128,6 +133,11 @@ struct CLOUDGENERATORTOOLS_API FCloudRecipe
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") float InteriorVariation = 0.0f;
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") float VerticalDensityGradient = 0.0f;
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") float VerticalReferenceHeightCm = 3000.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Low Fog") bool bGroundFog = false;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Low Fog") float GroundOffsetCm = 0.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Low Fog") float GroundFadeCm = 3.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Low Fog") float FogHeightCm = 70.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Low Fog") float HeightFalloff = 1.8f;
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud") TSoftObjectPtr<UMaterialInterface> CloudMaterial;
 };
 
@@ -226,6 +236,13 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud Appearance", meta = (ClampMin = "0", UIMin = "0", UIMax = "2"))
     float SkyFill = 0.45f;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud Appearance|Edge Fall Off", meta = (DisplayName = "Edge Fall Off", ToolTip = "Fade inward from the additive guide boundary while preserving the interior. Low-fog cylinders and boxes use their horizontal perimeter; spheres and ordinary clouds use the full 3D boundary."))
+    bool bEdgeFallOff = false;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud Appearance|Edge Fall Off", meta = (DisplayName = "Edge Fall Off Distance", EditCondition = "bEdgeFallOff", ClampMin = "0", Units = "cm", ToolTip = "Distance inward from the shape boundary, in centimeters. The shader limits it to each shape's usable inner radius so its center can reach full density. Zero makes a hard edge."))
+    float EdgeFallOffDistanceCm = 100.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud Appearance|Edge Fall Off", meta = (DisplayName = "Edge Fall Off Contrast", EditCondition = "bEdgeFallOff", ClampMin = "0.01", ClampMax = "100", UIMin = "0.1", UIMax = "8", ToolTip = "Curve steepness inside the falloff distance. 1 is linear, values above 1 concentrate density toward the core, and values below 1 fill the transition sooner."))
+    float EdgeFallOffContrast = 1.0f;
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud Detail", meta = (ClampMin = "0.1", Units = "cm", DisplayName = "Billow Size"))
     float BillowSizeCm = 228.78f;
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud Detail", meta = (ClampMin = "0", Units = "cm", DisplayName = "Billow Depth"))
@@ -307,6 +324,8 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud Quality", meta = (ToolTip = "Cinematic improves volume and shadow sampling. It preserves the shape, seed and density and costs more to render."))
     ECloudPreviewQuality Quality = ECloudPreviewQuality::Preview;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud Quality", meta = (DisplayName = "Volume Resolution", ClampMin = "32", ClampMax = "512", UIMin = "32", UIMax = "512", ToolTip = "Voxels per axis; X, Y and Z change together, from 32 to 512. Higher values can improve fine volume detail at greater memory and rendering cost; renderer sampling limits may cap the visible gain. Guide size, world-space noise scale and density stay unchanged. Saved in presets; adjustable while locked."))
+    int32 VolumeResolution = 128;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud Appearance", meta = (ToolTip = "The cloud family. Load a preset to also arrange its shape guides."))
     ECloudStyle CloudStyle = ECloudStyle::Cumulus;
@@ -322,6 +341,18 @@ public:
     float VerticalDensityGradient = 0.0f;
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud Detail", meta = (ClampMin = "1", Units = "cm", ToolTip = "Height of the vertical density profile above the generator. This stays fixed when guides move."))
     float VerticalReferenceHeightCm = 3000.0f;
+
+    /** Ground-fog controls are ignored by the original cloud material and default off for existing clouds. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Low Fog", meta = (DisplayName = "Ground Fog", ToolTip = "Use the low-fog material's ground mask and shallow volume bounds. The ground plane follows the generator's world Z; it does not conform to terrain."))
+    bool bGroundFog = false;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Low Fog", meta = (Units = "cm", ToolTip = "Ground plane height above the generator's world Z. Negative values lower it."))
+    float GroundOffsetCm = 0.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Low Fog", meta = (ClampMin = "0", Units = "cm", ToolTip = "Soft transition above the ground plane. Zero makes a hard floor."))
+    float GroundFadeCm = 3.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Low Fog", meta = (ClampMin = "0.1", Units = "cm", ToolTip = "Maximum fog height above the ground plane. The rolling noise and guides shape the fog beneath this ceiling."))
+    float FogHeightCm = 70.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Low Fog", meta = (ClampMin = "0.01", UIMin = "0.1", UIMax = "8", ToolTip = "Density fade toward the fog ceiling. Larger values keep more density close to the floor."))
+    float HeightFalloff = 1.8f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud Presets", meta = (ToolTip = "Choose a saved cloud, then press Load Preset. Location and rotation stay unchanged; new recipes restore their authored generator scale."))
     TObjectPtr<UCloudRecipePreset> Preset;
@@ -360,6 +391,8 @@ public:
     int32 ActiveGuideCount = 0;
     UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Cloud Generator", AdvancedDisplay)
     float BoundsHalfExtentCm = 0.0f;
+    UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Cloud Generator", AdvancedDisplay)
+    FVector BoundsHalfExtentsCm = FVector::ZeroVector;
     UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Cloud Generator", AdvancedDisplay)
     FVector BoundsCenterRelativeToAnchorCm = FVector::ZeroVector;
     UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Cloud Generator", AdvancedDisplay)
@@ -425,6 +458,15 @@ private:
     bool UpdateMaterial();
     void UpdateAnimationMaterial(bool bForce = false);
     bool IsAnimationWorld() const;
+};
+
+/** Placed low-fog variant with the complete editable cloud-recipe workflow. */
+UCLASS(Blueprintable, hidecategories = (Replication, Networking, Input, Collision, HLOD, Physics))
+class CLOUDGENERATORTOOLS_API ALowFogGeneratorActor : public ACloudGeneratorActor
+{
+    GENERATED_BODY()
+public:
+    ALowFogGeneratorActor();
 };
 
 
