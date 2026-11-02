@@ -21,6 +21,10 @@ from portable_pipe_tools.render_farm.cloud_dispatch import DispatcherClient, loa
 from portable_pipe_tools.render_farm.registered_claims import RegisteredQueueWorker
 from portable_pipe_tools.render_farm.company_connection import load_company_worker_connection
 from portable_pipe_tools.render_farm.worker_setup import check_worker_setup
+from portable_pipe_tools.render_farm.render_progress import (
+    DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS, DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+)
 from portable_pipe_tools.render_farm.registered_render import main as render_main
 from portable_pipe_tools.render_farm.v2_gui_settings import save_unreal_editor_preference, save_dropbox_root
 from portable_pipe_tools.render_farm.self_update import (
@@ -102,6 +106,9 @@ def self_test(report_path: Path) -> int:
                     if not app.project_list.projects:
                         raise RuntimeError("GUI registration could not be saved")
                     app.worker_name_var.set("Portable-Test-Worker")
+                    app.no_progress_timeout_minutes_var.set("12")
+                    app.startup_timeout_minutes_var.set("40")
+                    app.finalization_timeout_minutes_var.set("35")
                     app._save_worker_preferences()
                 else:
                     if [p.project_id for p in app.project_list.projects] != ["Test Show"]:
@@ -111,6 +118,12 @@ def self_test(report_path: Path) -> int:
                         raise RuntimeError("Worker preferences did not survive restart")
                     if app.project_list.projects[0].allow_downloads:
                         raise RuntimeError("Downloads should be off by default")
+                    if app._get_progress_timeout_seconds() != dict(
+                        no_progress_timeout_seconds=720, startup_timeout_seconds=2400,
+                        finalization_timeout_seconds=2100,
+                    ) or app._get_render_timeout_seconds() is not None:
+                        raise RuntimeError("Progress timeouts did not survive restart")
+                    report["progress_timeouts_persisted"] = True
                 if not app._animation_frames:
                     raise RuntimeError("Bundled GUI animation resources are unavailable")
                 report["tk_version"] = str(app.root.tk.call("info", "patchlevel"))
@@ -165,13 +178,20 @@ def claim_once(argv):
     parser.add_argument("--worker", required=True)
     parser.add_argument("--cloud", action="store_true", help=argparse.SUPPRESS)  # Legacy spelling; SQL is always required.
     parser.add_argument("--report", type=Path, required=True)
-    parser.add_argument("--timeout", type=float, default=7200)
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="Optional total render time limit in seconds; default unlimited")
+    parser.add_argument("--no-progress-timeout", type=float, default=DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS)
+    parser.add_argument("--startup-timeout", type=float, default=DEFAULT_STARTUP_TIMEOUT_SECONDS)
+    parser.add_argument("--finalization-timeout", type=float, default=DEFAULT_FINALIZATION_TIMEOUT_SECONDS)
     args = parser.parse_args(argv)
     report = {"success": False, "version": VERSION}
     try:
         dispatcher = DispatcherClient(load_company_worker_connection())
         service = RegisteredQueueWorker(args.settings, args.worker, dispatcher_client=dispatcher, progress=logging.info)
-        result = service.run_next(render_timeout_seconds=args.timeout)
+        result = service.run_next(render_timeout_seconds=args.timeout,
+                                  no_progress_timeout_seconds=args.no_progress_timeout,
+                                  startup_timeout_seconds=args.startup_timeout,
+                                  finalization_timeout_seconds=args.finalization_timeout)
         report.update(success=result is not None and result.status == "complete",
                       result=asdict(result) if result is not None else None)
     except Exception:

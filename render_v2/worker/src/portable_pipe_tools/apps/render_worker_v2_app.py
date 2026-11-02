@@ -60,8 +60,12 @@ from portable_pipe_tools.render_farm.v2_gui_settings import (
 from portable_pipe_tools.render_farm.settings import (
     load_saved_local_uproject,
     load_saved_poll_interval_seconds,
-    load_saved_render_timeout_hours,
     load_saved_render_farm_root,
+)
+from portable_pipe_tools.render_farm.render_progress import (
+    DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+    DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
 )
 from portable_pipe_tools.render_farm.unreal_runner import (
     DEFAULT_RENDER_TIMEOUT_SECONDS,
@@ -92,6 +96,8 @@ SECONDS_PER_HOUR = 60.0 * 60.0
 DEFAULT_RENDER_TIMEOUT_HOURS = DEFAULT_RENDER_TIMEOUT_SECONDS / SECONDS_PER_HOUR
 MINIMUM_RENDER_TIMEOUT_HOURS = 0.25
 MAXIMUM_RENDER_TIMEOUT_HOURS = 24.0
+MINIMUM_PROGRESS_TIMEOUT_MINUTES = 1.0
+MAXIMUM_PROGRESS_TIMEOUT_MINUTES = 1440.0
 AUTOMATIC_START_DELAY_MS = 250
 PERIODIC_UPDATE_INTERVAL_MS = 2 * 60 * 1_000
 
@@ -125,6 +131,16 @@ def parse_render_timeout_hours(value: str | float) -> float:
 def format_render_timeout_hours(hours: float) -> str:
     unit = "hour" if hours == 1 else "hours"
     return f"{hours:g} {unit}"
+
+
+def parse_progress_timeout_minutes(value: str | float, label: str = "Progress timeout") -> float:
+    try:
+        minutes = float(str(value).strip())
+    except ValueError as error:
+        raise ValueError(f"{label} must be a number of minutes.") from error
+    if not MINIMUM_PROGRESS_TIMEOUT_MINUTES <= minutes <= MAXIMUM_PROGRESS_TIMEOUT_MINUTES:
+        raise ValueError(f"{label} must be between 1 and 1440 minutes.")
+    return minutes
 
 
 def format_job_activity(job: dict[str, Any]) -> str:
@@ -181,8 +197,11 @@ class ListenerConfiguration:
     local_uproject: Path
     local_show_file_server_path: Path
     poll_interval_seconds: int
-    render_timeout_seconds: float
+    render_timeout_seconds: float | None
     dispatcher_client: DispatcherClient | None
+    no_progress_timeout_seconds: float = DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS
+    startup_timeout_seconds: float = DEFAULT_STARTUP_TIMEOUT_SECONDS
+    finalization_timeout_seconds: float = DEFAULT_FINALIZATION_TIMEOUT_SECONDS
 
 
 class RenderWorkerV2App:
@@ -200,13 +219,12 @@ class RenderWorkerV2App:
         self.poll_interval_var = tk.StringVar(
             value=saved_poll_interval or str(DEFAULT_POLL_INTERVAL_SECONDS)
         )
-        saved_render_timeout_hours = load_saved_render_timeout_hours()
-        self.render_timeout_hours_var = tk.StringVar(
-            value=(
-                saved_render_timeout_hours
-                or f"{DEFAULT_RENDER_TIMEOUT_HOURS:g}"
-            )
-        )
+        self.no_progress_timeout_minutes_var = tk.StringVar(
+            value=f"{DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS / 60:g}")
+        self.startup_timeout_minutes_var = tk.StringVar(
+            value=f"{DEFAULT_STARTUP_TIMEOUT_SECONDS / 60:g}")
+        self.finalization_timeout_minutes_var = tk.StringVar(
+            value=f"{DEFAULT_FINALIZATION_TIMEOUT_SECONDS / 60:g}")
         self.unreal_editor_cmd_var = tk.StringVar(
             value=load_or_detect_unreal_editor(self.settings_path)
         )
@@ -219,12 +237,21 @@ class RenderWorkerV2App:
         self._registered_render_active = False
         self._registered_render_cancel = Event()
         self._close_after_registered_render = False
+        self._render_blocked_reason = None
         preferences = load_listener_preferences(self.settings_path)
         for key, variable in (("worker_name", self.worker_name_var),
                               ("poll_interval_seconds", self.poll_interval_var),
-                              ("render_timeout_hours", self.render_timeout_hours_var)):
+                              ("no_progress_timeout_minutes", self.no_progress_timeout_minutes_var),
+                              ("startup_timeout_minutes", self.startup_timeout_minutes_var),
+                              ("finalization_timeout_minutes", self.finalization_timeout_minutes_var)):
             if key in preferences:
-                variable.set(str(preferences[key]))
+                value = preferences[key]
+                if key.endswith("_timeout_minutes"):
+                    try:
+                        value = f"{float(value):g}"
+                    except (TypeError, ValueError):
+                        pass
+                variable.set(str(value))
         self.current_stage_var = tk.StringVar(
             value=WORKER_STAGE_LABELS[WorkerStage.STOPPED]
         )
@@ -370,34 +397,40 @@ class RenderWorkerV2App:
             ),
         ).grid(row=4, column=2, sticky="w", padx=(8, 0), pady=4)
 
-        ttk.Label(setup_frame, text="Give Up On Render Timer (hours)").grid(
-            row=5,
-            column=0,
-            sticky="w",
-            padx=(0, 8),
-            pady=4,
+        timeout_fields = (
+            ("no_progress_timeout_spinbox", "No Render Progress (minutes)",
+             self.no_progress_timeout_minutes_var,
+             "Advancing frames, samples or warmup steps reset this stall timer."),
+            ("startup_timeout_spinbox", "Startup / Loading Limit (minutes)",
+             self.startup_timeout_minutes_var,
+             "Allows time for Unreal startup and asset loading before render work begins."),
+            ("finalization_timeout_spinbox", "Finalization Stall Limit (minutes)",
+             self.finalization_timeout_minutes_var,
+             "Allows output writing and finalization; useful output progress resets it."),
         )
-        self.render_timeout_spinbox = ttk.Spinbox(
-            setup_frame,
-            from_=MINIMUM_RENDER_TIMEOUT_HOURS,
-            to=MAXIMUM_RENDER_TIMEOUT_HOURS,
-            increment=0.25,
-            textvariable=self.render_timeout_hours_var,
-            width=10,
-        )
-        self.render_timeout_spinbox.grid(row=5, column=1, sticky="w", pady=4)
-        ttk.Label(
-            setup_frame,
-            text="Stops and requeues an overlong Unreal render; default is 2 hours.",
-        ).grid(row=5, column=2, sticky="w", padx=(8, 0), pady=4)
+        for row, (name, label, variable, help_text) in enumerate(timeout_fields, start=5):
+            ttk.Label(setup_frame, text=label).grid(
+                row=row, column=0, sticky="w", padx=(0, 8), pady=4)
+            control = ttk.Spinbox(
+                setup_frame, from_=MINIMUM_PROGRESS_TIMEOUT_MINUTES,
+                to=MAXIMUM_PROGRESS_TIMEOUT_MINUTES, increment=1,
+                textvariable=variable, width=10, command=self._save_progress_timeout_fields)
+            control.grid(row=row, column=1, sticky="w", pady=4)
+            control.bind("<FocusOut>", self._save_progress_timeout_fields)
+            control.bind("<Return>", self._save_progress_timeout_fields)
+            setattr(self, name, control)
+            ttk.Label(setup_frame, text=help_text).grid(
+                row=row, column=2, sticky="w", padx=(8, 0), pady=4)
+        # Preserve the old attribute for setup-state checks, without a total-duration control.
+        self.render_timeout_spinbox = self.no_progress_timeout_spinbox
 
         self.override_local_changes_checkbox = ttk.Checkbutton(
             setup_frame, text="Override Local Changes", variable=self.override_local_changes_var)
-        self.override_local_changes_checkbox.grid(row=6, column=0, columnspan=2, sticky="w", pady=4)
+        self.override_local_changes_checkbox.grid(row=8, column=0, columnspan=2, sticky="w", pady=4)
         ttk.Label(
             setup_frame, text="Discards local project changes without a backup.",
             font=("Segoe UI", 9),
-        ).grid(row=6, column=2, sticky="w", padx=(8, 0), pady=4)
+        ).grid(row=8, column=2, sticky="w", padx=(8, 0), pady=4)
 
         worker_name_fields = setup_frame.grid_slaves(row=0)
         # Keep Dropbox and engine selection ahead of the project list.
@@ -864,10 +897,23 @@ class RenderWorkerV2App:
         return DispatcherClient(load_company_worker_connection())
 
     def _save_worker_preferences(self):
+        timeouts = self._get_progress_timeout_seconds()
         save_listener_preferences(self.settings_path, worker_name=self._get_worker_name(),
                                   poll_interval_seconds=self._get_poll_interval_seconds(),
-                                  render_timeout_hours=self._get_render_timeout_seconds() / SECONDS_PER_HOUR,
+                                  **self._progress_timeout_preferences(timeouts),
                                   use_cloud_dispatcher=True)
+
+    @staticmethod
+    def _progress_timeout_preferences(timeouts):
+        return {name.removesuffix("_seconds") + "_minutes": seconds / 60
+                for name, seconds in timeouts.items()}
+
+    def _save_progress_timeout_fields(self, event=None):
+        try:
+            save_listener_preferences(self.settings_path,
+                                      **self._progress_timeout_preferences(self._get_progress_timeout_seconds()))
+        except (OSError, ValueError) as error:
+            self._show_input_error(error)
 
     def _check_setup(self):
         if self._busy or self._listener_state.active or not self._setup_prerequisites_set():
@@ -941,10 +987,30 @@ class RenderWorkerV2App:
         self.poll_interval_var.set(str(interval))
         return interval
 
-    def _get_render_timeout_seconds(self) -> float:
-        hours = parse_render_timeout_hours(self.render_timeout_hours_var.get())
-        self.render_timeout_hours_var.set(f"{hours:g}")
-        return hours * SECONDS_PER_HOUR
+    def _get_render_timeout_seconds(self) -> None:
+        # V2 renders may run indefinitely while actual render work is advancing.
+        return None
+
+    def _get_progress_timeout_seconds(self) -> dict[str, float]:
+        timeouts = {}
+        for name, variable, label in (
+            ("no_progress_timeout_seconds", self.no_progress_timeout_minutes_var, "No Render Progress"),
+            ("startup_timeout_seconds", self.startup_timeout_minutes_var, "Startup / Loading Limit"),
+            ("finalization_timeout_seconds", self.finalization_timeout_minutes_var, "Finalization Stall Limit"),
+        ):
+            minutes = parse_progress_timeout_minutes(variable.get(), label)
+            variable.set(f"{minutes:g}")
+            timeouts[name] = minutes * 60
+        return timeouts
+
+    @staticmethod
+    def _progress_timeout_description(timeouts: dict[str, float]) -> str:
+        return (
+            f"No render progress: {timeouts['no_progress_timeout_seconds'] / 60:g} minutes; "
+            f"startup/loading: {timeouts['startup_timeout_seconds'] / 60:g} minutes; "
+            f"finalization stall: {timeouts['finalization_timeout_seconds'] / 60:g} minutes. "
+            "No total render-duration limit."
+        )
 
     def _start_worker(self, *, require_confirmation: bool = True) -> None:
         if not self._setup_prerequisites_set():
@@ -981,6 +1047,7 @@ class RenderWorkerV2App:
                 local_show_file_server_path=local_show_file_server_path,
                 poll_interval_seconds=self._get_poll_interval_seconds(),
                 render_timeout_seconds=self._get_render_timeout_seconds(),
+                **self._get_progress_timeout_seconds(),
                 dispatcher_client=self._get_dispatcher_client(),
             )
         except Exception as error:
@@ -991,7 +1058,11 @@ class RenderWorkerV2App:
         try:
             save_listener_preferences(self.settings_path, worker_name=configuration.worker_name,
                                       poll_interval_seconds=configuration.poll_interval_seconds,
-                                      render_timeout_hours=configuration.render_timeout_seconds / SECONDS_PER_HOUR,
+                                      **self._progress_timeout_preferences({
+                                          "no_progress_timeout_seconds": configuration.no_progress_timeout_seconds,
+                                          "startup_timeout_seconds": configuration.startup_timeout_seconds,
+                                          "finalization_timeout_seconds": configuration.finalization_timeout_seconds,
+                                      }),
                                       use_cloud_dispatcher=True)
         except (OSError, ValueError) as error:
             self._show_input_error(error)
@@ -1057,15 +1128,13 @@ class RenderWorkerV2App:
         self._worker_heartbeat = heartbeat
         self._stop_requested_remotely = False
         self._disk_space_stop_reason = None
+        self._render_blocked_reason = None
         self._listener_configuration = configuration
         self._listener_empty_checks = 0
         self._remember_farm_root(configuration.farm_root)
         self._remember_unreal_editor_cmd(configuration.unreal_editor_cmd)
         self._remember_local_uproject(configuration.local_uproject)
         self._remember_poll_interval(configuration.poll_interval_seconds)
-        self._remember_render_timeout(
-            configuration.render_timeout_seconds / SECONDS_PER_HOUR
-        )
         self._cancel_listener_countdown()
         self._refresh_control_states()
         self._set_worker_stage(WorkerStage.WAITING)
@@ -1075,10 +1144,11 @@ class RenderWorkerV2App:
             f"{configuration.poll_interval_seconds} seconds initially, doubling "
             f"to {maximum_idle_poll_interval} seconds with timing jitter."
         )
-        self._log(
-            "Give Up On Render Timer: "
-            f"{format_render_timeout_hours(configuration.render_timeout_seconds / SECONDS_PER_HOUR)}."
-        )
+        self._log(self._progress_timeout_description({
+            "no_progress_timeout_seconds": configuration.no_progress_timeout_seconds,
+            "startup_timeout_seconds": configuration.startup_timeout_seconds,
+            "finalization_timeout_seconds": configuration.finalization_timeout_seconds,
+        }))
         self._log(f"Local Unreal project: {local_project_message}")
         self._log(
             "Worker-local show root derived from Render Farm folder: "
@@ -1119,6 +1189,8 @@ class RenderWorkerV2App:
         try:
             self._save_engine_field()
             timeout = self._get_render_timeout_seconds()
+            timeouts = self._get_progress_timeout_seconds()
+            self._save_worker_preferences()
             override_local_changes = self.override_local_changes_var.get()
         except (OSError, ValueError) as error:
             self._show_input_error(error)
@@ -1131,6 +1203,7 @@ class RenderWorkerV2App:
             "Registered local render",
             lambda: render_registered_job(self.settings_path, selected[0], Path(path),
                                            timeout_seconds=timeout, progress=self._log,
+                                           **timeouts,
                                            cancelled=self._registered_render_cancel.is_set,
                                            override_local_changes=override_local_changes),
             self._registered_render_finished,
@@ -1140,6 +1213,12 @@ class RenderWorkerV2App:
     def _registered_render_finished(self, result) -> None:
         self._registered_render_active = False
         self.status_var.set("Render complete" if result["success"] else result.get("reason", "Render failed"))
+        if result.get("render", {}).get("process_still_running"):
+            self._render_blocked_reason = (
+                "Worker blocked: Unreal could not be stopped. Close Unreal or reboot this machine before restarting."
+            )
+            self.status_var.set(self._render_blocked_reason)
+            self._log(self._render_blocked_reason)
         self._log(f"{'SUCCESS' if result['success'] else 'FAILED'}: {result.get('reason', '')}")
         self._log(f"Run folder: {result['run_root']}")
         self._clear_current_job()
@@ -1216,6 +1295,9 @@ class RenderWorkerV2App:
             work=lambda: self._registered_queue_worker.run_next(
                 stage_callback=self._stage_queue.put,
                 render_timeout_seconds=configuration.render_timeout_seconds,
+                no_progress_timeout_seconds=configuration.no_progress_timeout_seconds,
+                startup_timeout_seconds=configuration.startup_timeout_seconds,
+                finalization_timeout_seconds=configuration.finalization_timeout_seconds,
                 stopped=stop_requested,
                 job_callback=self._job_queue.put,
             ),
@@ -1230,6 +1312,16 @@ class RenderWorkerV2App:
                 self._schedule_listener_wait()
 
     def _listener_job_check_finished(self, result: WorkerResult | None) -> None:
+        if result is not None and result.status == "blocked":
+            self._render_blocked_reason = (
+                "Worker blocked: Unreal could not be stopped. Close Unreal or reboot this machine before restarting."
+            )
+            self._job_processed(result)
+            self._log(self._render_blocked_reason)
+            self._listener_state.request_stop()
+            self._listener_state.finish_job_check(job_was_available=True)
+            self._finish_listener_stopped()
+            return
         if result is not None and is_disk_space_error(result.reason):
             self._stop_for_disk_space(result.reason, job_check_finished=True)
             return
@@ -1333,7 +1425,8 @@ class RenderWorkerV2App:
         self._set_worker_stage(WorkerStage.STOPPED)
         self._clear_current_job()
         self.status_var.set(
-            getattr(self, "_disk_space_stop_reason", None)
+            getattr(self, "_render_blocked_reason", None)
+            or getattr(self, "_disk_space_stop_reason", None)
             or ("Worker stopped remotely" if stopped_remotely else "Worker stopped")
         )
         self._refresh_control_states()
@@ -1363,6 +1456,7 @@ class RenderWorkerV2App:
             unreal_editor_cmd = self._get_unreal_editor_cmd()
             local_uproject = self._get_local_uproject()
             render_timeout_seconds = self._get_render_timeout_seconds()
+            timeouts = self._get_progress_timeout_seconds()
             local_show_file_server_path = (
                 self._get_derived_show_file_server_path(farm_root)
             )
@@ -1377,8 +1471,7 @@ class RenderWorkerV2App:
             "This will claim the next queued job and launch a real Unreal render.\n\n"
             "Before claiming the job, the worker requires a clean Git checkout "
             "and pulls the latest upstream branch using git pull --ff-only.\n\n"
-            "The render will automatically stop and requeue after "
-            f"{format_render_timeout_hours(render_timeout_seconds / SECONDS_PER_HOUR)}.\n\n"
+            + self._progress_timeout_description(timeouts) + "\n\n"
             f"Local Unreal project:\n{local_project_message}\n\n"
             "Show path derived from Render Farm folder:\n"
             f"{local_show_file_server_path}\n\n"
@@ -1398,7 +1491,7 @@ class RenderWorkerV2App:
         self._remember_farm_root(farm_root)
         self._remember_unreal_editor_cmd(unreal_editor_cmd)
         self._remember_local_uproject(local_uproject)
-        self._remember_render_timeout(render_timeout_seconds / SECONDS_PER_HOUR)
+        self._save_worker_preferences()
         self._run_background(
             label="Render one job with Unreal",
             work=lambda: run_once(
@@ -1411,6 +1504,7 @@ class RenderWorkerV2App:
                 unreal_editor_cmd=unreal_editor_cmd,
                 local_uproject=local_uproject,
                 render_timeout_seconds=render_timeout_seconds,
+                **timeouts,
                 job_callback=self._job_queue.put,
                 dispatcher_client=dispatcher_client,
                 dispatcher_app_version="render-worker-gui",
@@ -1599,7 +1693,9 @@ class RenderWorkerV2App:
         )
         self.worker_name_entry.configure(state=prerequisite_state)
         self.poll_interval_spinbox.configure(state=entry_state)
-        self.render_timeout_spinbox.configure(state=entry_state)
+        for control in (self.no_progress_timeout_spinbox, self.startup_timeout_spinbox,
+                        self.finalization_timeout_spinbox):
+            control.configure(state=entry_state)
         self.override_local_changes_checkbox.configure(state=entry_state)
         self.unreal_editor_cmd_entry.configure(state=prerequisite_state)
         self.unreal_editor_cmd_browse_button.configure(state=prerequisite_state)

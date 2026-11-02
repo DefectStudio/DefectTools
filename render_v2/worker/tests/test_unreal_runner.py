@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -254,6 +255,30 @@ class UnrealRunnerTests(unittest.TestCase):
         self.assertEqual("cancelled", stop_reason)
         process.terminate.assert_called_once_with()
         process.wait.assert_called_once_with(timeout=30)
+
+    def test_stdout_thread_start_failure_stops_owned_unreal_before_returning(self) -> None:
+        module = "portable_pipe_tools.render_farm.unreal_runner"
+        mapping = SimpleNamespace(
+            local_show_file_server_path=self.root,
+            submitted_output_directory=self.root / "output",
+            worker_output_directory=self.root / "output",
+            output_relative_directory="output",
+        )
+        process = Mock(pid=321, returncode=-15)
+        process.wait.return_value = -15
+        thread = Mock(ident=None)
+        thread.start.side_effect = RuntimeError("cannot start new thread")
+        with patch(module + ".prepare_worker_output_mapping", return_value=mapping), \
+             patch(module + "._query_git_commit", return_value=None), \
+             patch(module + ".subprocess.Popen", return_value=process), \
+             patch(module + ".Thread", return_value=thread):
+            result = execute_unreal_job(self.claimed_folder, self.job, self.executable)
+        self.assertFalse(result.success)
+        self.assertFalse(result.process_still_running)
+        self.assertIn("cannot start new thread", result.reason)
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=30)
+        thread.join.assert_not_called()
 
     def test_process_wait_returns_normally_without_a_stop_request(self) -> None:
         process = Mock()

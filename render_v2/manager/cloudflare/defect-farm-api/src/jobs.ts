@@ -41,6 +41,7 @@ type JobSummaryRow = Pick<
   | "render_started_at"
   | "render_finished_at"
   | "progress"
+  | "progress_details_json"
   | "resubmitted_from_job_id"
   | "revision"
 >;
@@ -386,6 +387,7 @@ function runtimePayload(
     blacklisted_workers: blacklistedWorkers,
     resubmitted_from_job_id: row.resubmitted_from_job_id,
     progress: row.progress,
+    progress_details: parseStoredRecord(row.progress_details_json),
     revision: row.revision,
   };
 }
@@ -411,6 +413,7 @@ function summaryFromRow(row: JobSummaryRow, blacklist: string[]): JobSummary {
     render_started_utc: row.render_started_at,
     render_finished_utc: row.render_finished_at,
     progress: row.progress,
+    progress_details: parseStoredRecord(row.progress_details_json),
     blacklisted_workers: blacklist,
     resubmitted_from_job_id: row.resubmitted_from_job_id,
     revision: row.revision,
@@ -545,7 +548,7 @@ export async function expireStaleLeases(env: Env): Promise<number> {
        SET status = 'queued', worker_id = NULL, lease_token = NULL,
            lease_expires_at = NULL, claimed_at = NULL,
            render_started_at = NULL, render_finished_at = NULL,
-           progress = 0,
+           progress = 0, progress_details_json = NULL,
            last_failure_json = json_object(
              'status', 'failed',
              'reason', 'Worker lease expired before completion'
@@ -638,7 +641,7 @@ export async function claimJob(
      SET status = 'rendering', worker_id = ?1, lease_token = ?2,
          lease_expires_at = unixepoch() + ?3,
          claimed_at = ${NOW_SQL}, render_started_at = ${NOW_SQL},
-         render_finished_at = NULL, progress = 0,
+         render_finished_at = NULL, progress = 0, progress_details_json = NULL,
          attempt_count = attempt_count + 1,
          updated_at = ${NOW_SQL}, revision = revision + 1
      WHERE id = (
@@ -709,6 +712,45 @@ export async function claimJob(
   };
 }
 
+function parseProgressDetails(data: JsonRecord): string | null {
+  if (data.progress_details === undefined || data.progress_details === null) {
+    return null;
+  }
+  const input = requireRecord(data.progress_details, "progress_details");
+  const details: JsonRecord = { schema_version: 1 };
+  if (input.schema_version !== undefined && input.schema_version !== 1) {
+    throw new HttpError(400, "invalid_progress_details", "Unknown render progress schema");
+  }
+  const phases = new Set(["startup", "warmup", "rendering", "finalizing", "complete"]);
+  if (typeof input.phase !== "string" || !phases.has(input.phase)) {
+    throw new HttpError(400, "invalid_progress_details", "Invalid render progress phase");
+  }
+  details.phase = input.phase;
+  for (const field of [
+    "current_frame", "total_frames", "sequence_frame", "segment_index", "output_frame_index",
+    "output_sub_sample_index", "engine_warm_up_frame_index",
+  ]) {
+    if (input[field] === undefined) continue;
+    const value = input[field];
+    const minimum = field === "sequence_frame" ? -2147483648 : 0;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > 2147483647) {
+      throw new HttpError(400, "invalid_progress_details", `Invalid ${field}`);
+    }
+    details[field] = value;
+  }
+  for (const field of ["last_progress_age_seconds", "elapsed_seconds"]) {
+    if (input[field] === undefined) continue;
+    const value = input[field];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 315576000) {
+      throw new HttpError(400, "invalid_progress_details", `Invalid ${field}`);
+    }
+    details[field] = value;
+  }
+  // Use the server's receipt time; never trust a worker clock for freshness.
+  details.received_utc = new Date().toISOString();
+  return JSON.stringify(details);
+}
+
 export async function heartbeatJob(
   env: Env,
   jobId: string,
@@ -716,18 +758,20 @@ export async function heartbeatJob(
 ): Promise<JobRow> {
   const lease = parseLeaseRequest(data);
   const progress = optionalNumber(data, "progress", 0, 100);
+  const progressDetails = parseProgressDetails(data);
   const leaseSeconds = parseLeaseSeconds(env);
   const row = await env.DB.prepare(
     `UPDATE jobs
      SET lease_expires_at = unixepoch() + ?1,
          progress = COALESCE(?2, progress),
+         progress_details_json = COALESCE(?6, progress_details_json),
          updated_at = ${NOW_SQL}, revision = revision + 1
      WHERE id = ?3 AND status = 'rendering'
        AND worker_id = ?4 COLLATE NOCASE
        AND lease_token = ?5
      RETURNING *`,
   )
-    .bind(leaseSeconds, progress, jobId, lease.workerId, lease.leaseToken)
+    .bind(leaseSeconds, progress, jobId, lease.workerId, lease.leaseToken, progressDetails)
     .first<JobRow>();
   if (!row) {
     throw new HttpError(
@@ -805,7 +849,7 @@ export async function releaseJob(
        SET status = 'queued', worker_id = NULL, lease_token = NULL,
            lease_expires_at = NULL, claimed_at = NULL,
            render_started_at = NULL, render_finished_at = NULL,
-           progress = 0, updated_at = ${NOW_SQL}, revision = revision + 1
+           progress = 0, progress_details_json = NULL, updated_at = ${NOW_SQL}, revision = revision + 1
        WHERE id = ?1 AND status = 'rendering'
          AND worker_id = ?2 COLLATE NOCASE AND lease_token = ?3`,
     ).bind(jobId, lease.workerId, lease.leaseToken),
@@ -938,7 +982,7 @@ export async function completeJob(
     env.DB.prepare(
       `UPDATE jobs
        SET status = 'complete', result_json = ?1,
-           render_finished_at = ${NOW_SQL}, progress = 100,
+           render_finished_at = ${NOW_SQL}, progress = 100, progress_details_json = NULL,
            worker_id = NULL, lease_token = NULL, lease_expires_at = NULL,
            updated_at = ${NOW_SQL}, revision = revision + 1
        WHERE id = ?2 AND status = 'rendering'
@@ -1050,7 +1094,7 @@ export async function failJob(
            claimed_at = CASE WHEN ?1 = 'queued' THEN NULL ELSE claimed_at END,
            render_started_at = CASE
              WHEN ?1 = 'queued' THEN NULL ELSE render_started_at END,
-           progress = 0, worker_id = NULL, lease_token = NULL,
+           progress = 0, progress_details_json = NULL, worker_id = NULL, lease_token = NULL,
            lease_expires_at = NULL, updated_at = ${NOW_SQL},
            revision = revision + 1
        WHERE id = ?3 AND status = 'rendering'
@@ -1200,7 +1244,7 @@ export async function listJobs(
     `SELECT id, batch_id, project, job_type, shot_name, render_version,
             status, priority, submitted_at, submitted_by, submitted_user,
             updated_at, attempt_count, worker_id, lease_expires_at,
-            claimed_at, render_started_at, render_finished_at, progress,
+            claimed_at, render_started_at, render_finished_at, progress, progress_details_json,
             resubmitted_from_job_id, revision
      FROM jobs
      ${where}

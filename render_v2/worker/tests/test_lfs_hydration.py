@@ -387,6 +387,13 @@ class CacheFreeFilterTests(unittest.TestCase):
                     git("update-index", "--no-skip-worktree", "--", asset.name)
                     asset.write_bytes(payload)
                     git("update-index", flag, "--", asset.name)
+                    # Native index setup can invoke LFS clean when Git's stat
+                    # data is racy. Start the worker checks with an empty cache
+                    # so this assertion measures hydration, not fixture setup.
+                    self.assertTrue(media.resolve().is_relative_to(root))
+                    if media.exists():
+                        shutil.rmtree(media)
+                    self.assertFalse(any(path.is_file() for path in media.rglob("*")))
                     _check_local_changes(run, root)
                     with patch("portable_pipe_tools.render_farm.lfs_hydration._file_matches",
                                wraps=_file_matches) as matches:

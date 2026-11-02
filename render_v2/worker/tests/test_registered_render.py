@@ -58,6 +58,7 @@ class RegisteredRenderTests(unittest.TestCase):
             first = self.render()
             second = self.render()
         self.assertTrue(first["success"])
+        self.assertIsNone(execute.call_args.kwargs["timeout_seconds"])
         self.assertNotEqual(first["run_root"], second["run_root"])
         job = execute.call_args.args[1]
         self.assertEqual(str(self.uproject), job["uproject"])
@@ -165,3 +166,42 @@ class RegisteredRenderTests(unittest.TestCase):
             self.render(timeout_seconds=60, cancelled=cancelled)
         self.assertIs(cancelled, execute.call_args.kwargs["should_cancel"])
         self.assertEqual(60, execute.call_args.kwargs["timeout_seconds"])
+
+    def test_unlimited_total_and_separate_progress_deadlines_reach_executor(self):
+        progress_callback = Mock()
+        with patch.object(renderer, "install_runtime"), \
+             patch.object(renderer, "execute_unreal_job", return_value=self.result) as execute:
+            self.render(timeout_seconds=None, no_progress_timeout_seconds=420,
+                        startup_timeout_seconds=2400, finalization_timeout_seconds=2700,
+                        progress_callback=progress_callback)
+        self.assertIsNone(execute.call_args.kwargs["timeout_seconds"])
+        self.assertEqual(420, execute.call_args.kwargs["no_progress_timeout_seconds"])
+        self.assertEqual(2400, execute.call_args.kwargs["startup_timeout_seconds"])
+        self.assertEqual(2700, execute.call_args.kwargs["finalization_timeout_seconds"])
+        self.assertIs(progress_callback, execute.call_args.kwargs["progress_callback"])
+
+    def test_invalid_progress_deadlines_fail_before_project_preparation(self):
+        for field, value in (("no_progress_timeout_seconds", 0),
+                             ("startup_timeout_seconds", float("inf")),
+                             ("finalization_timeout_seconds", float("nan"))):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "positive and finite"):
+                self.render(**{field: value})
+        self.sync.assert_not_called()
+
+    def test_registered_cli_defaults_to_unlimited_total_and_accepts_separate_deadlines(self):
+        base_args = ["--settings", str(self.settings), "--project", "Show With Spaces",
+                     "--job", str(self.job)]
+        for extra_args, expected in (
+            ([], (None, 600, 1800, 1800)),
+            (["--timeout", "14400", "--no-progress-timeout", "420",
+              "--startup-timeout", "2400", "--finalization-timeout", "2700"],
+             (14400, 420, 2400, 2700)),
+        ):
+            with self.subTest(extra_args=extra_args), \
+                 patch.object(renderer, "render_registered_job", return_value={"success": True}) as render, \
+                 patch("builtins.print"):
+                self.assertEqual(0, renderer.main(base_args + extra_args))
+            kwargs = render.call_args.kwargs
+            self.assertEqual(expected, tuple(kwargs[name] for name in (
+                "timeout_seconds", "no_progress_timeout_seconds", "startup_timeout_seconds",
+                "finalization_timeout_seconds")))

@@ -27,6 +27,7 @@ from portable_pipe_tools.render_farm.cloud_dispatch import (
     load_dispatcher_connection,
 )
 from portable_pipe_tools.render_farm.cloud_manager import (
+    format_cloud_render_progress,
     get_cloud_render_jobs,
     get_cloud_render_workers,
     hydrate_cloud_render_job,
@@ -105,7 +106,7 @@ JOB_COLUMNS = (
     ListColumn("status", "Status", 71),
     ListColumn("render_time", "Render Time", 85, anchor="center"),
     ListColumn("errors", "Errors", 41, anchor="center"),
-    ListColumn("progress", "Progress", 80, anchor="center"),
+    ListColumn("progress", "Render Progress", 145, anchor="center"),
     ListColumn("submitted", "Submitted", 135),
     ListColumn("completed", "Completed", 135),
 )
@@ -1392,7 +1393,7 @@ class FarmRenderManagerApp:
                     running=job.status.casefold() == "rendering",
                 ),
                 job.error_count,
-                f"{job.progress:g}%",
+                format_cloud_render_progress(job),
                 format_submitted_pacific(job.submitted_utc),
                 format_submitted_pacific(job.render_finished_utc),
             )

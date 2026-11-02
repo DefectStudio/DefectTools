@@ -10,6 +10,11 @@ from portable_pipe_tools.render_farm.queue import read_json_object, safe_name
 from portable_pipe_tools.render_farm.unreal_runner import execute_unreal_job, UnrealExecutionResult
 from portable_pipe_tools.render_farm.v2_gui_settings import load_registered_projects
 from portable_pipe_tools.render_farm.worker import run_once
+from portable_pipe_tools.render_farm.render_progress import (
+    DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+    DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+)
 
 
 class RegisteredQueueWorker:
@@ -50,7 +55,11 @@ class RegisteredQueueWorker:
             ready.append(project)
         return ready
 
-    def _render(self, *, claimed_folder, job, should_cancel=lambda: False, timeout_seconds=7200, **_):
+    def _render(self, *, claimed_folder, job, should_cancel=lambda: False, timeout_seconds=None,
+                no_progress_timeout_seconds=DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+                startup_timeout_seconds=DEFAULT_STARTUP_TIMEOUT_SECONDS,
+                finalization_timeout_seconds=DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+                progress_callback=None, **_):
         identity = str(job.get("project_id") or job.get("project") or "")
         project, uproject, engine, _ = prepare_registered_job(self.settings_path, identity, Path(claimed_folder) / "job.json")
         job["worker_sync_policy"] = self.sync_policy
@@ -68,12 +77,19 @@ class RegisteredQueueWorker:
                 self.progress(f"Rendering claimed job {job['job_id']} using updated {uproject}")
                 return self.executor(claimed_folder=claimed_folder, job=job, unreal_editor_cmd=engine,
                                      local_uproject=uproject, render_farm_root=Path(project.render_farm_root),
-                                     should_cancel=should_cancel, timeout_seconds=timeout_seconds)
+                                     should_cancel=should_cancel, timeout_seconds=timeout_seconds,
+                                     no_progress_timeout_seconds=no_progress_timeout_seconds,
+                                     startup_timeout_seconds=startup_timeout_seconds,
+                                     finalization_timeout_seconds=finalization_timeout_seconds,
+                                     progress_callback=progress_callback)
         except PreparationError as error:
             return UnrealExecutionResult(False, str(error), None, cancelled=isinstance(error, PreparationCancelled))
 
     def run_next(self, *, stopped=lambda: False, stage_callback=None, job_callback=None,
-                 render_timeout_seconds=7200, heartbeat_interval_seconds=60):
+                 render_timeout_seconds=None, heartbeat_interval_seconds=60,
+                 no_progress_timeout_seconds=DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+                 startup_timeout_seconds=DEFAULT_STARTUP_TIMEOUT_SECONDS,
+                 finalization_timeout_seconds=DEFAULT_FINALIZATION_TIMEOUT_SECONDS):
         if stopped():
             return None
         projects = self.ready_projects()
@@ -94,7 +110,10 @@ class RegisteredQueueWorker:
                        minimum_stage_seconds=0, unreal_runner=self._render, git_sync=None,
                        should_stop_before_claim=stopped, should_cancel_render=stopped,
                        stage_callback=stage_callback, job_callback=job_callback,
-                       render_timeout_seconds=render_timeout_seconds)
+                       render_timeout_seconds=render_timeout_seconds,
+                       no_progress_timeout_seconds=no_progress_timeout_seconds,
+                       startup_timeout_seconds=startup_timeout_seconds,
+                       finalization_timeout_seconds=finalization_timeout_seconds)
         return run_once(farm_root=projects[0].render_farm_root, dispatcher_client=self.dispatcher,
                         dispatcher_app_version="render-worker-v2-registered",
                         dispatcher_capabilities={"registered_projects": [p.project_id for p in projects],

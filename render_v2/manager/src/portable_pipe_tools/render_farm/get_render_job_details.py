@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import math
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,8 @@ def get_render_job_details(job: RenderJob) -> tuple[JobDetailSection, ...]:
     result = result_value if isinstance(result_value, dict) else {}
     outputs_value = data.get("outputs", {})
     outputs = outputs_value if isinstance(outputs_value, dict) else {}
+    progress_value = data.get("progress_details")
+    progress = progress_value if isinstance(progress_value, dict) else {}
 
     frame_end = job.frame_end
     if (
@@ -98,6 +101,15 @@ def get_render_job_details(job: RenderJob) -> tuple[JobDetailSection, ...]:
                 _format_duration(job.render_started_utc, job.render_finished_utc),
             ),
             JobDetail("Progress", f"{job.progress:g}%"),
+        ) + (
+            (
+                JobDetail("Render Stage", _display(progress.get("phase")).title()),
+                JobDetail("Current Render Frame", f"{_display(progress.get('current_frame'))} / {_display(progress.get('total_frames'))}"),
+                JobDetail("Sequence Frame", _display(progress.get("sequence_frame"))),
+                JobDetail("Last Progress Age at Check-in", _progress_seconds(progress.get("last_progress_age_seconds"))),
+                JobDetail("Render Elapsed at Check-in", _progress_seconds(progress.get("elapsed_seconds"))),
+                JobDetail("Progress Check-in", _format_timestamp(progress.get("received_utc"))),
+            ) if progress else ()
         ),
     )
     output = JobDetailSection(
@@ -213,6 +225,20 @@ def get_render_job_details(job: RenderJob) -> tuple[JobDetailSection, ...]:
         result_section,
         advanced,
     )
+
+
+def _progress_seconds(value: Any) -> str:
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not 0 <= value <= 315576000 or not math.isfinite(value)):
+        return MISSING_VALUE
+    seconds = int(value)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m {seconds}s"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
 
 
 def _display(value: Any) -> str:

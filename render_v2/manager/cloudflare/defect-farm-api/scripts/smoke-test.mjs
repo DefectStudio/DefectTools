@@ -233,8 +233,59 @@ await request(`/api/v1/jobs/${jobId}/heartbeat`, {
   body: workerBody(firstWorker, {
     lease_token: winningClaim.lease_token,
     progress: 12.5,
+    progress_details: {
+      schema_version: 1,
+      phase: "rendering",
+      current_frame: 15,
+      total_frames: 120,
+      sequence_frame: -15,
+      segment_index: 0,
+      output_frame_index: 15,
+      output_sub_sample_index: 4,
+      engine_warm_up_frame_index: 0,
+      last_progress_age_seconds: 2.5,
+      elapsed_seconds: 180.25,
+      received_utc: "1900-01-01T00:00:00Z",
+      secret: "must-not-be-persisted",
+    },
   }),
 });
+
+const progressDetail = await request(`/api/v1/jobs/${jobId}`, { role: "manager" });
+assert.equal(progressDetail.job.progress, 12.5);
+assert.equal(progressDetail.job.progress_details.current_frame, 15);
+assert.equal(progressDetail.job.progress_details.sequence_frame, -15);
+assert.equal(progressDetail.job.progress_details.phase, "rendering");
+assert.equal(progressDetail.job.progress_details.last_progress_age_seconds, 2.5);
+assert.equal(progressDetail.job.progress_details.secret, undefined);
+assert.notEqual(progressDetail.job.progress_details.received_utc, "1900-01-01T00:00:00Z");
+const progressListing = await request(`/api/v1/jobs?limit=100&offset=0`, { role: "manager" });
+assert.equal(progressListing.jobs.find((item) => item.job_id === jobId).progress_details.total_frames, 120);
+
+for (const progressDetails of [
+  { phase: "anything" },
+  { phase: "rendering", schema_version: 2 },
+  { phase: "rendering", current_frame: 1.5 },
+  { phase: "rendering", current_frame: -1 },
+  { phase: "rendering", output_sub_sample_index: -1 },
+  { phase: "rendering", total_frames: -1 },
+  { phase: "rendering", elapsed_seconds: null },
+  { phase: "rendering", last_progress_age_seconds: -1 },
+]) {
+  await request(`/api/v1/jobs/${jobId}/heartbeat`, {
+    role: "worker", method: "POST", expected: 400,
+    body: workerBody(firstWorker, {
+      lease_token: winningClaim.lease_token, progress_details: progressDetails,
+    }),
+  });
+}
+// Older workers can keep renewing leases without deleting the last receipt.
+await request(`/api/v1/jobs/${jobId}/heartbeat`, {
+  role: "worker", method: "POST",
+  body: workerBody(firstWorker, { lease_token: winningClaim.lease_token }),
+});
+const retainedProgress = await request(`/api/v1/jobs/${jobId}`, { role: "manager" });
+assert.deepEqual(retainedProgress.job.progress_details, progressDetail.job.progress_details);
 
 const failed = await request(`/api/v1/jobs/${jobId}/fail`, {
   role: "worker",
@@ -246,6 +297,7 @@ const failed = await request(`/api/v1/jobs/${jobId}/fail`, {
   }),
 });
 assert.equal(failed.job.status, "queued");
+assert.equal(failed.job.progress_details, null, "a requeued job must not retain another attempt's live progress");
 assert.deepEqual(failed.job.blacklisted_workers, [firstWorker]);
 const failedReplay = await request(`/api/v1/jobs/${jobId}/fail`, {
   role: "worker",
@@ -266,6 +318,15 @@ const secondClaim = await request("/api/v1/jobs/claim", {
 assert.equal(secondClaim.job_available, true);
 assert.equal(secondClaim.job.job_id, jobId);
 assert.equal(secondClaim.job.attempt, 2);
+assert.equal(secondClaim.job.progress_details, null);
+await request(`/api/v1/jobs/${jobId}/heartbeat`, {
+  role: "worker", method: "POST",
+  body: workerBody(secondWorker, {
+    lease_token: secondClaim.lease_token,
+    progress: 99,
+    progress_details: { phase: "finalizing", current_frame: 120, total_frames: 120 },
+  }),
+});
 
 const completed = await request(`/api/v1/jobs/${jobId}/complete`, {
   role: "worker",
@@ -277,6 +338,7 @@ const completed = await request(`/api/v1/jobs/${jobId}/complete`, {
 });
 assert.equal(completed.job.status, "complete");
 assert.equal(completed.job.result.output_verified, true);
+assert.equal(completed.job.progress_details, null);
 const completedReplay = await request(`/api/v1/jobs/${jobId}/complete`, {
   role: "worker",
   method: "POST",
@@ -350,6 +412,7 @@ assert.equal(resubmitted.job.status, "queued");
 assert.equal(resubmitted.job.resubmitted_from_job_id, jobId);
 assert.equal(resubmitted.job.overwrite_existing_mp4, true);
 assert.equal(resubmitted.job.overwrite_existing_exr, true);
+assert.equal(resubmitted.job.progress_details, null);
 const resubmittedReplay = await request(`/api/v1/jobs/${jobId}/resubmit`, {
   role: "manager",
   method: "POST",
@@ -396,6 +459,7 @@ const released = await request(
   },
 );
 assert.equal(released.job.status, "queued");
+assert.equal(released.job.progress_details, null);
 assert.deepEqual(released.job.blacklisted_workers, []);
 const releasedReplay = await request(
   `/api/v1/jobs/${resubmitted.job.job_id}/release`,
@@ -580,6 +644,45 @@ await request(`/api/v1/jobs/${outputRaceWinner.job.job_id}`, {
   role: "manager",
   method: "DELETE",
 });
+
+// An unconfirmed Unreal termination must quarantine the job instead of handing
+// its output paths to another worker. Terminal failure already supports this.
+const quarantineJobId = `smoke_quarantine_${suffix}`;
+await request("/api/v1/jobs", {
+  role: "submit", method: "POST", expected: 201,
+  body: {
+    ...job, job_id: quarantineJobId,
+    submission_fingerprint: `quarantine-${suffix}`,
+    output_relative_directory: `smoke/quarantine/${suffix}`,
+  },
+});
+const quarantineWorker = `smoke-quarantine-worker-${suffix}`;
+const quarantineClaim = await request("/api/v1/jobs/claim", {
+  role: "worker", method: "POST",
+  body: workerBody(quarantineWorker, { claim_request_id: randomUUID() }),
+});
+assert.equal(quarantineClaim.job.job_id, quarantineJobId);
+const terminalBody = workerBody(quarantineWorker, {
+  lease_token: quarantineClaim.lease_token,
+  retryable: false,
+  reason: "Could not confirm owned Unreal process exit; operator intervention required",
+});
+const quarantined = await request(`/api/v1/jobs/${quarantineJobId}/fail`, {
+  role: "worker", method: "POST", body: terminalBody,
+});
+assert.equal(quarantined.job.status, "failed");
+assert.equal(quarantined.job.worker, null);
+assert.equal(quarantined.job.progress_details, null);
+const terminalReplay = await request(`/api/v1/jobs/${quarantineJobId}/fail`, {
+  role: "worker", method: "POST", body: terminalBody,
+});
+assert.equal(terminalReplay.job.status, "failed");
+const afterQuarantineClaim = await request("/api/v1/jobs/claim", {
+  role: "worker", method: "POST",
+  body: workerBody(`smoke-other-worker-${suffix}`, { claim_request_id: randomUUID() }),
+});
+assert.equal(afterQuarantineClaim.job_available, false);
+await request(`/api/v1/jobs/${quarantineJobId}`, { role: "manager", method: "DELETE" });
 
 console.log(
   JSON.stringify({

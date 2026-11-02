@@ -7,7 +7,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from portable_pipe_tools.apps.render_worker_v2_app import RenderWorkerV2App
+from portable_pipe_tools.apps.render_worker_v2_app import RenderWorkerV2App, parse_progress_timeout_minutes
 from portable_pipe_tools.render_farm.project_registration import ProjectRegistration
 from portable_pipe_tools.render_farm.v2_gui_settings import save_registered_projects, save_unreal_editor_preference, load_listener_preferences, save_dropbox_root
 
@@ -54,6 +54,10 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         self.assertEqual("Show", render.call_args.args[1])
         self.assertEqual(self.settings, render.call_args.args[0])
         self.assertIs(False, render.call_args.kwargs["override_local_changes"])
+        self.assertIsNone(render.call_args.kwargs["timeout_seconds"])
+        self.assertEqual(600, render.call_args.kwargs["no_progress_timeout_seconds"])
+        self.assertEqual(1800, render.call_args.kwargs["startup_timeout_seconds"])
+        self.assertEqual(1800, render.call_args.kwargs["finalization_timeout_seconds"])
         self.assertTrue(self.app.project_list.editing_enabled)
         self.assertEqual("normal", str(self.app.render_one_button.cget("state")))
         self.assertEqual("normal", str(self.app.start_worker_button.cget("state")))
@@ -147,6 +151,10 @@ class RegisteredRenderGuiTests(unittest.TestCase):
                 self.app.root.update()
                 time.sleep(0.01)
             service.run_next.assert_called_once()
+            self.assertIsNone(service.run_next.call_args.kwargs["render_timeout_seconds"])
+            self.assertEqual(600, service.run_next.call_args.kwargs["no_progress_timeout_seconds"])
+            self.assertEqual(1800, service.run_next.call_args.kwargs["startup_timeout_seconds"])
+            self.assertEqual(1800, service.run_next.call_args.kwargs["finalization_timeout_seconds"])
             factory.assert_called_once()
             self.assertIs(True, factory.call_args.kwargs["override_local_changes"])
             updater.assert_not_called()
@@ -156,3 +164,65 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         self.assertEqual("normal", str(self.app.override_local_changes_checkbox.cget("state")))
         self.assertNotIn("override_local_changes", json.loads(self.settings.read_text()))
         self.assertEqual("V2-Test", load_listener_preferences(self.settings)["worker_name"])
+
+    def test_progress_timeout_controls_save_and_reload_without_old_total_limit(self):
+        self.app.no_progress_timeout_minutes_var.set("7")
+        self.app.startup_timeout_minutes_var.set("40")
+        self.app.finalization_timeout_minutes_var.set("45")
+        self.app._save_progress_timeout_fields()
+        self.app.worker_name_var.set("Persisted Worker")
+        self.app._save_worker_preferences()
+        self.app._shutdown_application(0)
+        self.app = RenderWorkerV2App(settings_path=self.settings, automatic_updates=False)
+        self.app.root.withdraw()
+        self.assertEqual("7", self.app.no_progress_timeout_minutes_var.get())
+        self.assertEqual("40", self.app.startup_timeout_minutes_var.get())
+        self.assertEqual("45", self.app.finalization_timeout_minutes_var.get())
+        self.assertEqual("Persisted-Worker", self.app.worker_name_var.get())
+        self.assertIsNone(self.app._get_render_timeout_seconds())
+
+    def test_old_two_hour_total_setting_does_not_become_inactivity_timeout(self):
+        saved = json.loads(self.settings.read_text())
+        saved["listener"] = {"render_timeout_hours": 2, "worker_name": "Legacy Worker"}
+        self.settings.write_text(json.dumps(saved))
+        self.app._shutdown_application(0)
+        self.app = RenderWorkerV2App(settings_path=self.settings, automatic_updates=False)
+        self.app.root.withdraw()
+        self.assertEqual("10", self.app.no_progress_timeout_minutes_var.get())
+        self.assertEqual("30", self.app.startup_timeout_minutes_var.get())
+        self.assertEqual("30", self.app.finalization_timeout_minutes_var.get())
+        self.assertIsNone(self.app._get_render_timeout_seconds())
+
+    def test_invalid_progress_timeout_cannot_start_render_or_save_preferences(self):
+        self.app.no_progress_timeout_minutes_var.set("0")
+        with patch(MODULE + ".filedialog.askopenfilename", return_value=str(self.path / "job.json")), \
+             patch(MODULE + ".render_registered_job") as render, \
+             patch.object(self.app, "_show_input_error") as show_error:
+            self.app._render_registered_job()
+        render.assert_not_called()
+        show_error.assert_called_once()
+        self.assertFalse(self.app._busy)
+
+    def test_progress_timeout_range_is_bounded_and_finite(self):
+        self.assertEqual(1, parse_progress_timeout_minutes("1"))
+        self.assertEqual(1440, parse_progress_timeout_minutes("1440"))
+        for value in ("0", "1441", "nan", "inf", "", "abc"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_progress_timeout_minutes(value)
+
+    def test_blocked_unreal_stops_listener_without_claiming_another_job(self):
+        self.app._listener_state.start()
+        self.app._listener_state.begin_job_check()
+        heartbeat = Mock()
+        self.app._worker_heartbeat = heartbeat
+        result = SimpleNamespace(status="blocked", reason="Unreal process is still running",
+                                 final_folder=self.path)
+        with patch.object(self.app, "_schedule_listener_check_now") as next_job, \
+             patch.object(self.app, "_schedule_listener_wait") as wait:
+            self.app._listener_job_check_finished(result)
+        self.assertFalse(self.app._listener_state.active)
+        self.assertFalse(self.app._listener_state.job_running)
+        self.assertIn("reboot", self.app.status_var.get())
+        next_job.assert_not_called()
+        wait.assert_not_called()
+        heartbeat.stop.assert_called_once_with(remove_files=True)

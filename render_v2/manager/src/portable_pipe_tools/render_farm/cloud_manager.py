@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,7 @@ _D1_RUNTIME_FIELDS = (
     "render_started_utc",
     "render_finished_utc",
     "progress",
+    "progress_details",
     "result",
     "last_failure",
     "blacklisted_workers",
@@ -71,7 +73,7 @@ def _optional_int(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -79,13 +81,27 @@ def _number(value: Any, default: float = 0.0) -> float:
     if value is None or isinstance(value, bool):
         return default
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        number = float(value)
+        return number if math.isfinite(number) else default
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
 def _queue_name(status: str) -> str:
     return _STATUS_QUEUE_NAMES.get(status.casefold(), RENDER_FAILED_FOLDER)
+
+
+def format_cloud_render_progress(job: RenderJob) -> str:
+    """Show current render position; this is not validated output completion."""
+    percentage = f"{job.progress:g}%"
+    details = job.job_data.get("progress_details")
+    if job.status.casefold() != "rendering" or not isinstance(details, dict):
+        return percentage
+    current = _optional_int(details.get("current_frame"))
+    total = _optional_int(details.get("total_frames"))
+    if current is None or total is None or not 0 <= current <= total or total <= 0:
+        return percentage
+    return f"{percentage} ({current}/{total})"
 
 
 def _cloud_job_folder(

@@ -187,3 +187,33 @@ class RegisteredClaimTests(unittest.TestCase):
         self.assertEqual("stopped", result.status)
         self.assertEqual([], dispatcher.claim_job.call_args.kwargs["eligible_project_ids"])
         dispatcher.acknowledge_worker_stop.assert_called_once()
+
+    def test_progress_deadlines_and_unlimited_total_reach_queue_runner(self):
+        with patch("portable_pipe_tools.render_farm.registered_claims.run_once") as run:
+            self.worker.run_next(render_timeout_seconds=None, no_progress_timeout_seconds=420,
+                                 startup_timeout_seconds=2400, finalization_timeout_seconds=2700)
+        self.assertIsNone(run.call_args.kwargs["render_timeout_seconds"])
+        self.assertEqual(420, run.call_args.kwargs["no_progress_timeout_seconds"])
+        self.assertEqual(2400, run.call_args.kwargs["startup_timeout_seconds"])
+        self.assertEqual(2700, run.call_args.kwargs["finalization_timeout_seconds"])
+        self.assertEqual(60, run.call_args.kwargs["dispatcher_heartbeat_interval_seconds"])
+
+    def test_registered_queue_has_no_default_total_duration_limit(self):
+        with patch("portable_pipe_tools.render_farm.registered_claims.run_once") as run:
+            self.worker.run_next()
+        self.assertIsNone(run.call_args.kwargs["render_timeout_seconds"])
+
+    def test_registered_render_preserves_progress_callback_and_deadlines(self):
+        folder = self.job(self.projects[0], "Bishop", "progress")
+        job = json.loads((folder / "job.json").read_text())
+        progress_callback = Mock()
+        with patch("portable_pipe_tools.render_farm.registered_claims.install_runtime"):
+            self.worker._render(claimed_folder=folder, job=job, timeout_seconds=None,
+                                no_progress_timeout_seconds=420, startup_timeout_seconds=2400,
+                                finalization_timeout_seconds=2700, progress_callback=progress_callback)
+        kwargs = self.executor.call_args.kwargs
+        self.assertIsNone(kwargs["timeout_seconds"])
+        self.assertEqual(420, kwargs["no_progress_timeout_seconds"])
+        self.assertEqual(2400, kwargs["startup_timeout_seconds"])
+        self.assertEqual(2700, kwargs["finalization_timeout_seconds"])
+        self.assertIs(progress_callback, kwargs["progress_callback"])

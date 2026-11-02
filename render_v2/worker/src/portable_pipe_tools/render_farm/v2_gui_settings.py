@@ -22,7 +22,8 @@ def load_listener_preferences(settings_path: Path) -> dict:
 
 def save_listener_preferences(settings_path: Path, **preferences) -> None:
     settings = _read_settings(settings_path)
-    settings["listener"] = preferences
+    existing = settings.get("listener", {})
+    settings["listener"] = dict(existing if isinstance(existing, dict) else {}, **preferences)
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(settings_path, settings)
 

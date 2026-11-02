@@ -5,10 +5,12 @@ import tempfile
 import unittest
 
 from portable_pipe_tools.render_farm.cloud_manager import (
+    format_cloud_render_progress,
     get_cloud_render_jobs,
     get_cloud_render_workers,
     hydrate_cloud_render_job,
 )
+from portable_pipe_tools.render_farm.get_render_job_details import get_render_job_details
 from portable_pipe_tools.render_farm.get_render_log import get_render_log
 from portable_pipe_tools.render_farm.get_all_render_jobs import get_all_render_jobs
 from portable_pipe_tools.render_farm.cloud_dispatch import DispatcherError
@@ -354,6 +356,73 @@ class CloudManagerTests(unittest.TestCase):
         self.assertEqual(1, len(workers))
         self.assertEqual("RENDER-01", workers[0].worker_name)
         self.assertEqual("cloud", workers[0].raw_data["control_source"])
+
+    def test_live_render_progress_survives_listing_and_detail_hydration(self) -> None:
+        dispatcher = D1ListingDispatcher()
+        receipt = {
+            "schema_version": 1, "phase": "rendering", "current_frame": 45,
+            "total_frames": 120, "sequence_frame": 1045,
+            "last_progress_age_seconds": 65, "elapsed_seconds": 25200,
+            "received_utc": "2026-11-02T03:00:00Z",
+        }
+        dispatcher.summary.update(status="rendering", progress=37.5, progress_details=receipt)
+        job = get_cloud_render_jobs(dispatcher, self.repository)[0]
+        self.assertEqual("37.5% (45/120)", format_cloud_render_progress(job))
+        hydrated = hydrate_cloud_render_job(job, dispatcher, self.repository)
+        self.assertEqual(receipt, hydrated.job_data["progress_details"])
+        properties = {
+            detail.property_name: detail.value
+            for section in get_render_job_details(hydrated) for detail in section.details
+        }
+        self.assertEqual("Rendering", properties["Render Stage"])
+        self.assertEqual("45 / 120", properties["Current Render Frame"])
+        self.assertEqual("1045", properties["Sequence Frame"])
+        self.assertEqual("1m 5s", properties["Last Progress Age at Check-in"])
+        self.assertEqual("7h 0m 0s", properties["Render Elapsed at Check-in"])
+
+    def test_old_server_without_details_keeps_percent_display(self) -> None:
+        dispatcher = D1ListingDispatcher()
+        dispatcher.summary.update(status="rendering", progress=12.5)
+        job = get_cloud_render_jobs(dispatcher, self.repository)[0]
+        self.assertEqual("12.5%", format_cloud_render_progress(job))
+        properties = {
+            detail.property_name: detail.value
+            for section in get_render_job_details(job) for detail in section.details
+        }
+        self.assertNotIn("Current Render Frame", properties)
+
+    def test_server_reset_hides_stale_progress_from_terminal_snapshot(self) -> None:
+        class StaleSnapshotDispatcher(D1ListingDispatcher):
+            def get_job(self, job_id: str) -> dict:
+                response = super().get_job(job_id)
+                response["job"]["result"]["job_snapshot"]["progress_details"] = {
+                    "phase": "rendering", "current_frame": 15, "total_frames": 120,
+                    "last_progress_age_seconds": 2,
+                }
+                return response
+
+        dispatcher = StaleSnapshotDispatcher()
+        dispatcher.summary["progress_details"] = None
+        job = get_cloud_render_jobs(dispatcher, self.repository)[0]
+        hydrated = hydrate_cloud_render_job(job, dispatcher, self.repository)
+        self.assertIsNone(hydrated.job_data["progress_details"])
+        self.assertEqual("100%", format_cloud_render_progress(hydrated))
+        properties = {
+            detail.property_name: detail.value
+            for section in get_render_job_details(hydrated) for detail in section.details
+        }
+        self.assertNotIn("Render Stage", properties)
+        self.assertNotIn("Last Progress Age at Check-in", properties)
+
+    def test_invalid_render_counter_does_not_claim_completed_frames(self) -> None:
+        dispatcher = D1ListingDispatcher()
+        dispatcher.summary.update(status="rendering", progress=20, progress_details={"current_frame": -1, "total_frames": 120})
+        job = get_cloud_render_jobs(dispatcher, self.repository)[0]
+        self.assertEqual("20%", format_cloud_render_progress(job))
+        job.job_data["progress_details"]["current_frame"] = 121
+        self.assertEqual("20%", format_cloud_render_progress(job))
+        job.job_data["progress_details"]["current_frame"] = float("inf")
+        self.assertEqual("20%", format_cloud_render_progress(job))
 
     def test_d1_authoritative_resubmit_needs_no_dropbox_package(self) -> None:
         dispatcher = D1ListingDispatcher()

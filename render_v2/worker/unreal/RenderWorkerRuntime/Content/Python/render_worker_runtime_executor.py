@@ -9,8 +9,8 @@ worker launches it with::
     -MoviePipelineClass=/Script/MovieRenderPipelineCore.MoviePipeline
     -RenderFarmJob=<absolute path to job.json>
 
-The executor never changes ``job.json``.  It writes ``unreal_result.json`` next
-to it, and the external worker remains responsible for the farm state change.
+The executor never changes ``job.json``.  It writes ``unreal_progress.json`` and
+``unreal_result.json`` next to it. The external worker owns farm state changes.
 """
 
 from __future__ import annotations
@@ -30,6 +30,9 @@ LOG_PREFIX = "[RenderWorkerV2Executor]"
 JOB_SCHEMA_VERSION = 1
 UNREAL_RESULT_SCHEMA_VERSION = 2
 UNREAL_RESULT_FILENAME = "unreal_result.json"
+UNREAL_PROGRESS_FILENAME = "unreal_progress.json"
+UNREAL_PROGRESS_SCHEMA_VERSION = 1
+PROGRESS_WRITE_INTERVAL_SECONDS = 1.0
 
 # Work around UE-392456: slow image-sequence output can let Niagara GPU ticks
 # accumulate while Movie Graph finalizes. Keep these outside the graph so its
@@ -71,6 +74,35 @@ def _utc_now() -> str:
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
+
+
+def _write_progress_atomic(path: str, data: dict[str, Any]) -> None:
+    """Publish a small runtime snapshot without lock retries on the game thread."""
+    temporary_path = os.path.join(
+        os.path.dirname(path),
+        f".{os.path.basename(path)}.{uuid4().hex}.tmp",
+    )
+    try:
+        with open(temporary_path, "x", encoding="utf-8", newline="\n") as handle:
+            json.dump(data, handle, ensure_ascii=False, allow_nan=False)
+            handle.write("\n")
+        os.replace(temporary_path, path)
+    finally:
+        try:
+            os.remove(temporary_path)
+        except OSError:
+            pass
+
+
+def _enum_label(value: Any) -> str:
+    return str(getattr(value, "name", value)).rsplit(".", 1)[-1].replace("_", "").upper()
+
+
+def _progress_integer(value: Any, default: int = 0) -> int:
+    try:
+        return int(getattr(value, "value", value)) if not isinstance(value, bool) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 
 def _retry_transient_windows_lock(
@@ -508,6 +540,13 @@ class RenderWorkerV2Executor(unreal.MoviePipelinePythonHostExecutor):
     job_json_path = unreal.uproperty(str)
     job_identifier = unreal.uproperty(str)
     completion_sent = unreal.uproperty(bool)
+    progress_attempt = unreal.uproperty(int)
+    progress_expected_frames = unreal.uproperty(int)
+    progress_last_snapshot = unreal.uproperty(str)
+    # A string retains monotonic precision across long Windows uptimes even
+    # when Python float UProperties are represented by single-precision floats.
+    progress_last_write_time = unreal.uproperty(str)
+    progress_warning_sent = unreal.uproperty(bool)
 
     def _post_init(self) -> None:
         self.active_pipeline = None
@@ -515,6 +554,115 @@ class RenderWorkerV2Executor(unreal.MoviePipelinePythonHostExecutor):
         self.job_json_path = ""
         self.job_identifier = ""
         self.completion_sent = False
+        self.progress_attempt = 0
+        self.progress_expected_frames = 0
+        self.progress_last_snapshot = ""
+        self.progress_last_write_time = ""
+        self.progress_warning_sent = False
+
+    def _configure_progress(self, job: dict[str, Any]) -> None:
+        self.progress_attempt = max(0, _progress_integer(job.get("attempt")))
+        self.progress_expected_frames = max(0, _progress_integer(job.get("frame_count")))
+        self.progress_last_snapshot = ""
+        self.progress_last_write_time = ""
+        self.progress_warning_sent = False
+        self._publish_progress("startup", force=True)
+
+    def _sample_progress(self) -> dict[str, Any]:
+        snapshot = (
+            json.loads(self.progress_last_snapshot)
+            if self.progress_last_snapshot
+            else {
+                "schema_version": UNREAL_PROGRESS_SCHEMA_VERSION,
+                "job_id": self.job_identifier,
+                "attempt": self.progress_attempt,
+                "progress": 0.0,
+                "phase": "startup",
+                "current_frame": 0,
+                "total_frames": self.progress_expected_frames,
+                "segment_index": 0,
+                "output_frame_index": 0,
+                "output_sub_sample_index": 0,
+                "engine_warm_up_frame_index": 0,
+            }
+        )
+        if self.active_pipeline is None:
+            return snapshot
+        library = getattr(unreal, "MovieGraphLibrary", None)
+        if library is None:
+            library = unreal.MovieGraphBlueprintLibrary
+        pipeline_state = _enum_label(library.get_pipeline_state(self.active_pipeline))
+        if pipeline_state in ("FINALIZE", "EXPORT", "FINISHED"):
+            snapshot["phase"] = "finalizing"
+            return snapshot
+        if pipeline_state != "PRODUCINGFRAMES":
+            return snapshot
+        # ProducingFrames is set by Initialize before the first pipeline tick
+        # creates its timestep. Several native graph getters dereference it.
+        if self.active_pipeline.get_time_step_instance() is None:
+            snapshot["phase"] = "startup"
+            return snapshot
+
+        segment_state = _enum_label(library.get_current_segment_state(self.active_pipeline))
+        snapshot["phase"] = (
+            "warmup" if segment_state in ("WARMINGUP", "MOTIONBLUR") else "rendering"
+        )
+        current_frame, total_frames = library.get_overall_output_frames(self.active_pipeline)
+        current_frame = max(0, _progress_integer(current_frame))
+        total_frames = max(0, _progress_integer(total_frames)) or self.progress_expected_frames
+        snapshot["current_frame"] = min(current_frame, total_frames) if total_frames else current_frame
+        snapshot["total_frames"] = total_frames
+        snapshot["progress"] = (
+            min(100.0, 100.0 * current_frame / total_frames) if total_frames else 0.0
+        )
+        segment_index, _ = library.get_overall_segment_counts(self.active_pipeline)
+        snapshot["segment_index"] = max(0, _progress_integer(segment_index))
+        metrics = library.get_current_segment_work_metrics(self.active_pipeline)
+        for field in (
+            "output_frame_index", "output_sub_sample_index", "engine_warm_up_frame_index"
+        ):
+            snapshot[field] = max(0, _progress_integer(getattr(metrics, field, 0)))
+        snapshot["sequence_frame"] = _progress_integer(
+            library.get_root_frame_number(self.active_pipeline), -1
+        )
+        return snapshot
+
+    def _publish_progress(self, phase: str | None = None, *, force: bool = False) -> None:
+        """Best-effort status: unchanged ticks are not evidence of render progress."""
+        if not self.job_json_path or not self.job_identifier:
+            return
+        try:
+            now = time.monotonic()
+            if (
+                not force
+                and self.progress_last_write_time
+                and now - float(self.progress_last_write_time) < PROGRESS_WRITE_INTERVAL_SECONDS
+            ):
+                return
+            # Explicit transitions also work after the pipeline's timestep has
+            # been torn down, when some native graph getters cannot be called.
+            if phase is not None and self.progress_last_snapshot:
+                snapshot = json.loads(self.progress_last_snapshot)
+            else:
+                snapshot = self._sample_progress()
+            if phase is not None:
+                snapshot["phase"] = phase
+            if phase == "complete":
+                snapshot["progress"] = 100.0
+                snapshot["current_frame"] = snapshot["total_frames"]
+            signature = json.dumps(snapshot, sort_keys=True, allow_nan=False)
+            if signature == self.progress_last_snapshot:
+                return
+            self.progress_last_write_time = repr(now)
+            _write_progress_atomic(
+                os.path.join(os.path.dirname(self.job_json_path), UNREAL_PROGRESS_FILENAME),
+                {**snapshot, "updated_utc": _utc_now()},
+            )
+            self.progress_last_snapshot = signature
+        except Exception as exc:
+            if not self.progress_warning_sent:
+                self.progress_warning_sent = True
+                _log_warning(f"Could not publish render progress: {type(exc).__name__}: {exc}")
 
     def _write_result(
         self,
@@ -586,6 +734,7 @@ class RenderWorkerV2Executor(unreal.MoviePipelinePythonHostExecutor):
             job = _read_json_object(self.job_json_path)
             self.job_identifier = str(job.get("job_id") or "")
             _validate_job(job, self.job_json_path)
+            self._configure_progress(job)
             _log(f"Loaded farm job: {self.job_identifier}")
 
             new_job = _build_pipeline_job(self, job)
@@ -627,8 +776,15 @@ class RenderWorkerV2Executor(unreal.MoviePipelinePythonHostExecutor):
     def is_rendering(self) -> bool:
         return self.active_pipeline is not None
 
+    @unreal.ufunction(override=True)
+    def on_begin_frame(self) -> None:
+        super().on_begin_frame()
+        if self.active_pipeline is not None and not self.completion_sent:
+            self._publish_progress()
+
     @unreal.ufunction(ret=None, params=[unreal.MoviePipelineOutputData])
     def on_movie_pipeline_finished(self, results: Any) -> None:
+        self._publish_progress("finalizing", force=True)
         pipeline_success = bool(results.success)
         reported_output_files: list[str] = []
         collection_warning = ""
@@ -689,6 +845,8 @@ class RenderWorkerV2Executor(unreal.MoviePipelinePythonHostExecutor):
                 output_files=output_files,
                 output_validation=output_validation,
             )
+            if success:
+                self._publish_progress("complete", force=True)
         finally:
             self._finish_executor()
 

@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from portable_pipe_tools.render_farm.cloud_dispatch import (
     CloudClaimResult,
@@ -36,6 +37,7 @@ class FakeDispatcher:
         self.completed: list[tuple[str, str]] = []
         self.failed: list[tuple[str, str, bool]] = []
         self.heartbeat_count = 0
+        self.heartbeat_payloads: list[dict] = []
         self.heartbeat_error = False
         self.fail_completion_once = False
         self.stale_failure_job_ids: set[str] = set()
@@ -71,6 +73,7 @@ class FakeDispatcher:
 
     def heartbeat_job(self, *_args, **_kwargs) -> dict:
         self.heartbeat_count += 1
+        self.heartbeat_payloads.append(dict(_kwargs))
         if self.heartbeat_error:
             raise DispatcherConnectionError("intentional heartbeat outage")
         return {"ok": True, "stop_requested": False}
@@ -565,6 +568,62 @@ class CloudWorkerTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(1, dispatcher.heartbeat_count)
+
+    def test_render_progress_is_batched_into_one_minute_heartbeats(self) -> None:
+        lease = self._lease_for_queued_job()
+        dispatcher = FakeDispatcher(lease)
+        now = [0.0]
+
+        def render(**kwargs):
+            self.assertIsNone(kwargs["timeout_seconds"])
+            for seconds, frame in ((30, 10), (60, 20), (90, 30), (120, 40)):
+                now[0] = float(seconds)
+                kwargs["progress_callback"](dict(schema_version=1, phase="rendering",
+                                                  progress=float(frame), current_frame=frame,
+                                                  total_frames=100, last_progress_age_seconds=0,
+                                                  elapsed_seconds=seconds))
+                self.assertFalse(kwargs["should_cancel"]())
+            return UnrealExecutionResult(True, "Rendered", 0)
+
+        result = run_once(self.farm_root, "CLOUD-WORKER", False, minimum_stage_seconds=0,
+                          render_with_unreal=True, unreal_runner=render, dispatcher_client=dispatcher,
+                          cloud_spool_root=self.cloud_spool_root, render_timeout_seconds=None,
+                          monotonic=lambda: now[0])
+        self.assertEqual("complete", result.status)
+        self.assertEqual(2, dispatcher.heartbeat_count)
+        self.assertEqual([20.0, 40.0], [p["progress"] for p in dispatcher.heartbeat_payloads])
+        self.assertEqual(40, dispatcher.heartbeat_payloads[-1]["progress_details"]["current_frame"])
+
+    def test_unstoppable_unreal_blocks_job_instead_of_reassigning_it(self) -> None:
+        lease = self._lease_for_queued_job()
+        dispatcher = FakeDispatcher(lease)
+        result = run_once(self.farm_root, "CLOUD-WORKER", False, minimum_stage_seconds=0,
+                          render_with_unreal=True, dispatcher_client=dispatcher,
+                          cloud_spool_root=self.cloud_spool_root,
+                          unreal_runner=lambda **_: UnrealExecutionResult(
+                              False, "Could not stop Unreal; restart node", None,
+                              process_still_running=True))
+        self.assertEqual("blocked", result.status)
+        self.assertEqual([(lease.job_id, "CLOUD-WORKER", False)], dispatcher.failed)
+        self.assertEqual([], dispatcher.completed)
+
+    def test_blocked_worker_stays_blocked_if_receipt_and_network_reporting_fail(self) -> None:
+        lease = self._lease_for_queued_job()
+        dispatcher = FakeDispatcher(lease)
+        def offline(*args, **kwargs):
+            raise DispatcherConnectionError("offline during quarantine")
+        dispatcher.fail_job = offline
+        module = "portable_pipe_tools.render_farm.worker"
+        with patch(module + ".finish_cloud_claimed_job") as finalize, \
+             patch(module + ".write_json_atomic", side_effect=OSError("control disk unavailable")):
+            result = run_once(self.farm_root, "CLOUD-WORKER", False, minimum_stage_seconds=0,
+                              render_with_unreal=True, dispatcher_client=dispatcher,
+                              cloud_spool_root=self.cloud_spool_root,
+                              unreal_runner=lambda **_: UnrealExecutionResult(
+                                  False, "Unreal is still running", None, process_still_running=True))
+        self.assertEqual("blocked", result.status)
+        finalize.assert_not_called()
+        self.assertEqual([], dispatcher.completed)
 
     def test_heartbeat_outage_cancels_before_cloud_lease_can_expire(self) -> None:
         initial_lease = self._lease_for_queued_job()

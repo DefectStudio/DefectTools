@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -20,6 +21,15 @@ from portable_pipe_tools.render_farm.engine_discovery import (
 from portable_pipe_tools.render_farm.git_sync import GIT_PULL_LOG_FILENAME
 from portable_pipe_tools.render_farm.local_paths import (
     prepare_worker_output_mapping,
+    exr_output_folder,
+    mp4_output_path,
+)
+from portable_pipe_tools.render_farm.render_progress import (
+    DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+    DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+    UNREAL_PROGRESS_FILENAME,
+    RenderProgressMonitor,
 )
 from portable_pipe_tools.render_farm.queue import (
     JOB_FILENAME,
@@ -59,6 +69,8 @@ class UnrealExecutionResult:
     exit_code: int | None
     unreal_result: dict[str, Any] | None = None
     cancelled: bool = False
+    process_still_running: bool = False
+    render_progress: dict[str, Any] | None = None
 
     def terminal_result_details(self) -> dict[str, Any]:
         unreal_result = self.unreal_result or {}
@@ -66,6 +78,8 @@ class UnrealExecutionResult:
             "simulated": False,
             "exit_code": self.exit_code,
             "cancelled": self.cancelled,
+            "process_still_running": self.process_still_running,
+            "render_progress": self.render_progress,
             "unreal_result_file": UNREAL_RESULT_FILENAME,
             "unreal_reported_success": unreal_result.get("success"),
             "unreal_result_stage": unreal_result.get("stage"),
@@ -318,22 +332,51 @@ def _pump_unreal_stdout(process: subprocess.Popen[str], log_path: Path) -> None:
     )
 
 
+class UnrealProcessTerminationError(RuntimeError):
+    """The job must not be reassigned while this process can still write outputs."""
+
+
 def _stop_unreal_process(process: subprocess.Popen[str]) -> None:
     try:
         process.terminate()
         process.wait(timeout=30)
     except (OSError, subprocess.TimeoutExpired):
-        process.kill()
-        process.wait(timeout=30)
+        try:
+            process.kill()
+            process.wait(timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            if process.poll() is not None:
+                return
+            raise UnrealProcessTerminationError(
+                f"Could not confirm Unreal process {process.pid} has stopped. "
+                "Worker stopped and job blocked to prevent simultaneous output writes; "
+                "check the process or restart this render node before retrying."
+            ) from error
 
 
 def _wait_for_unreal_process(
     process: subprocess.Popen[str],
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     should_cancel: Callable[[], bool] | None = None,
+    *,
+    progress_monitor: RenderProgressMonitor | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[int | None, str | None]:
-    deadline = time.monotonic() + timeout_seconds
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    next_progress_log = time.monotonic() + 60.0
     while True:
+        if progress_monitor is not None:
+            progress = progress_monitor.poll()
+            if time.monotonic() >= next_progress_log:
+                LOGGER.info("Render progress: %s; frame %s/%s; %.1f%%; last advance %.0f seconds ago",
+                            progress["phase"], progress["current_frame"], progress["total_frames"],
+                            progress["progress"], progress["last_progress_age_seconds"])
+                next_progress_log = time.monotonic() + 60.0
+            if progress_callback is not None:
+                try:
+                    progress_callback(progress)
+                except Exception as error:
+                    LOGGER.warning("Could not publish render progress: %s", error)
         cancel_requested = False
         if should_cancel is not None:
             try:
@@ -348,10 +391,14 @@ def _wait_for_unreal_process(
             _stop_unreal_process(process)
             return process.returncode, "cancelled"
 
-        remaining_seconds = deadline - time.monotonic()
+        remaining_seconds = deadline - time.monotonic() if deadline is not None else float("inf")
         if remaining_seconds <= 0:
             _stop_unreal_process(process)
             return process.returncode, "timed_out"
+
+        if progress_monitor is not None and progress_monitor.stalled_reason():
+            _stop_unreal_process(process)
+            return process.returncode, "stalled"
 
         try:
             exit_code = process.wait(
@@ -369,6 +416,18 @@ def _read_unreal_result(path: Path) -> dict[str, Any] | None:
     if not path_exists_with_retry(path):
         return None
     return read_json_object(path)
+
+
+def _progress_output_paths(job: dict[str, Any], output_root: Path) -> list[Path]:
+    outputs = job.get("outputs")
+    outputs = outputs if isinstance(outputs, dict) else {}
+    paths = []
+    for name, resolver in (("mp4", mp4_output_path), ("exr", exr_output_folder)):
+        if outputs.get(name, True) is True:
+            path = resolver(job, output_root)
+            if path is not None:
+                paths.append(path)
+    return paths
 
 
 def _format_timeout_duration(timeout_seconds: float) -> str:
@@ -466,12 +525,16 @@ def execute_unreal_job(
     claimed_folder: str | Path,
     job: dict[str, Any],
     unreal_editor_cmd: str | Path | None = None,
-    timeout_seconds: float = DEFAULT_RENDER_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = DEFAULT_RENDER_TIMEOUT_SECONDS,
     local_uproject: str | Path | None = None,
     should_cancel: Callable[[], bool] | None = None,
     render_farm_root: str | Path | None = None,
+    no_progress_timeout_seconds: float = DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+    startup_timeout_seconds: float = DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    finalization_timeout_seconds: float = DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> UnrealExecutionResult:
-    if timeout_seconds <= 0:
+    if timeout_seconds is not None and (not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
         raise ValueError("timeout_seconds must be greater than zero")
 
     folder = _as_path(claimed_folder)
@@ -567,6 +630,28 @@ def execute_unreal_job(
     _write_text_with_retry(command_path, command_text + "\n")
     LOGGER.info("Render command: %s", command_text)
 
+    # A recovered package can contain another attempt's receipt. Never adopt it.
+    retry_transient_windows_lock(
+        lambda: (folder / UNREAL_PROGRESS_FILENAME).unlink(missing_ok=True),
+        description="Remove stale render progress receipt before Unreal launch",
+    )
+    output_paths = (_progress_output_paths(job, output_mapping.worker_output_directory)
+                    if job.get("worker_runtime_version") == 2 else [])
+    progress_monitor = RenderProgressMonitor(
+        folder, job, no_progress_timeout_seconds=no_progress_timeout_seconds,
+        startup_timeout_seconds=startup_timeout_seconds,
+        finalization_timeout_seconds=finalization_timeout_seconds,
+        output_paths=output_paths,
+    ) if job.get("worker_runtime_version") == 2 else None
+
+    def progress_snapshot() -> dict[str, Any] | None:
+        return progress_monitor.snapshot() if progress_monitor is not None else None
+    if progress_monitor is not None:
+        LOGGER.info("Render watchdog: no progress=%g min; startup=%g min; final output=%g min; total runtime=%s",
+                    no_progress_timeout_seconds / 60, startup_timeout_seconds / 60,
+                    finalization_timeout_seconds / 60,
+                    "unlimited" if timeout_seconds is None else _format_timeout_duration(timeout_seconds))
+
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     process = subprocess.Popen(
         command,
@@ -579,21 +664,49 @@ def execute_unreal_job(
         bufsize=1,
         creationflags=creation_flags,
     )
-    LOGGER.info("Started UnrealEditor-Cmd process %s", process.pid)
-
-    output_thread = Thread(
-        target=_pump_unreal_stdout,
-        args=(process, stdout_path),
-        name="UnrealStdoutCapture",
-        daemon=True,
-    )
-    output_thread.start()
-
-    exit_code, stop_reason = _wait_for_unreal_process(
-        process,
-        timeout_seconds,
-        should_cancel,
-    )
+    output_thread: Thread | None = None
+    try:
+        LOGGER.info("Started UnrealEditor-Cmd process %s", process.pid)
+        output_thread = Thread(
+            target=_pump_unreal_stdout,
+            args=(process, stdout_path),
+            name="UnrealStdoutCapture",
+            daemon=True,
+        )
+        output_thread.start()
+        exit_code, stop_reason = _wait_for_unreal_process(
+            process, timeout_seconds, should_cancel,
+            progress_monitor=progress_monitor, progress_callback=progress_callback,
+        )
+    except UnrealProcessTerminationError as error:
+        LOGGER.error("%s", error)
+        return UnrealExecutionResult(False, str(error), None, process_still_running=True,
+                                     render_progress=progress_snapshot())
+    except Exception as error:
+        # Never return a generic failure with an orphan render still writing outputs.
+        try:
+            _stop_unreal_process(process)
+        except UnrealProcessTerminationError as stop_error:
+            return UnrealExecutionResult(False, str(stop_error), None, process_still_running=True,
+                                         render_progress=progress_snapshot())
+        if output_thread is not None and output_thread.ident is not None:
+            output_thread.join(timeout=30)
+        return UnrealExecutionResult(False, f"Render supervision failed: {type(error).__name__}: {error}",
+                                     process.returncode, render_progress=progress_snapshot())
+    assert output_thread is not None
+    if stop_reason == "stalled":
+        assert progress_monitor is not None
+        output_thread.join(timeout=30)
+        reason = progress_monitor.stalled_reason() or "Unreal render stopped making progress."
+        LOGGER.error("%s Stopped owned Unreal process %s.", reason, process.pid)
+        unreal_result = _read_unreal_result(unreal_result_path)
+        # Validated outputs remain successful if only engine shutdown hung.
+        if unreal_result and unreal_result.get("success") is True:
+            validated = _interpret_unreal_result(job, exit_code if exit_code is not None else -1, unreal_result)
+            if validated.success:
+                return replace(validated, render_progress=progress_snapshot())
+        return UnrealExecutionResult(False, reason, exit_code, unreal_result,
+                                     render_progress=progress_snapshot())
     if stop_reason == "cancelled":
         LOGGER.warning("Worker STOP requested; Unreal render process interrupted.")
         output_thread.join(timeout=30)
@@ -603,6 +716,7 @@ def execute_unreal_job(
             exit_code,
             _read_unreal_result(unreal_result_path),
             cancelled=True,
+            render_progress=progress_snapshot(),
         )
 
     if stop_reason == "timed_out":
@@ -617,6 +731,7 @@ def execute_unreal_job(
             f"Unreal render exceeded its {timeout_label} timeout.",
             exit_code,
             _read_unreal_result(unreal_result_path),
+            render_progress=progress_snapshot(),
         )
 
     assert exit_code is not None
@@ -627,4 +742,4 @@ def execute_unreal_job(
     unreal_result = _read_unreal_result(unreal_result_path)
     result = _interpret_unreal_result(job, exit_code, unreal_result)
     LOGGER.info("Unreal execution result: %s", result.reason)
-    return result
+    return replace(result, render_progress=progress_snapshot())

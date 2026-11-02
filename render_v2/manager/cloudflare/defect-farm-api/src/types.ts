@@ -28,6 +28,7 @@ export interface JobRow {
   render_started_at: string | null;
   render_finished_at: string | null;
   progress: number;
+  progress_details_json: string | null;
   result_json: string | null;
   last_failure_json: string | null;
   payload_json: string;
@@ -66,6 +67,7 @@ export interface JobSummary {
   render_started_utc: string | null;
   render_finished_utc: string | null;
   progress: number;
+  progress_details: JsonRecord | null;
   blacklisted_workers: string[];
   resubmitted_from_job_id: string | null;
   revision: number;

@@ -7,6 +7,8 @@ from unittest.mock import patch
 from portable_pipe_tools.render_farm.v2_gui_settings import (
     load_or_detect_unreal_editor,
     save_unreal_editor_preference,
+    load_listener_preferences,
+    save_listener_preferences,
 )
 
 
@@ -49,6 +51,17 @@ class V2GuiSettingsTests(unittest.TestCase):
         saved = json.loads(self.settings.read_text())
         self.assertEqual("F:/Renders", saved["workspace_root"])
         self.assertEqual("studio.json", saved["catalog"])
+
+    def test_partial_timeout_save_preserves_worker_and_other_deadlines(self):
+        save_listener_preferences(self.settings, worker_name="5080A-V2", poll_interval_seconds=15,
+                                  startup_timeout_minutes=30, finalization_timeout_minutes=40)
+        save_listener_preferences(self.settings, no_progress_timeout_minutes=8)
+        saved = load_listener_preferences(self.settings)
+        self.assertEqual("5080A-V2", saved["worker_name"])
+        self.assertEqual(15, saved["poll_interval_seconds"])
+        self.assertEqual(8, saved["no_progress_timeout_minutes"])
+        self.assertEqual(30, saved["startup_timeout_minutes"])
+        self.assertEqual(40, saved["finalization_timeout_minutes"])
 
 
 if __name__ == "__main__":

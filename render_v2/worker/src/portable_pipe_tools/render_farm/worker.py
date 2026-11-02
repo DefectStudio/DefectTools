@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 import logging
+import math
 from pathlib import Path
 import sys
 import time
@@ -54,6 +55,10 @@ from portable_pipe_tools.render_farm.unreal_runner import (
     UnrealExecutionResult,
     execute_unreal_job,
     resolve_unreal_project,
+)
+from portable_pipe_tools.render_farm.render_progress import (
+    DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS, DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
 )
 from portable_pipe_tools.render_farm.workers import (
     WorkerPaths,
@@ -179,7 +184,7 @@ def run_once(
     monotonic: Callable[[], float] | None = None,
     render_with_unreal: bool = False,
     unreal_editor_cmd: str | Path | None = None,
-    render_timeout_seconds: float = DEFAULT_RENDER_TIMEOUT_SECONDS,
+    render_timeout_seconds: float | None = DEFAULT_RENDER_TIMEOUT_SECONDS,
     unreal_runner: Callable[..., UnrealExecutionResult] | None = None,
     should_stop_before_claim: Callable[[], bool] | None = None,
     should_cancel_render: Callable[[], bool] | None = None,
@@ -193,11 +198,19 @@ def run_once(
     cloud_spool_root: str | Path | None = None,
     eligible_project_ids: list[str] | None = None,
     job_paths_resolver: Callable[[dict], tuple[Path, Path]] | None = None,
+    no_progress_timeout_seconds: float = DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+    startup_timeout_seconds: float = DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    finalization_timeout_seconds: float = DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
 ) -> WorkerResult | None:
     if minimum_stage_seconds < 0:
         raise ValueError("minimum_stage_seconds cannot be negative")
     if dispatcher_heartbeat_interval_seconds <= 0:
         raise ValueError("dispatcher_heartbeat_interval_seconds must be positive")
+    for value in (no_progress_timeout_seconds, startup_timeout_seconds, finalization_timeout_seconds):
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError("Render inactivity timeouts must be positive finite seconds")
+    if render_timeout_seconds is not None and (not math.isfinite(render_timeout_seconds) or render_timeout_seconds <= 0):
+        raise ValueError("Render total timeout must be positive finite seconds or None")
 
     sleep_function = sleep or time.sleep
     monotonic_function = monotonic or time.monotonic
@@ -488,6 +501,11 @@ def run_once(
         last_heartbeat_success = monotonic_function()
         last_heartbeat_attempt = last_heartbeat_success
         cloud_cancel_reason: str | None = None
+        latest_progress: dict[str, Any] | None = None
+
+        def report_progress(progress: dict[str, Any]) -> None:
+            nonlocal latest_progress
+            latest_progress = dict(progress)
         cloud_lease_deadline = (
             last_heartbeat_success
             + max(0.0, claimed_job.cloud_lease.lease_expires_at - time.time())
@@ -521,6 +539,10 @@ def run_once(
                     claimed_job.cloud_lease.job_id,
                     worker,
                     claimed_job.cloud_lease.lease_token,
+                    **({"progress": latest_progress["progress"],
+                        "progress_details": {key: value for key, value in latest_progress.items()
+                                             if key != "progress"}}
+                       if latest_progress is not None else {}),
                 )
             except DispatcherConnectionError as error:
                 LOGGER.warning("Cloud Dispatcher heartbeat unavailable: %s", error)
@@ -567,6 +589,10 @@ def run_once(
             "unreal_editor_cmd": unreal_editor_cmd,
             "timeout_seconds": render_timeout_seconds,
             "local_uproject": local_uproject,
+            "no_progress_timeout_seconds": no_progress_timeout_seconds,
+            "startup_timeout_seconds": startup_timeout_seconds,
+            "finalization_timeout_seconds": finalization_timeout_seconds,
+            "progress_callback": report_progress,
         }
         if dispatcher_client is not None:
             runner_arguments["render_farm_root"] = shared_farm_root
@@ -602,6 +628,31 @@ def run_once(
         sleep=sleep_function,
         monotonic=monotonic_function,
     )
+
+    if (result_details or {}).get("process_still_running"):
+        # Quarantine before optional Dropbox copies/local finalization. A disk or
+        # network failure here must never turn this into a normal listener retry.
+        blocked_receipt = {
+            "job_id": claimed_job.job["job_id"], "worker": worker,
+            "reason": reason, "result": result_details,
+            "requires_operator_attention": True,
+        }
+        try:
+            write_json_atomic(claimed_job.folder / "worker_blocked.json", blocked_receipt)
+        except Exception:
+            LOGGER.exception("Could not save blocked-process receipt; worker will remain stopped")
+        if dispatcher_client is not None and claimed_job.cloud_lease is not None:
+            try:
+                dispatcher_client.fail_job(
+                    claimed_job.cloud_lease.job_id, worker, claimed_job.cloud_lease.lease_token,
+                    reason=reason, retryable=False,
+                    result=dict(result_details, job_snapshot=dict(claimed_job.job)),
+                )
+            except Exception:
+                LOGGER.exception("URGENT: could not quarantine job in the dispatcher. "
+                                 "Block it in Render Manager before retrying; owned Unreal may still be running.")
+        LOGGER.error("Worker blocked; keeping logs at %s. %s", claimed_job.folder, reason)
+        return WorkerResult("blocked", claimed_job.folder, reason)
 
     def finish_job() -> WorkerResult:
         if dispatcher_client is not None and claimed_job.cloud_lease is not None:

@@ -23,6 +23,11 @@ from portable_pipe_tools.render_farm.project_workspace import project_lock, Prep
 from portable_pipe_tools.render_farm.registered_sync import sync_registered_project, SYNC_POLICY, OVERRIDE_SYNC_POLICY
 from portable_pipe_tools.render_farm.queue import read_json_object, write_json_atomic
 from portable_pipe_tools.render_farm.unreal_runner import execute_unreal_job, validate_real_render_job
+from portable_pipe_tools.render_farm.render_progress import (
+    DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+    DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+)
 from portable_pipe_tools.render_farm.v2_gui_settings import load_registered_projects
 
 
@@ -77,12 +82,25 @@ def prepare_registered_job(settings_path: Path, project_id: str, job_path: Path)
 
 
 def render_registered_job(settings_path: Path, project_id: str, job_path: Path, *,
-                          output_root: Path | None = None, timeout_seconds=7200,
-                          progress=print, cancelled=lambda: False, override_local_changes=False) -> dict:
+                          output_root: Path | None = None, timeout_seconds=None,
+                          progress=print, cancelled=lambda: False, override_local_changes=False,
+                          no_progress_timeout_seconds=DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+                          startup_timeout_seconds=DEFAULT_STARTUP_TIMEOUT_SECONDS,
+                          finalization_timeout_seconds=DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+                          progress_callback=None) -> dict:
     if type(override_local_changes) is not bool:
         raise ValueError("Override Local Changes must be enabled explicitly with a boolean.")
-    if not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+    if timeout_seconds is not None and (
+        isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds) or timeout_seconds <= 0
+    ):
         raise ValueError("Render timeout must be positive and finite.")
+    for label, value in (("No progress", no_progress_timeout_seconds),
+                         ("Startup", startup_timeout_seconds),
+                         ("Finalization", finalization_timeout_seconds)):
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value <= 0):
+            raise ValueError(f"{label} timeout must be positive and finite.")
     project, uproject, engine, job = prepare_registered_job(settings_path, project_id, job_path)
     sync_policy = OVERRIDE_SYNC_POLICY if override_local_changes else SYNC_POLICY
     if cancelled():
@@ -133,7 +151,11 @@ def render_registered_job(settings_path: Path, project_id: str, job_path: Path, 
             progress(f"Rendering {job['shot_name']} with {engine}")
             result = execute_unreal_job(job_folder, job, unreal_editor_cmd=engine, local_uproject=uproject,
                                         render_farm_root=run_root / "renderFarm", timeout_seconds=timeout_seconds,
-                                        should_cancel=cancelled)
+                                        should_cancel=cancelled,
+                                        no_progress_timeout_seconds=no_progress_timeout_seconds,
+                                        startup_timeout_seconds=startup_timeout_seconds,
+                                        finalization_timeout_seconds=finalization_timeout_seconds,
+                                        progress_callback=progress_callback)
             summary.update(success=result.success, reason=result.reason, cancelled=result.cancelled,
                            render=result.terminal_result_details())
             summary["render"].pop("git_pull_log_file", None)
@@ -152,11 +174,22 @@ def main(argv=None):
     parser.add_argument("--project", required=True)
     parser.add_argument("--job", type=Path, required=True)
     parser.add_argument("--output-root", type=Path)
-    parser.add_argument("--timeout", type=float, default=7200)
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="Optional total render-duration limit in seconds; default is unlimited.")
+    parser.add_argument("--no-progress-timeout", type=float, default=DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
+                        help="Seconds without advancing render work before stopping (default: 600).")
+    parser.add_argument("--startup-timeout", type=float, default=DEFAULT_STARTUP_TIMEOUT_SECONDS,
+                        help="Seconds allowed for Unreal startup/loading (default: 1800).")
+    parser.add_argument("--finalization-timeout", type=float, default=DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+                        help="Seconds without final output progress before stopping (default: 1800).")
     args = parser.parse_args(argv)
     try:
         result = render_registered_job(args.settings, args.project, args.job, output_root=args.output_root,
-                                       timeout_seconds=args.timeout, progress=lambda text: print(text, flush=True))
+                                       timeout_seconds=args.timeout,
+                                       no_progress_timeout_seconds=args.no_progress_timeout,
+                                       startup_timeout_seconds=args.startup_timeout,
+                                       finalization_timeout_seconds=args.finalization_timeout,
+                                       progress=lambda text: print(text, flush=True))
         print(json.dumps(result, indent=2))
         return 0 if result["success"] else 1
     except (OSError, ValueError, RuntimeError) as error:

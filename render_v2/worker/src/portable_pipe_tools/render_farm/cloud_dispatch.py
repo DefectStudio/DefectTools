@@ -382,6 +382,7 @@ class DispatcherClient:
         lease_token: str,
         *,
         progress: float | None = None,
+        progress_details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self._request(
             "POST",
@@ -390,6 +391,7 @@ class DispatcherClient:
                 worker_id,
                 lease_token,
                 **({"progress": progress} if progress is not None else {}),
+                **({"progress_details": progress_details} if progress_details is not None else {}),
             ),
         )
 

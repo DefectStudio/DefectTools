@@ -43,6 +43,7 @@ CLOUD_RENDER_LOG_FILENAMES = (
     "unreal.log",
     "unreal_stdout.log",
     "git_pull.log",
+    "unreal_progress.json",
 )
 
 

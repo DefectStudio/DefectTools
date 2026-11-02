@@ -35,6 +35,11 @@ preserving settings from the old EXE. On GUI launch, old `LocalSaveFiles`
 preferences are copied only when the corresponding per-user file is absent.
 Machine settings and logs are not distributed with the code.
 
+V2 reports render progress to the manager once a minute and uses saved inactivity
+limits instead of a fixed total render duration. Defaults are 10 minutes without
+render progress, 30 minutes for startup/loading, and 30 minutes without final
+output progress. See [progress and stalled-job recovery](docs/render-progress-watchdog.md).
+
 ## Checks
 
 - `test_worker.bat --no-pause`: regression suite, no real render.

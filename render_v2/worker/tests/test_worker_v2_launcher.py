@@ -15,8 +15,9 @@ class WorkerLauncherTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         class Service:
-            def run_next(self, *, render_timeout_seconds):
+            def run_next(self, *, render_timeout_seconds, **timeouts):
                 self.timeout = render_timeout_seconds
+                self.timeouts = timeouts
                 return WorkerResult("complete", Path("completed-job"), "Test completed")
         service = Service()
         with tempfile.TemporaryDirectory() as temporary:
@@ -26,5 +27,6 @@ class WorkerLauncherTests(unittest.TestCase):
                 code = module.claim_once(["--worker", "Test", "--timeout", "90", "--report", str(report)])
             self.assertEqual(0, code)
             self.assertEqual(90, service.timeout)
+            self.assertEqual(600, service.timeouts["no_progress_timeout_seconds"])
             self.assertTrue(json.loads(report.read_text())["success"])
             connection.assert_not_called()
