@@ -3,7 +3,8 @@ Compatibility wrapper for add_to_render_queue.
 
 The real render queue implementation lives in add_to_render_queue_impl.py. This
 wrapper keeps the existing import path stable while patching a few render-tool
-behaviors, including per-shot MP4 / EXR Movie Render Graph Boolean overrides.
+behaviors, including per-shot MP4 / EXR Movie Render Graph Boolean overrides
+and render versions reserved by existing queue jobs.
 """
 
 import importlib
@@ -264,25 +265,95 @@ def _extract_associated_level_object_path(shot_data_asset):
     return normalized_object_path
 
 
-def _find_next_render_version_number(output_parent_directory, stem_prefix):
-    normalized_parent = os.path.normpath(str(output_parent_directory or "").strip())
-    if not normalized_parent:
-        return _impl.DEFAULT_VERSION_NUMBER
+def _normalize_render_output_directory(directory):
+    text = str(directory or "").strip()
+    if not text or "{" in text or "}" in text:
+        return ""
+    return os.path.normcase(os.path.abspath(os.path.normpath(text)))
 
-    version_pattern = re.compile(rf"^{re.escape(str(stem_prefix or ''))}_v(\d{{3}})(?:\.mp4)?$", re.IGNORECASE)
+
+def _get_queued_job_graph_variable_text(graph_asset, containers, variable_name):
+    variable = graph_asset.get_variable_by_name(variable_name)
+    if not variable:
+        return ""
+    for container in containers:
+        enabled = container.get_variable_assignment_enable_state(variable)
+        # Unreal versions expose out parameters as either an optional value or
+        # a (success, value) tuple. A disabled override uses the graph default.
+        if isinstance(enabled, tuple):
+            enabled = bool(enabled[1]) if len(enabled) >= 2 and enabled[0] else False
+        if enabled:
+            return str(container.get_value_serialized_string(variable) or "")
+    return str(variable.get_value_serialized_string() or "")
+
+
+def _get_queued_render_versions(output_parent_directory, stem_prefix):
+    """Read existing job overrides without creating or refreshing assignments.
+
+    Reserve versions by their physical output namespace, even when a different
+    graph preset writes to the same folder and render-name prefix.
+    """
+    normalized_parent = _normalize_render_output_directory(output_parent_directory)
+    if not normalized_parent or not stem_prefix:
+        return []
+    subsystem = unreal.get_editor_subsystem(unreal.MoviePipelineQueueSubsystem)
+    queue = subsystem.get_queue() if subsystem else None
+    if queue is None:
+        raise RuntimeError("Could not inspect Movie Render Queue for reserved render versions.")
+    pattern = re.compile(rf"^{re.escape(str(stem_prefix))}_v(\d{{3,}})(?:\.|$)", re.IGNORECASE)
+    versions = set()
+    for job in queue.get_jobs():
+        try:
+            uses_graph = getattr(job, "is_using_graph_configuration", None)
+            if callable(uses_graph) and not uses_graph():
+                continue
+            graph_asset = job.get_graph_preset()
+            if not graph_asset:
+                continue
+            graph_path = _get_graph_cache_key(graph_asset)
+            containers = [
+                container for container in job.get_editor_property("graph_variable_assignments")
+                if _soft_object_path_to_text(container.get_graph_config()) == graph_path
+            ]
+            serialized_directory = _get_queued_job_graph_variable_text(
+                graph_asset, containers, _impl.OUTPUT_VARIABLE_NAME
+            )
+            if not serialized_directory:
+                continue
+            directory = unreal.DirectoryPath()
+            if not directory.import_text(serialized_directory):
+                raise ValueError(f"Invalid queued OutputDirectory: {serialized_directory}")
+            if _normalize_render_output_directory(directory.path) != normalized_parent:
+                continue
+            for name in (_impl.FILE_NAME_VARIABLE_NAME, _impl.MP4_FILE_NAME_VARIABLE_NAME):
+                filename = _get_queued_job_graph_variable_text(graph_asset, containers, name)
+                for segment in filename.replace("\\", "/").split("/"):
+                    match = pattern.match(segment)
+                    if match:
+                        versions.add(int(match.group(1)))
+        except Exception as exc:
+            # Guessing here could silently allocate an already-reserved output.
+            raise RuntimeError(f"Could not inspect a queued job's render version: {exc}") from exc
+    return sorted(versions)
+
+
+def _find_next_render_version_number(output_parent_directory, stem_prefix):
+    if not str(output_parent_directory or "").strip():
+        return _impl.DEFAULT_VERSION_NUMBER
+    normalized_parent = os.path.normpath(str(output_parent_directory).strip())
+
+    version_pattern = re.compile(rf"^{re.escape(str(stem_prefix or ''))}_v(\d{{3,}})(?:\.mp4)?$", re.IGNORECASE)
     highest_version = 0
     matched_entries = []
 
     try:
         entries = os.listdir(normalized_parent)
     except FileNotFoundError:
-        _impl._log(
-            f"Output parent folder does not exist yet. Starting version at v{_impl.DEFAULT_VERSION_NUMBER:03d}: {normalized_parent}"
-        )
-        return _impl.DEFAULT_VERSION_NUMBER
+        entries = []
+        _impl._log(f"Output parent folder does not exist yet; checking queued versions: {normalized_parent}")
     except Exception as exc:
+        entries = []
         _impl._log_warning(f"Could not inspect output parent folder '{normalized_parent}' for existing versions: {exc}")
-        return _impl.DEFAULT_VERSION_NUMBER
 
     for entry_name in entries:
         entry_path = os.path.join(normalized_parent, entry_name)
@@ -305,10 +376,13 @@ def _find_next_render_version_number(output_parent_directory, stem_prefix):
         if version_number > highest_version:
             highest_version = version_number
 
+    queued_versions = _get_queued_render_versions(normalized_parent, stem_prefix)
+    highest_version = max([highest_version] + queued_versions)
     next_version_number = highest_version + 1 if highest_version > 0 else _impl.DEFAULT_VERSION_NUMBER
     _impl._log(
         f"Resolved next render version for prefix '{stem_prefix}' under '{normalized_parent}': "
-        f"v{next_version_number:03d} from EXR folders and MP4 files: {matched_entries}"
+        f"v{next_version_number:03d} from EXR folders and MP4 files: {matched_entries}; "
+        f"queued versions: {[f'v{version:03d}' for version in queued_versions]}"
     )
     return next_version_number
 

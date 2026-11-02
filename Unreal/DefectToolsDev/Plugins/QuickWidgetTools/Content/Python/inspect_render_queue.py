@@ -630,6 +630,7 @@ def _inspect_job(job: Any, job_index: int) -> dict[str, Any]:
 
     result = {
         "queue_index": job_index,
+        "object_path": _object_path(job),
         "job_name": job_name,
         "enabled": bool(_call(job, "is_enabled", default=True)),
         "consumed": bool(_call(job, "is_consumed", default=False)),
@@ -725,6 +726,7 @@ def inspect_queue() -> dict[str, Any]:
             inspected_jobs.append(
                 {
                     "queue_index": job_index,
+                    "object_path": _object_path(job),
                     "job_name": job_name,
                     "inspection_error": warning,
                 }

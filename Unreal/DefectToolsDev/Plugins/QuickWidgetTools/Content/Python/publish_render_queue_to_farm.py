@@ -504,6 +504,19 @@ def _normalized_output_key(output_directory: Any, file_name_format: Any) -> str:
     return f"{directory}|{file_format}"
 
 
+def _package_output_keys(package: dict[str, Any]) -> set[str]:
+    """Compare actual enabled outputs, independently of the MRQ display name."""
+    outputs = package.get("outputs") or {}
+    return {
+        f"{format_name}|{_normalized_output_key(package.get('output_directory'), package.get(field))}"
+        for format_name, field in (
+            ("exr", "output_file_name_format"),
+            ("mp4", "mp4_file_name_format"),
+        )
+        if outputs.get(format_name) is True
+    }
+
+
 def _fingerprint_payload(job_package: dict[str, Any]) -> dict[str, Any]:
     return {
         "project": job_package.get("project"),
@@ -698,16 +711,24 @@ def _build_job_package(
     mp4_file_name_format = _safe_text(
         _override_value(overrides, "MP4FileNameFormat", "")
     ).strip()
-    render_version = _extract_render_version(
-        file_name_format,
-        mp4_file_name_format,
-    )
-
     mp4_enabled = bool(_override_value(overrides, "MP4", False))
     exr_enabled = bool(_override_value(overrides, "EXR", False))
     hero_enabled = bool(_override_value(overrides, "Hero", False))
     if not mp4_enabled and not exr_enabled:
         raise ValueError(f"{label}: both MP4 and EXR graph outputs are disabled.")
+    active_versions = set()
+    if exr_enabled:
+        active_versions.add(_extract_render_version(file_name_format))
+    if mp4_enabled:
+        if not mp4_file_name_format:
+            raise ValueError(f"{label}: enabled MP4FileNameFormat graph override is missing.")
+        active_versions.add(_extract_render_version(mp4_file_name_format))
+    if len(active_versions) != 1:
+        raise ValueError(
+            f"{label}: enabled EXR and MP4 outputs use different render versions. "
+            "Use the same version for both outputs, or queue them as separate jobs."
+        )
+    render_version = active_versions.pop()
 
     source = document.get("source") or {}
     if not isinstance(source, dict):
@@ -844,16 +865,6 @@ def _validate_and_build_packages(
             f"({disabled_count} disabled, {consumed_count} consumed)."
         )
 
-    names = [_safe_text(job.get("job_name")).strip().casefold() for job in publishable_jobs]
-    duplicate_names = sorted(
-        name for name, count in Counter(names).items() if name and count > 1
-    )
-    if duplicate_names:
-        raise ValueError(
-            "Duplicate enabled MRQ job names were found. Clear the old queue and "
-            "rebuild it before publishing: " + ", ".join(duplicate_names)
-        )
-
     now = datetime.now(timezone.utc)
     submitted_utc = _utc_now(now)
     timestamp = _timestamp_token(now)
@@ -886,21 +897,17 @@ def _validate_and_build_packages(
         for job in publishable_jobs
     ]
 
-    output_keys = [
-        _normalized_output_key(
-            package.get("output_directory"),
-            package.get("output_file_name_format"),
-        )
-        for package in packages
-    ]
-    duplicate_output_keys = [
-        key for key, count in Counter(output_keys).items() if key and count > 1
-    ]
+    output_keys = [_package_output_keys(package) for package in packages]
+    duplicate_output_keys = {
+        key
+        for key, count in Counter(key for keys in output_keys for key in keys).items()
+        if count > 1
+    }
     if duplicate_output_keys:
         duplicate_shots = [
-            package["shot_name"]
-            for package, key in zip(packages, output_keys)
-            if key in duplicate_output_keys
+            f"{package['shot_name']} v{package['render_version']:03d}"
+            for package, keys in zip(packages, output_keys)
+            if keys & duplicate_output_keys
         ]
         raise ValueError(
             "Multiple enabled jobs resolve to the same output target: "
@@ -923,7 +930,10 @@ def _show_confirmation(packages: list[dict[str, Any]], farm_root: str, use_v2: b
             "Unreal Editor confirmation dialog API is unavailable; nothing was published."
         )
 
-    shot_preview = ", ".join(package["shot_name"] for package in packages[:8])
+    shot_preview = ", ".join(
+        f"{package['shot_name']} v{package['render_version']:03d}"
+        for package in packages[:8]
+    )
     if len(packages) > 8:
         shot_preview += f", and {len(packages) - 8} more"
     overwrite_count = sum(
@@ -996,6 +1006,11 @@ def _remove_published_jobs_from_queue(
             if isinstance(snapshot, dict)
             else ""
         )
+        expected_object_path = (
+            _safe_text(snapshot.get("object_path")).strip()
+            if isinstance(snapshot, dict)
+            else ""
+        )
         if (
             not isinstance(queue_index, int)
             or isinstance(queue_index, bool)
@@ -1010,7 +1025,14 @@ def _remove_published_jobs_from_queue(
 
         live_job = live_jobs[queue_index]
         live_name = _job_name_from_live_queue(live_job)
-        if not expected_name or live_name != expected_name:
+        path_getter = getattr(live_job, "get_path_name", None)
+        live_object_path = _safe_text(path_getter()).strip() if callable(path_getter) else ""
+        if (
+            not expected_name
+            or live_name != expected_name
+            or not expected_object_path
+            or live_object_path != expected_object_path
+        ):
             raise RuntimeError(
                 "Jobs were published, but the Movie Render Queue changed during "
                 f"submission at index {queue_index}. No queue jobs were removed."
