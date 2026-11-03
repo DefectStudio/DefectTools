@@ -367,7 +367,7 @@ class CloudManagerTests(unittest.TestCase):
         }
         dispatcher.summary.update(status="rendering", progress=37.5, progress_details=receipt)
         job = get_cloud_render_jobs(dispatcher, self.repository)[0]
-        self.assertEqual("37.5% (45/120)", format_cloud_render_progress(job))
+        self.assertEqual("37% (45/120)", format_cloud_render_progress(job))
         hydrated = hydrate_cloud_render_job(job, dispatcher, self.repository)
         self.assertEqual(receipt, hydrated.job_data["progress_details"])
         properties = {
@@ -384,7 +384,7 @@ class CloudManagerTests(unittest.TestCase):
         dispatcher = D1ListingDispatcher()
         dispatcher.summary.update(status="rendering", progress=12.5)
         job = get_cloud_render_jobs(dispatcher, self.repository)[0]
-        self.assertEqual("12.5%", format_cloud_render_progress(job))
+        self.assertEqual("12%", format_cloud_render_progress(job))
         properties = {
             detail.property_name: detail.value
             for section in get_render_job_details(job) for detail in section.details

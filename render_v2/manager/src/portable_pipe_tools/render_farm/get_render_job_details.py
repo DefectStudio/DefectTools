@@ -100,7 +100,7 @@ def get_render_job_details(job: RenderJob) -> tuple[JobDetailSection, ...]:
                 "Render Duration",
                 _format_duration(job.render_started_utc, job.render_finished_utc),
             ),
-            JobDetail("Progress", f"{job.progress:g}%"),
+            JobDetail("Progress", f"{int(job.progress)}%"),
         ) + (
             (
                 JobDetail("Render Stage", _display(progress.get("phase")).title()),

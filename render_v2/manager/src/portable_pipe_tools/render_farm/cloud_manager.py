@@ -93,7 +93,7 @@ def _queue_name(status: str) -> str:
 
 def format_cloud_render_progress(job: RenderJob) -> str:
     """Show current render position; this is not validated output completion."""
-    percentage = f"{job.progress:g}%"
+    percentage = f"{int(job.progress)}%"
     details = job.job_data.get("progress_details")
     if job.status.casefold() != "rendering" or not isinstance(details, dict):
         return percentage
