@@ -81,10 +81,14 @@ def _preflight_target_manifest(target_row, sequences_root_path, show_name):
         sequences_root_path,
         sequence_name,
     )
-    manifest_data = shot_order_numbers_clean._read_manifest(
-        manifest_path,
-        sequence_name,
-    )
+    try:
+        manifest_data = shot_order_numbers_clean._read_manifest(
+            manifest_path,
+            sequence_name,
+        )
+    except FileNotFoundError as exc:
+        _log_warning(f"JSON sync was skipped for {shot_name!r}: {exc}")
+        return []
 
     matching_rows = [
         shot_data
