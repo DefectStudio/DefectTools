@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from portable_pipe_tools.render_farm.gpu_inventory import detect_gpus
 from portable_pipe_tools.render_farm.project_render import install_runtime
 from portable_pipe_tools.render_farm.project_workspace import project_lock, PreparationError, PreparationCancelled
 from portable_pipe_tools.render_farm.registered_sync import sync_registered_project, SYNC_POLICY, OVERRIDE_SYNC_POLICY
@@ -35,6 +36,7 @@ class RegisteredQueueWorker:
         self.projects = self.ready_projects()
         if not self.projects:
             raise ValueError("Register at least one available local project before starting the worker.")
+        self._gpus = None
 
     def ready_projects(self):
         engine = read_json_object(self.settings_path).get("unreal_editor_cmd", "")
@@ -93,12 +95,19 @@ class RegisteredQueueWorker:
         if stopped():
             return None
         projects = self.ready_projects()
+        # The GUI runs its first poll in the background, outside the Start Worker handler.
+        if self._gpus is None:
+            self._gpus = detect_gpus()
+            if stopped():
+                return None
+        eligible_project_ids = [project.project_id for project in projects]
+        capabilities = {"registered_projects": eligible_project_ids, "gpus": self._gpus}
         if not projects:
             self.progress("No registered local projects are currently available; no jobs claimed.")
             return run_once(farm_root=self.projects[0].render_farm_root, worker_name=self.worker_name,
                             simulate_success=False, minimum_stage_seconds=0, dispatcher_client=self.dispatcher,
                             cloud_spool_root=self.spool, eligible_project_ids=[],
-                            dispatcher_capabilities={"registered_projects": []},
+                            dispatcher_capabilities=capabilities,
                             should_stop_before_claim=stopped)
         by_id = {p.project_id.casefold(): p for p in projects}
         def resolve_paths(job):
@@ -116,8 +125,7 @@ class RegisteredQueueWorker:
                        finalization_timeout_seconds=finalization_timeout_seconds)
         return run_once(farm_root=projects[0].render_farm_root, dispatcher_client=self.dispatcher,
                         dispatcher_app_version="render-worker-v2-registered",
-                        dispatcher_capabilities={"registered_projects": [p.project_id for p in projects],
-                                                 "sync_policy": self.sync_policy},
-                        eligible_project_ids=[p.project_id for p in projects], job_paths_resolver=resolve_paths,
+                        dispatcher_capabilities={**capabilities, "sync_policy": self.sync_policy},
+                        eligible_project_ids=eligible_project_ids, job_paths_resolver=resolve_paths,
                         cloud_spool_root=self.spool,
                         dispatcher_heartbeat_interval_seconds=heartbeat_interval_seconds, **options)

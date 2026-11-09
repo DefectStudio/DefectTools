@@ -19,6 +19,9 @@ import type {
 
 const NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 const MAX_LIST_LIMIT = 100;
+const MAX_WORKER_GPUS = 32;
+const MAX_GPU_MODEL_LENGTH = 200;
+const MAX_GPU_VRAM_MIB = 1024 * 1024;
 
 type JobSummaryRow = Pick<
   JobRow,
@@ -425,6 +428,7 @@ async function upsertWorker(
   worker: WorkerRequest,
   status: "waiting" | "rendering" | "stopped",
   currentJobId: string | null,
+  preserveMissingMetadata = false,
 ): Promise<boolean> {
   const row = await env.DB.prepare(
     `INSERT INTO workers (
@@ -436,8 +440,10 @@ async function upsertWorker(
        last_seen_at = excluded.last_seen_at,
        status = excluded.status,
        current_job_id = excluded.current_job_id,
-       app_version = excluded.app_version,
-       capabilities_json = excluded.capabilities_json
+       app_version = CASE WHEN ?6 THEN COALESCE(excluded.app_version, workers.app_version)
+                          ELSE excluded.app_version END,
+       capabilities_json = CASE WHEN ?6 THEN COALESCE(excluded.capabilities_json, workers.capabilities_json)
+                                 ELSE excluded.capabilities_json END
      RETURNING stop_requested`,
   )
     .bind(
@@ -446,9 +452,39 @@ async function upsertWorker(
       currentJobId,
       worker.appVersion,
       worker.capabilities ? JSON.stringify(worker.capabilities) : null,
+      preserveMissingMetadata ? 1 : 0,
     )
     .first<{ stop_requested: number }>();
   return row?.stop_requested === 1;
+}
+
+function parseWorkerCapabilities(value: unknown): JsonRecord | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const capabilities = requireRecord(value, "capabilities");
+  const gpus = capabilities.gpus;
+  if (gpus === undefined) {
+    return capabilities;
+  }
+  if (!Array.isArray(gpus) || gpus.length > MAX_WORKER_GPUS) {
+    throw new HttpError(
+      400,
+      "invalid_field",
+      `capabilities.gpus must be an array of at most ${MAX_WORKER_GPUS} GPUs.`,
+    );
+  }
+  return {
+    ...capabilities,
+    gpus: gpus.map((value, index) => {
+      const gpu = requireRecord(value, `capabilities.gpus[${index}]`);
+      const model = requiredString(gpu, "model", MAX_GPU_MODEL_LENGTH);
+      if (/[\u0000-\u001f\u007f-\u009f]/.test(model)) {
+        throw new HttpError(400, "invalid_field", "GPU model must not contain control characters.");
+      }
+      return { model, vram_mib: requiredInteger(gpu, "vram_mib", 1, MAX_GPU_VRAM_MIB) };
+    }),
+  };
 }
 
 export function parseWorkerRequest(data: JsonRecord): WorkerRequest {
@@ -456,15 +492,10 @@ export function parseWorkerRequest(data: JsonRecord): WorkerRequest {
     requiredString(data, "worker_id", 128),
     "worker_id",
   );
-  const capabilitiesValue = data.capabilities;
-  const capabilities =
-    capabilitiesValue === undefined || capabilitiesValue === null
-      ? null
-      : requireRecord(capabilitiesValue, "capabilities");
   return {
     workerId,
     appVersion: optionalString(data, "app_version", 100),
-    capabilities,
+    capabilities: parseWorkerCapabilities(data.capabilities),
   };
 }
 
@@ -780,7 +811,7 @@ export async function heartbeatJob(
       "The job is no longer owned by this worker lease.",
     );
   }
-  await upsertWorker(env, lease, "rendering", jobId);
+  await upsertWorker(env, lease, "rendering", jobId, true);
   return row;
 }
 

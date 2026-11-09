@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from portable_pipe_tools.apps.farm_render_manager_app import (
 )
 from portable_pipe_tools.render_farm.render_time import format_render_time
 from portable_pipe_tools.render_farm.cloud_dispatch import DispatcherConnection
+from portable_pipe_tools.render_farm.cloud_manager import get_cloud_render_workers
 from portable_pipe_tools.render_farm.manager_settings import (
     load_saved_auto_refresh_interval_minutes,
     save_auto_refresh_enabled,
@@ -250,6 +252,69 @@ class FarmRenderManagerAppTests(unittest.TestCase):
     def test_worker_name_is_the_leftmost_worker_column(self) -> None:
         self.assertEqual("worker_name", WORKER_COLUMNS[0].key)
         self.assertEqual("Worker", WORKER_COLUMNS[0].heading)
+
+    def test_worker_gpu_column_and_details_use_reported_adapters(self) -> None:
+        dispatcher = Mock()
+        dispatcher.list_workers.return_value = [
+            {
+                "id": "multi-gpu",
+                "capabilities_json": json.dumps({
+                    "gpus": [
+                        {"model": "NVIDIA GeForce RTX 5090", "vram_mib": 32607},
+                        {"model": "NVIDIA GeForce RTX 4090", "vram_mib": 24564},
+                        {"model": "invalid", "vram_mib": True},
+                    ],
+                }),
+            },
+            {
+                "id": "single-gpu",
+                "capabilities_json": json.dumps({
+                    "gpus": [
+                        {"model": "NVIDIA GeForce RTX 4080", "vram_mib": 16384},
+                    ],
+                }),
+            },
+            {"id": "no-gpus", "capabilities_json": '{"gpus": []}'},
+            {"id": "old-worker", "capabilities_json": '{"unreal_mrq": true}'},
+            {"id": "bad-value", "capabilities_json": '{"gpus": "unknown"}'},
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = Path(temporary_directory)
+            settings_path = repository / "manager.json"
+            save_auto_refresh_enabled(False, settings_path)
+            app = FarmRenderManagerApp(settings_path=settings_path, prompt_on_startup=False)
+            app.root.withdraw()
+            try:
+                app.set_workers(get_cloud_render_workers(dispatcher, repository, []))
+                rows = {
+                    app.worker_tree.set(item, "worker_name"): item
+                    for item in app.worker_tree.get_children()
+                }
+                self.assertEqual("GPU / VRAM", app.worker_tree.heading("gpu", "text"))
+                self.assertEqual(
+                    "RTX 5090 · 31.8 GiB (+1)",
+                    app.worker_tree.set(rows["multi-gpu"], "gpu"),
+                )
+                self.assertEqual(
+                    "RTX 4080 · 16 GiB",
+                    app.worker_tree.set(rows["single-gpu"], "gpu"),
+                )
+                for worker in ("no-gpus", "old-worker", "bad-value"):
+                    self.assertEqual("—", app.worker_tree.set(rows[worker], "gpu"))
+
+                app.worker_tree.selection_set(rows["multi-gpu"])
+                app._on_worker_selected(None)
+                worker_section = app.job_detail_tree.get_children()[0]
+                details = {
+                    app.job_detail_tree.item(item, "text"): app.job_detail_tree.set(item, "value")
+                    for item in app.job_detail_tree.get_children(worker_section)
+                }
+                self.assertEqual("NVIDIA GeForce RTX 5090 · 32,607 MiB", details["GPU 1"])
+                self.assertEqual("NVIDIA GeForce RTX 4090 · 24,564 MiB", details["GPU 2"])
+                self.assertNotIn("GPU 3", details)
+            finally:
+                app._on_close()
 
     def test_worker_visual_status_prioritizes_stale_and_stop_requests(self) -> None:
         base_values = {

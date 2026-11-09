@@ -30,6 +30,7 @@ from portable_pipe_tools.render_farm.cloud_manager import (
     format_cloud_render_progress,
     get_cloud_render_jobs,
     get_cloud_render_workers,
+    get_worker_gpus,
     hydrate_cloud_render_job,
 )
 from portable_pipe_tools.render_farm.get_all_render_jobs import (
@@ -113,6 +114,7 @@ JOB_COLUMNS = (
 
 WORKER_COLUMNS = (
     ListColumn("worker_name", "Worker", 145, stretch=True),
+    ListColumn("gpu", "GPU / VRAM", 185),
     ListColumn("project", "Project", 100),
     ListColumn("status", "Status", 135),
     ListColumn("current_job", "Current Job", 170),
@@ -177,6 +179,20 @@ def format_submitted_pacific(value: str) -> str:
         _pacific_timezone_for(submitted_utc)
     )
     return submitted_pacific.strftime("%Y-%m-%d  |  %H:%M")
+
+
+def _format_gpu_summary(gpus: list[tuple[str, int]]) -> str:
+    if not gpus:
+        return "—"
+    model, vram_mib = gpus[0]
+    short_model = model.removeprefix("NVIDIA GeForce ")
+    if vram_mib < 1024:
+        memory = f"{vram_mib} MiB"
+    else:
+        vram_gib = f"{vram_mib / 1024:.1f}".removesuffix(".0")
+        memory = f"{vram_gib} GiB"
+    additional = f" (+{len(gpus) - 1})" if len(gpus) > 1 else ""
+    return f"{short_model} · {memory}{additional}"
 
 
 class FarmRenderManagerApp:
@@ -1435,6 +1451,7 @@ class FarmRenderManagerApp:
         for worker in worker_list:
             values = (
                 worker.worker_name,
+                _format_gpu_summary(get_worker_gpus(worker)),
                 worker.project,
                 worker.status_label,
                 worker.current_job_label,
@@ -1474,6 +1491,10 @@ class FarmRenderManagerApp:
             self.detail_count_var.set("0 properties")
             return
 
+        gpu_details = tuple(
+            (f"GPU {number}", f"{model} · {vram_mib:,} MiB")
+            for number, (model, vram_mib) in enumerate(get_worker_gpus(worker), 1)
+        )
         sections = (
             (
                 "Worker",
@@ -1484,6 +1505,7 @@ class FarmRenderManagerApp:
                     ("Status", worker.status_label),
                     ("Last Seen", worker.last_seen_label),
                     ("Stop Requested", "Yes" if worker.stop_requested else "No"),
+                    *gpu_details,
                 ),
             ),
             (

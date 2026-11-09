@@ -34,6 +34,23 @@ transport until that separate migration is approved.
 
 Never commit `.dev.vars`, `.env`, or production tokens.
 
+## Worker GPU telemetry
+
+V2 workers can report `capabilities.gpus` on a claim as an array of
+`{ "model": "NVIDIA GeForce RTX 4090", "vram_mib": 24564 }` objects.
+The API accepts up to 32 GPUs, trims model names to a nonempty string of up to
+200 characters without control characters, and accepts integer VRAM from 1
+through 1048576 MiB. Other capability keys remain available. Clients can read
+the array by decoding the worker's existing `capabilities_json` field from
+`GET /api/v1/workers`.
+
+A new claim check-in replaces the previous capability snapshot. Omitting the
+GPU field means inventory was unreported, as on older workers. An explicit
+empty array records an empty GPU report and clears previous GPU details. A
+lease heartbeat that leaves out or sends null for the capability object or
+app version preserves the corresponding value from the previous check-in.
+GPU telemetry is informational and uses the existing D1 schema.
+
 ## Production deployment
 
 For Render Worker V2 progress receipts, apply `0004_render_progress.sql` to

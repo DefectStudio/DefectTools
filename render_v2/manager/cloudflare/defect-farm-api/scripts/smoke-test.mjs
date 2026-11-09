@@ -59,6 +59,7 @@ const job = {
 
 const health = await request("/health");
 assert.equal(health.ok, true);
+assert.equal(health.service_version, "0.7.1");
 for (const role of ["submit", "worker", "manager", "viewer"]) {
   const auth = await request("/api/v1/auth/check", { role });
   assert.equal(auth.role, role);
@@ -143,13 +144,49 @@ assert.equal(
   "worker tokens should be able to see submitted renders",
 );
 
+for (const gpus of [
+  null,
+  {},
+  Array(33).fill({ model: "GPU", vram_mib: 1 }),
+  [null],
+  [{ model: " ", vram_mib: 1 }],
+  [{ model: "GPU\nModel", vram_mib: 1 }],
+  [{ model: "x".repeat(201), vram_mib: 1 }],
+  [{ model: "GPU", vram_mib: "24576" }],
+  [{ model: "GPU", vram_mib: 1.5 }],
+  [{ model: "GPU", vram_mib: 0 }],
+  [{ model: "GPU", vram_mib: 1048577 }],
+]) {
+  const rejected = await request("/api/v1/jobs/claim", {
+    role: "worker",
+    method: "POST",
+    expected: 400,
+    body: workerBody("smoke-invalid-gpu", {
+      claim_request_id: randomUUID(),
+      capabilities: { gpus },
+    }),
+  });
+  assert.equal(rejected.error.code, "invalid_field");
+}
+
 const workers = ["smoke-worker-a", "smoke-worker-b"];
+const gpus = [
+  { model: "NVIDIA GeForce RTX 4090", vram_mib: 24564 },
+  { model: "NVIDIA GeForce RTX 3060", vram_mib: 12288 },
+];
 const claims = await Promise.all(
   workers.map((workerId) =>
     request("/api/v1/jobs/claim", {
       role: "worker",
       method: "POST",
-      body: workerBody(workerId, { claim_request_id: randomUUID() }),
+      body: workerBody(workerId, {
+        claim_request_id: randomUUID(),
+        capabilities: {
+          test: true,
+          registered_projects: ["s3bishop"],
+          gpus: gpus.map((gpu) => ({ ...gpu, model: ` ${gpu.model} `, extra: "ignored" })),
+        },
+      }),
     }),
   ),
 );
@@ -181,6 +218,13 @@ assert.equal(
   true,
   "worker tokens should be able to see render-worker status",
 );
+const reportedWorker = workerVisibleWorkers.workers.find((worker) => worker.id === firstWorker);
+assert.equal(reportedWorker.app_version, "smoke-test");
+assert.deepEqual(JSON.parse(reportedWorker.capabilities_json), {
+  test: true,
+  registered_projects: ["s3bishop"],
+  gpus,
+});
 
 const workerVisibleJobDetail = await request(`/api/v1/jobs/${jobId}`, {
   role: "worker",
@@ -230,7 +274,8 @@ assert.equal(repeatedClaim.lease_token, winningClaim.lease_token);
 await request(`/api/v1/jobs/${jobId}/heartbeat`, {
   role: "worker",
   method: "POST",
-  body: workerBody(firstWorker, {
+  body: {
+    worker_id: firstWorker,
     lease_token: winningClaim.lease_token,
     progress: 12.5,
     progress_details: {
@@ -248,8 +293,12 @@ await request(`/api/v1/jobs/${jobId}/heartbeat`, {
       received_utc: "1900-01-01T00:00:00Z",
       secret: "must-not-be-persisted",
     },
-  }),
+  },
 });
+const heartbeatWorkers = await request("/api/v1/workers", { role: "manager" });
+const heartbeatWorker = heartbeatWorkers.workers.find((worker) => worker.id === firstWorker);
+assert.equal(heartbeatWorker.app_version, reportedWorker.app_version);
+assert.equal(heartbeatWorker.capabilities_json, reportedWorker.capabilities_json);
 
 const progressDetail = await request(`/api/v1/jobs/${jobId}`, { role: "manager" });
 assert.equal(progressDetail.job.progress, 12.5);
@@ -282,7 +331,12 @@ for (const progressDetails of [
 // Older workers can keep renewing leases without deleting the last receipt.
 await request(`/api/v1/jobs/${jobId}/heartbeat`, {
   role: "worker", method: "POST",
-  body: workerBody(firstWorker, { lease_token: winningClaim.lease_token }),
+  body: {
+    worker_id: firstWorker,
+    lease_token: winningClaim.lease_token,
+    app_version: null,
+    capabilities: null,
+  },
 });
 const retainedProgress = await request(`/api/v1/jobs/${jobId}`, { role: "manager" });
 assert.deepEqual(retainedProgress.job.progress_details, progressDetail.job.progress_details);
@@ -353,6 +407,43 @@ const detail = await request(`/api/v1/jobs/${jobId}`, { role: "manager" });
 assert.equal(detail.job.status, "complete");
 assert.equal(detail.attempts.length, 2);
 assert.equal(detail.events.some((event) => event.event_type === "failed_requeued"), true);
+const workersAfterRender = await request("/api/v1/workers", { role: "manager" });
+assert.deepEqual(JSON.parse(
+  workersAfterRender.workers.find((worker) => worker.id === firstWorker).capabilities_json,
+).gpus, gpus);
+assert.deepEqual(JSON.parse(
+  workersAfterRender.workers.find((worker) => worker.id === secondWorker).capabilities_json,
+), { test: true });
+
+const emptyGpuClaim = await request("/api/v1/jobs/claim", {
+  role: "worker",
+  method: "POST",
+  body: workerBody(firstWorker, {
+    claim_request_id: randomUUID(),
+    eligible_project_ids: [],
+    capabilities: { test: true, gpus: [] },
+  }),
+});
+assert.equal(emptyGpuClaim.job_available, false);
+const emptyGpuWorkers = await request("/api/v1/workers", { role: "viewer" });
+assert.deepEqual(JSON.parse(
+  emptyGpuWorkers.workers.find((worker) => worker.id === firstWorker).capabilities_json,
+), { test: true, gpus: [] });
+
+const legacyClaim = await request("/api/v1/jobs/claim", {
+  role: "worker",
+  method: "POST",
+  body: {
+    worker_id: firstWorker,
+    claim_request_id: randomUUID(),
+    eligible_project_ids: [],
+  },
+});
+assert.equal(legacyClaim.job_available, false);
+const legacyWorkers = await request("/api/v1/workers", { role: "manager" });
+const legacyWorker = legacyWorkers.workers.find((worker) => worker.id === firstWorker);
+assert.equal(legacyWorker.app_version, null);
+assert.equal(legacyWorker.capabilities_json, null);
 
 const stopWorker = `smoke-stop-worker-${suffix}`;
 const idleStopWorker = await request("/api/v1/jobs/claim", {

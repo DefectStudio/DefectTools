@@ -35,6 +35,7 @@ class RegisteredClaimTests(unittest.TestCase):
         save_unreal_editor_preference(str(self.engine), self.settings)
         self.executor = Mock(return_value=UnrealExecutionResult(True, "Rendered", 0))
         self.sync = self.enterContext(patch("portable_pipe_tools.render_farm.registered_claims.sync_registered_project", return_value="a" * 40))
+        self.detect_gpus = self.enterContext(patch("portable_pipe_tools.render_farm.registered_claims.detect_gpus", return_value=[]))
         self.dispatcher = Mock()
         self.dispatcher.claim_job.return_value = CloudClaimResult(lease=None, stop_requested=False)
         self.worker = RegisteredQueueWorker(self.settings, "TestWorker", dispatcher_client=self.dispatcher,
@@ -74,6 +75,32 @@ class RegisteredClaimTests(unittest.TestCase):
         self.assertIsNone(self.worker.run_next(stopped=lambda: True))
         self.assertTrue(queued.exists())
         self.dispatcher.claim_job.assert_not_called()
+        self.detect_gpus.assert_not_called()
+
+    def test_stop_during_gpu_probe_does_not_claim(self):
+        stopped = Mock(side_effect=[False, True])
+        self.assertIsNone(self.worker.run_next(stopped=stopped))
+        self.detect_gpus.assert_called_once_with()
+        self.dispatcher.claim_job.assert_not_called()
+
+    def test_gpu_inventory_is_cached_and_sent_even_when_no_projects_are_eligible(self):
+        adapters = [{"model": "RTX 5090", "vram_mib": 32607}, {"model": "RTX 3090", "vram_mib": 24576}]
+        self.detect_gpus.return_value = adapters
+        self.worker.run_next()
+        initial_request = self.dispatcher.claim_job.call_args.kwargs
+        self.assertEqual(["Bishop", "Spectrum"], initial_request["eligible_project_ids"])
+        self.assertEqual(adapters, initial_request["capabilities"]["gpus"])
+        for project in self.projects:
+            Path(project.local_uproject).unlink()
+        self.worker.run_next()
+        next_request = self.dispatcher.claim_job.call_args.kwargs
+        self.assertEqual([], next_request["eligible_project_ids"])
+        self.assertEqual(adapters, next_request["capabilities"]["gpus"])
+        self.detect_gpus.assert_called_once_with()
+
+    def test_unavailable_gpu_inventory_is_sent_explicitly(self):
+        self.worker.run_next()
+        self.assertEqual([], self.dispatcher.claim_job.call_args.kwargs["capabilities"]["gpus"])
 
     def test_sql_outage_does_not_claim_or_move_dropbox_jobs(self):
         queued = self.job(self.projects[0], "Bishop", "bishop")

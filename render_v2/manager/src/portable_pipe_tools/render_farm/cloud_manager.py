@@ -251,6 +251,31 @@ def _parse_capabilities(value: Any) -> dict[str, Any]:
     return dict(parsed) if isinstance(parsed, dict) else {}
 
 
+def get_worker_gpus(worker: WorkerRecord) -> list[tuple[str, int]]:
+    """Return the reported GPU models and VRAM in MiB."""
+    capabilities = worker.raw_data.get("capabilities")
+    if not isinstance(capabilities, dict):
+        return []
+    adapters = capabilities.get("gpus")
+    if not isinstance(adapters, list):
+        return []
+
+    gpus: list[tuple[str, int]] = []
+    for adapter in adapters:
+        if not isinstance(adapter, dict):
+            continue
+        model = adapter.get("model")
+        vram_mib = adapter.get("vram_mib")
+        if (
+            isinstance(model, str)
+            and model.strip()
+            and type(vram_mib) is int
+            and vram_mib > 0
+        ):
+            gpus.append((model.strip(), vram_mib))
+    return gpus
+
+
 def _parse_utc(value: Any) -> datetime | None:
     text = _text(value)
     if not text:
