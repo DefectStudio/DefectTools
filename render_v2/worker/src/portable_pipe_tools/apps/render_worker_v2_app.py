@@ -232,8 +232,8 @@ class RenderWorkerV2App:
             value=load_saved_local_uproject()
         )
         self.status_var = tk.StringVar(value="Add your local projects, then Check Setup")
-        # Destructive preparation is an explicit opt-in for this app session only.
-        self.override_local_changes_var = tk.BooleanVar(value=False)
+        # The operator can turn off the launch default for this session.
+        self.override_local_changes_var = tk.BooleanVar(value=True)
         self._registered_render_active = False
         self._registered_render_cancel = Event()
         self._close_after_registered_render = False

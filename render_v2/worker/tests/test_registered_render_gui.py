@@ -41,8 +41,9 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         self.assertFalse(self.app._busy)
 
     def test_selected_registration_drives_async_render_and_controls_recover(self):
-        self.assertFalse(self.app.override_local_changes_var.get())
+        self.assertTrue(self.app.override_local_changes_var.get())
         self.assertEqual("Override Local Changes", self.app.override_local_changes_checkbox.cget("text"))
+        self.app.override_local_changes_var.set(False)
         result = dict(success=True, reason="40 frames", run_root=str(self.path))
         with patch(MODULE + ".filedialog.askopenfilename", return_value=str(self.path / "job.json")), \
              patch(MODULE + ".render_registered_job", return_value=result) as render:
@@ -86,12 +87,12 @@ class RegisteredRenderGuiTests(unittest.TestCase):
 
     def test_override_is_not_restored_from_saved_settings(self):
         saved = json.loads(self.settings.read_text())
-        saved["override_local_changes"] = True
+        saved["override_local_changes"] = False
         self.settings.write_text(json.dumps(saved))
         self.app._shutdown_application(0)
         self.app = RenderWorkerV2App(settings_path=self.settings, automatic_updates=False)
         self.app.root.withdraw()
-        self.assertFalse(self.app.override_local_changes_var.get())
+        self.assertTrue(self.app.override_local_changes_var.get())
 
     def test_setup_check_is_async_and_does_not_start_listener(self):
         from portable_pipe_tools.render_farm.worker_setup import SetupReport
@@ -131,7 +132,6 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         self.app.unreal_editor_cmd_var.set(str(engine))
         self.app.worker_name_var.set("V2-Test")
         self.app.farm_root_var.set("invalid unused legacy path")
-        self.app.override_local_changes_var.set(True)
         service = Mock()
         service.projects = self.app.project_list.projects
         service.run_next.return_value = None

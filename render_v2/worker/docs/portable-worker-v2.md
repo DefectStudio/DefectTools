@@ -45,8 +45,8 @@ applies only after preparation, when Unreal starts rendering. **Stop** still
 cancels preparation, and queued jobs continue renewing their SQL lease while
 downloads run.
 
-**Override Local Changes** is an operator opt-in for disposable render checkouts.
-It starts unchecked each time the application opens and is locked while a worker
+**Override Local Changes** starts checked each time the application opens.
+Uncheck it before using a checkout with local work you want to keep. It is locked while a worker
 or manual render is active. When checked, each job fetches the current branch's
 configured upstream first, resets the registered checkout to that fetched commit,
 discards tracked edits, staged changes, local commits and untracked nonignored
@@ -98,8 +98,8 @@ When an update is installed, or an idle check finds that another tool updated
 the checkout beyond the running worker's version, the launcher starts a fresh Python process and
 automatically starts listening with the saved engine, projects, and worker name.
 A normal launch that finds no update stays stopped. Manual Stop and a disk-space
-stop take priority over an automatic restart. Override Local Changes remains
-session-only and unchecked after restarting. Diagnostic self-tests perform no
+stop take priority over an automatic restart. Override Local Changes is
+session-only and starts checked after restarting. Diagnostic self-tests perform no
 update checks or automatic job processing.
 
 ## Niagara render finalization workaround

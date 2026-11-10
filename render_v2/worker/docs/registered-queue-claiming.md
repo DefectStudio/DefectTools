@@ -62,7 +62,7 @@ cancels the update process. Missing-project cloning, repository discovery and
 main-project branch switching do not run. Git command logs are in the job's
 `project-sync/logs` folder; the pulled commit is recorded in job/result metadata.
 
-The optional **Override Local Changes** checkbox starts off on every app launch.
+The **Override Local Changes** checkbox starts checked on every app launch.
 An enabled worker instead fetches and resets the current branch to its configured
 upstream, discarding local tracked/staged changes, local commits and untracked
 nonignored files without backup. Plugins are forced to the fetched project's pins
