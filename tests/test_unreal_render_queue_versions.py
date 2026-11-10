@@ -364,6 +364,47 @@ class UnrealRenderQueueVersionTests(unittest.TestCase):
         with self.assertRaises((RuntimeError, OSError, ValueError)):
             self._next()
 
+    def test_vram_plus_applies_only_to_the_checked_shot(self) -> None:
+        shot_names = [_SHOT, "DEV_000_0020", "DEV_000_0030"]
+        graph = _Graph("/Game/Render/beauty_HD.beauty_HD", {"VRAMPlus": "false"})
+        jobs = {name: mock.Mock() for name in (shot_names[0], shot_names[2])}
+        variable = graph.get_variable_by_name("VRAMPlus")
+
+        def queue_active_shots(*_):
+            for name, job in jobs.items():
+                self.script._CURRENT_JOB_SHOT_NAMES[id(job)] = name
+                self.assertEqual("configured", self.script._apply_job_output_overrides(
+                    job, graph, str(self.parent), "exr", "mp4",
+                ))
+            return "queued"
+
+        with (
+            mock.patch.object(self.script, "_ORIGINAL_RUN", side_effect=queue_active_shots),
+            mock.patch.object(self.script._impl, "_list_valid_show_folders", return_value=[]),
+            mock.patch.object(self.script, "_ORIGINAL_APPLY_JOB_OUTPUT_OVERRIDES", return_value="configured"),
+            mock.patch.object(self.script, "_apply_job_queue_display_output_directory"),
+        ):
+            result = self.script.run(
+                shot_names, [1, 0, 1], [1, 1, 1], "beauty_HD",
+                vram_plus_array=[0, 0, 1],
+            )
+
+        self.assertEqual("queued", result)
+        jobs[shot_names[0]].get_or_create_variable_overrides.assert_not_called()
+        container = jobs[shot_names[2]].get_or_create_variable_overrides.return_value
+        container.set_variable_assignment_enable_state.assert_called_once_with(variable, True)
+        container.set_value_bool.assert_called_once_with(variable, True)
+
+    def test_vram_plus_rejects_stale_array_before_creating_jobs(self) -> None:
+        with mock.patch.object(self.script, "_ORIGINAL_RUN") as queue_jobs:
+            result = self.script.run(
+                [_SHOT], [1], [1], "beauty_HD", vram_plus_array=[1, 0],
+            )
+
+        queue_jobs.assert_not_called()
+        self.assertIn("success=0;", result)
+        self.assertIn("got 2 flags for 1 shots", result)
+
     @unittest.skipUnless(os.name == "nt", "Windows path identity")
     def test_windows_case_separators_and_trailing_slash_share_namespace(self) -> None:
         equivalent_parent = str(self.parent).upper().replace("\\", "/") + "/"

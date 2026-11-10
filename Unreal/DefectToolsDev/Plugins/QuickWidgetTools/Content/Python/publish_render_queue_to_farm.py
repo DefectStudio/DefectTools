@@ -688,6 +688,9 @@ def _build_job_package(
         )
 
     overrides = _effective_graph_overrides(inspected_job)
+    if _override_value(overrides, "VRAMPlus", False) is not False:
+        raise ValueError(f"{label}: VRAM+ farm submission requires Dispatcher GPU routing.")
+
     output_directory = _safe_text(
         _override_value(overrides, "OutputDirectory", "")
     ).strip()

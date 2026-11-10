@@ -3,7 +3,7 @@ Compatibility wrapper for add_to_render_queue.
 
 The real render queue implementation lives in add_to_render_queue_impl.py. This
 wrapper keeps the existing import path stable while patching a few render-tool
-behaviors, including per-shot MP4 / EXR Movie Render Graph Boolean overrides
+behaviors, including per-shot MP4, EXR and VRAMPlus graph overrides
 and render versions reserved by existing queue jobs.
 """
 
@@ -21,6 +21,7 @@ importlib.reload(_impl)
 _FAST_LEVEL_PATH_PROPERTY = "AssociatedLevelPathString"
 MP4_VARIABLE_NAME = "MP4"
 EXR_VARIABLE_NAME = "EXR"
+VRAM_PLUS_VARIABLE_NAME = "VRAMPlus"
 
 _CURRENT_SHOW_FOLDERS = None
 _GRAPH_VARIABLE_CACHE = {}
@@ -504,6 +505,18 @@ def _apply_job_output_overrides(job, graph_asset, output_directory, file_name_fo
     )
 
     _apply_job_queue_display_output_directory(job, output_directory)
+
+    shot_name = _CURRENT_JOB_SHOT_NAMES.get(id(job), "")
+    flags = _CURRENT_RENDER_FORMAT_BY_SHOT.get(shot_name, {})
+    # Unchecked jobs inherit the preset's False default.
+    if result != "failed" and flags.get("vram_plus"):
+        container = _get_or_create_override_container(job, graph_asset, "VRAM+")
+        if not container or _set_graph_bool_override(
+            container, graph_asset, VRAM_PLUS_VARIABLE_NAME, True, require_enabled=True
+        ) != "configured":
+            _impl._log_error(f"{shot_name}: VRAM+ requires an enabled Boolean '{VRAM_PLUS_VARIABLE_NAME}' override.")
+            return "failed"
+
     return result
 
 
@@ -529,15 +542,19 @@ def _get_or_create_override_container(job, graph_asset, context_label):
     return override_container
 
 
-def _set_graph_bool_override(override_container, graph_asset, variable_name, enabled):
+def _set_graph_bool_override(override_container, graph_asset, variable_name, enabled, *, require_enabled=False):
     graph_variable = _impl._find_graph_variable_by_name(graph_asset, variable_name)
     if not graph_variable:
         _impl._log_warning(f"Graph does not expose '{variable_name}'. Job will use graph default {variable_name} behavior.")
         return "unsupported"
 
-    _impl._set_variable_enable_state(override_container, graph_variable, True)
-
     try:
+        if require_enabled:
+            if not override_container.set_variable_assignment_enable_state(graph_variable, True):
+                _impl._log_error(f"Failed to enable the {variable_name} override.")
+                return "failed"
+        else:
+            _impl._set_variable_enable_state(override_container, graph_variable, True)
         success = override_container.set_value_bool(graph_variable, bool(enabled))
     except Exception as exc:
         _impl._log_error(f"Failed to set {variable_name} override: {exc}")
@@ -591,7 +608,7 @@ def _apply_job_hero_override(job, graph_asset, hero_enabled):
     return hero_result
 
 
-def _build_render_format_lookup(shot_name_array, is_active_array, mp4_array, exr_array):
+def _build_render_format_lookup(shot_name_array, is_active_array, mp4_array, exr_array, vram_plus_array=None):
     try:
         shot_names = list(shot_name_array or [])
     except Exception:
@@ -608,6 +625,12 @@ def _build_render_format_lookup(shot_name_array, is_active_array, mp4_array, exr
         exr_flags = list(exr_array or [])
     except Exception:
         exr_flags = []
+
+    vram_plus_flags = list(vram_plus_array) if vram_plus_array is not None else None
+    if vram_plus_flags is not None and len(vram_plus_flags) != len(shot_names):
+        raise ValueError(
+            f"VRAM+ needs one flag per shot, got {len(vram_plus_flags)} flags for {len(shot_names)} shots."
+        )
 
     if len(active_flags) < len(shot_names):
         active_flags.extend([0] * (len(shot_names) - len(active_flags)))
@@ -630,6 +653,7 @@ def _build_render_format_lookup(shot_name_array, is_active_array, mp4_array, exr
         render_format_by_shot[shot_name] = {
             "mp4": _impl._coerce_to_bool_flag(mp4_flags[index] if index < len(mp4_flags) else 0),
             "exr": _impl._coerce_to_bool_flag(exr_flags[index] if index < len(exr_flags) else 0),
+            "vram_plus": vram_plus_flags is not None and _impl._coerce_to_bool_flag(vram_plus_flags[index]),
         }
 
     return render_format_by_shot
@@ -644,11 +668,23 @@ def run(
     render_graph_secondary_folder_path=None,
     mp4_array=None,
     exr_array=None,
+    vram_plus_array=None,
 ):
     global _CURRENT_SHOW_FOLDERS
     global _GRAPH_VARIABLE_CACHE
     global _CURRENT_RENDER_FORMAT_BY_SHOT
     global _CURRENT_JOB_SHOT_NAMES
+
+    try:
+        render_format_by_shot = _build_render_format_lookup(
+            shot_name_array, is_active_array, mp4_array, exr_array, vram_plus_array
+        )
+    except (TypeError, ValueError) as exc:
+        _impl._log_error(str(exc))
+        result = _impl._new_result(movie_render_graph)
+        return _impl._format_summary_string(
+            _impl._finalize_result(result, success=False, message=str(exc))
+        )
 
     previous_show_folders = _CURRENT_SHOW_FOLDERS
     previous_graph_variable_cache = _GRAPH_VARIABLE_CACHE
@@ -659,14 +695,9 @@ def run(
         _CURRENT_SHOW_FOLDERS = _impl._list_valid_show_folders()
         _GRAPH_VARIABLE_CACHE = {}
         _CURRENT_JOB_SHOT_NAMES = {}
-        _CURRENT_RENDER_FORMAT_BY_SHOT = _build_render_format_lookup(
-            shot_name_array,
-            is_active_array,
-            mp4_array,
-            exr_array,
-        )
+        _CURRENT_RENDER_FORMAT_BY_SHOT = render_format_by_shot
         _impl._log(f"Cached valid show folders for render queue submission: {_CURRENT_SHOW_FOLDERS}")
-        _impl._log(f"Cached MP4/EXR render format flags by shot: {_CURRENT_RENDER_FORMAT_BY_SHOT}")
+        _impl._log(f"Cached MP4/EXR/VRAM+ flags by shot: {_CURRENT_RENDER_FORMAT_BY_SHOT}")
         return _ORIGINAL_RUN(
             shot_name_array,
             is_active_array,

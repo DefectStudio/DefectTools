@@ -177,6 +177,17 @@ class UnrealFarmPublisherVersionTests(unittest.TestCase):
         )
         return queue
 
+    def test_vram_plus_requires_dispatcher_routing(self) -> None:
+        job = self._snapshot(1, 0)
+        vram_plus = self._variable("VRAMPlus", True, "Bool")
+        job["graph_variable_assignments"][0]["variables"].append(vram_plus)
+
+        with self.assertRaisesRegex(ValueError, "VRAM\\+ farm submission requires Dispatcher GPU routing"):
+            self._validate(job)
+
+        vram_plus["serialized_value"] = "false"
+        self.assertEqual(1, len(self._validate(job)))
+
     def _stub_run_dependencies(self, document: dict):
         mock.patch.object(
             self.publisher, "_inspect_current_queue", return_value=document
