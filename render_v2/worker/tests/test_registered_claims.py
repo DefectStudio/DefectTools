@@ -5,6 +5,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
+from portable_pipe_tools.render_farm.gpu_inventory import DxgiRenderAdapter
 from portable_pipe_tools.render_farm.registered_claims import RegisteredQueueWorker
 from portable_pipe_tools.render_farm.registered_sync import SYNC_POLICY, OVERRIDE_SYNC_POLICY
 from portable_pipe_tools.render_farm.project_registration import ProjectRegistration
@@ -36,6 +37,7 @@ class RegisteredClaimTests(unittest.TestCase):
         self.executor = Mock(return_value=UnrealExecutionResult(True, "Rendered", 0))
         self.sync = self.enterContext(patch("portable_pipe_tools.render_farm.registered_claims.sync_registered_project", return_value="a" * 40))
         self.detect_gpus = self.enterContext(patch("portable_pipe_tools.render_farm.registered_claims.detect_gpus", return_value=[]))
+        self.select_adapter = self.enterContext(patch("portable_pipe_tools.render_farm.registered_claims.select_vram_plus_adapter", return_value=None))
         self.dispatcher = Mock()
         self.dispatcher.claim_job.return_value = CloudClaimResult(lease=None, stop_requested=False)
         self.worker = RegisteredQueueWorker(self.settings, "TestWorker", dispatcher_client=self.dispatcher,
@@ -101,6 +103,37 @@ class RegisteredClaimTests(unittest.TestCase):
     def test_unavailable_gpu_inventory_is_sent_explicitly(self):
         self.worker.run_next()
         self.assertEqual([], self.dispatcher.claim_job.call_args.kwargs["capabilities"]["gpus"])
+
+    def test_selected_adapter_is_current_claim_metadata_and_distinct_from_inventory(self):
+        selected = DxgiRenderAdapter(3, 0x10DE, "RTX 5090", "NVIDIA GeForce RTX 5090", 32187, (1, 0))
+        inventory = [{"model": "RTX 5090", "vram_mib": 32607}]
+        self.detect_gpus.return_value = inventory
+        self.select_adapter.side_effect = [selected, None]
+        self.worker.run_next()
+        capabilities = self.dispatcher.claim_job.call_args.kwargs["capabilities"]
+        self.assertEqual(inventory, capabilities["gpus"])
+        self.assertEqual({"model": "RTX 5090", "vram_mib": 32187}, capabilities["render_adapter"])
+        self.worker.run_next()
+        self.assertNotIn("render_adapter", self.dispatcher.claim_job.call_args.kwargs["capabilities"])
+
+    def test_restricted_claim_uses_local_selection_and_drops_submitted_binding(self):
+        selected = DxgiRenderAdapter(3, 0x10DE, "RTX 5090", "NVIDIA GeForce RTX 5090", 32187, (1, 0))
+        self.select_adapter.return_value = selected
+        folder = self.job(self.projects[0], "Bishop", "restricted")
+        job = json.loads((folder / "job.json").read_text())
+        job.update(status="rendering", attempt=1, worker="TestWorker", requires_vram_plus=True,
+                   worker_render_adapter={"index": 9})
+        self.dispatcher.claim_job.return_value = CloudClaimResult(
+            lease=CloudJobLease(job=job, lease_token="local-lease", lease_expires_at=int(time.time()) + 300,
+                               stop_requested=False), stop_requested=False,
+        )
+        with patch("portable_pipe_tools.render_farm.registered_claims.install_runtime"):
+            result = self.worker.run_next()
+        self.assertEqual("complete", result.status)
+        self.assertIs(selected, self.executor.call_args.kwargs["render_adapter"])
+        self.assertNotIn("worker_render_adapter", self.executor.call_args.kwargs["job"])
+        snapshot = self.dispatcher.complete_job.call_args.kwargs["result"]["job_snapshot"]
+        self.assertNotIn("worker_render_adapter", snapshot)
 
     def test_sql_outage_does_not_claim_or_move_dropbox_jobs(self):
         queued = self.job(self.projects[0], "Bishop", "bishop")

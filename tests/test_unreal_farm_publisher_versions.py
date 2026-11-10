@@ -115,6 +115,7 @@ class UnrealFarmPublisherVersionTests(unittest.TestCase):
         exr_name: str | None = None,
         mp4_name: str | None = None,
         enabled: bool = True,
+        vram_plus: bool | None = None,
     ) -> dict:
         stem = f"{_SHOT}_beauty_v{version:03d}"
         variables = [
@@ -129,6 +130,8 @@ class UnrealFarmPublisherVersionTests(unittest.TestCase):
             self._variable("MP4", mp4, "Bool"),
             self._variable("Hero", False, "Bool"),
         ]
+        if vram_plus is not None:
+            variables.append(self._variable("VRAMPlus", vram_plus, "Bool"))
         return {
             "queue_index": index,
             "object_path": _LiveJob(index).get_path_name(),
@@ -177,16 +180,35 @@ class UnrealFarmPublisherVersionTests(unittest.TestCase):
         )
         return queue
 
-    def test_vram_plus_requires_dispatcher_routing(self) -> None:
-        job = self._snapshot(1, 0)
-        vram_plus = self._variable("VRAMPlus", True, "Bool")
-        job["graph_variable_assignments"][0]["variables"].append(vram_plus)
+    def test_vram_plus_flag_and_fingerprint_follow_the_enabled_bool(self) -> None:
+        ordinary = self._validate(self._snapshot(1, 0))[0]
+        unchecked = self._validate(self._snapshot(1, 0, vram_plus=False))[0]
+        disabled = self._snapshot(1, 0, vram_plus=True)
+        disabled["graph_variable_assignments"][0]["variables"][-1]["enabled"] = False
+        disabled_package = self._validate(disabled)[0]
+        for package in (ordinary, unchecked, disabled_package):
+            self.assertNotIn("requires_vram_plus", package)
+            self.assertEqual(
+                package["submission_fingerprint"],
+                self.publisher._calculate_fingerprint({**package, "requires_vram_plus": False}),
+            )
+        self.assertEqual(ordinary["submission_fingerprint"], disabled_package["submission_fingerprint"])
 
-        with self.assertRaisesRegex(ValueError, "VRAM\\+ farm submission requires Dispatcher GPU routing"):
-            self._validate(job)
+        restricted = self._validate(self._snapshot(1, 0, vram_plus=True))[0]
+        self.assertIs(restricted["requires_vram_plus"], True)
+        self.assertIs(restricted["graph_variable_overrides"]["VRAMPlus"]["value"], True)
+        self.assertNotEqual(
+            restricted["submission_fingerprint"],
+            self.publisher._calculate_fingerprint({**restricted, "requires_vram_plus": False}),
+        )
 
-        vram_plus["serialized_value"] = "false"
-        self.assertEqual(1, len(self._validate(job)))
+    def test_enabled_malformed_vram_plus_override_is_rejected(self) -> None:
+        for fields in ({"value_type": "String"}, {"serialized_value": "1"}):
+            with self.subTest(fields=fields):
+                job = self._snapshot(1, 0, vram_plus=True)
+                job["graph_variable_assignments"][0]["variables"][-1].update(fields)
+                with self.assertRaisesRegex(ValueError, "VRAMPlus graph override must be a Bool"):
+                    self._validate(job)
 
     def _stub_run_dependencies(self, document: dict):
         mock.patch.object(
@@ -200,7 +222,72 @@ class UnrealFarmPublisherVersionTests(unittest.TestCase):
             "_load_dispatcher_submit_connection",
             return_value=("https://unit-test.invalid", "unit-test-token"),
         ).start()
-        mock.patch.object(self.publisher, "_verify_dispatcher_health").start()
+        return mock.patch.object(
+            self.publisher,
+            "_dispatcher_json_request",
+            return_value={"ok": True, "database": "connected"},
+        ).start()
+
+    def test_mixed_batch_with_vram_plus_cannot_submit_to_v1(self) -> None:
+        snapshots = [self._snapshot(2, 0), self._snapshot(3, 1, vram_plus=True)]
+        queue = self._connect_live_queue(snapshots)
+        request = self._stub_run_dependencies(self._document(*snapshots))
+        summary = self.publisher.run(require_confirmation=False, use_v2=False)
+
+        self.assertIn("success=0;", summary)
+        self.assertIn("VRAM+ jobs require the V2 render farm", summary)
+        request.assert_not_called()
+        self.assertEqual(2, len(queue.jobs))
+
+    def test_mixed_vram_plus_batch_requires_boolean_feature_before_any_post(self) -> None:
+        snapshots = [self._snapshot(2, 0), self._snapshot(3, 1, vram_plus=True)]
+        queue = self._connect_live_queue(snapshots)
+        request = self._stub_run_dependencies(self._document(*snapshots))
+        for features in (None, {"vram_plus_claims": "true"}, {"vram_plus_claims": False}):
+            with self.subTest(features=features):
+                request.reset_mock()
+                request.return_value = {"ok": True, "database": "connected", "features": features}
+                summary = self.publisher.run(require_confirmation=False, use_v2=True)
+
+                self.assertIn("success=0;", summary)
+                self.assertIn("does not advertise VRAM+ claim routing", summary)
+                request.assert_called_once_with("GET", "https://unit-test.invalid/health")
+                self.assertEqual(2, len(queue.jobs))
+
+    def test_restricted_job_requires_dispatcher_confirmation_before_cleanup(self) -> None:
+        snapshot = self._snapshot(2, 0, vram_plus=True)
+        queue = self._connect_live_queue([snapshot])
+        request = self._stub_run_dependencies(self._document(snapshot))
+        health = {
+            "ok": True, "database": "connected", "features": {"vram_plus_claims": True},
+        }
+        request.side_effect = [health, {"job": {"job_id": "accepted"}}]
+        summary = self.publisher.run(require_confirmation=False, use_v2=True)
+        self.assertIn("success=0;", summary)
+        self.assertIn("did not confirm the VRAM+ requirement", summary)
+        self.assertEqual([], queue.deleted)
+
+        request.reset_mock()
+        request.side_effect = [health, {"job": {"job_id": "accepted", "requires_vram_plus": True}}]
+        summary = self.publisher.run(require_confirmation=False, use_v2=True)
+        self.assertIn("success=1;", summary)
+        self.assertEqual(["GET", "POST"], [call.args[0] for call in request.call_args_list])
+        self.assertIs(request.call_args.kwargs["body"]["requires_vram_plus"], True)
+        self.assertEqual([], queue.jobs)
+
+    def test_unrestricted_job_can_submit_to_v1_without_vram_plus_feature(self) -> None:
+        snapshot = self._snapshot(2, 0, vram_plus=False)
+        queue = self._connect_live_queue([snapshot])
+        request = self._stub_run_dependencies(self._document(snapshot))
+        request.side_effect = [
+            {"ok": True, "database": "connected"},
+            {"job": {"job_id": "accepted"}},
+        ]
+        summary = self.publisher.run(require_confirmation=False, use_v2=False)
+
+        self.assertIn("success=1;", summary)
+        self.assertNotIn("requires_vram_plus", request.call_args.kwargs["body"])
+        self.assertEqual([], queue.jobs)
 
     def test_same_shot_name_with_distinct_versions_builds_two_jobs(self) -> None:
         packages = self._validate(self._snapshot(2, 0), self._snapshot(3, 1))

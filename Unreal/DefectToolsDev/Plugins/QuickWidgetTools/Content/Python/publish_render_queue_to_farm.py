@@ -50,6 +50,7 @@ JOB_SCHEMA_VERSION = 1
 PUBLISHER_SCHEMA_VERSION = 4
 OVERWRITE_EXISTING_MP4_FIELD = "overwrite_existing_mp4"
 OVERWRITE_EXISTING_EXR_FIELD = "overwrite_existing_exr"
+REQUIRES_VRAM_PLUS_FIELD = "requires_vram_plus"
 DISPATCHER_COORDINATION_FIELD = "dispatcher_coordination"
 CLOUD_DISPATCHER_COORDINATION = "cloud"
 DISPATCHER_REQUEST_TIMEOUT_SECONDS = 20.0
@@ -321,11 +322,18 @@ def _dispatcher_json_request(
     raise AssertionError("Cloud Dispatcher retry loop exited unexpectedly")
 
 
-def _verify_dispatcher_health(api_url: str) -> None:
+def _verify_dispatcher_health(api_url: str, *, requires_vram_plus: bool = False) -> None:
     health = _dispatcher_json_request("GET", f"{api_url}/health")
     if health.get("ok") is not True or health.get("database") != "connected":
         raise DispatcherSubmissionError(
             "Cloud Dispatcher health check did not confirm a D1 connection."
+        )
+    features = health.get("features")
+    if requires_vram_plus and (
+        not isinstance(features, dict) or features.get("vram_plus_claims") is not True
+    ):
+        raise DispatcherSubmissionError(
+            "The V2 Cloud Dispatcher does not advertise VRAM+ claim routing."
         )
 
 
@@ -351,6 +359,13 @@ def _submit_job_to_dispatcher(
     if not accepted_job_id:
         raise DispatcherSubmissionError(
             "Cloud Dispatcher accepted the request but did not return a job ID."
+        )
+    if (
+        package.get(REQUIRES_VRAM_PLUS_FIELD) is True
+        and accepted_job.get(REQUIRES_VRAM_PLUS_FIELD) is not True
+    ):
+        raise DispatcherSubmissionError(
+            f"Cloud Dispatcher did not confirm the VRAM+ requirement on job {accepted_job_id}."
         )
     disposition = (
         "created"
@@ -518,7 +533,7 @@ def _package_output_keys(package: dict[str, Any]) -> set[str]:
 
 
 def _fingerprint_payload(job_package: dict[str, Any]) -> dict[str, Any]:
-    return {
+    payload = {
         "project": job_package.get("project"),
         "uproject": job_package.get("uproject"),
         "level": job_package.get("level"),
@@ -538,6 +553,9 @@ def _fingerprint_payload(job_package: dict[str, Any]) -> dict[str, Any]:
         ),
         "graph_variable_overrides": job_package.get("graph_variable_overrides"),
     }
+    if job_package.get(REQUIRES_VRAM_PLUS_FIELD) is True:
+        payload[REQUIRES_VRAM_PLUS_FIELD] = True
+    return payload
 
 
 def _calculate_fingerprint(job_package: dict[str, Any]) -> str:
@@ -688,8 +706,9 @@ def _build_job_package(
         )
 
     overrides = _effective_graph_overrides(inspected_job)
-    if _override_value(overrides, "VRAMPlus", False) is not False:
-        raise ValueError(f"{label}: VRAM+ farm submission requires Dispatcher GPU routing.")
+    requires_vram_plus = _override_value(overrides, "VRAMPlus", False)
+    if not isinstance(requires_vram_plus, bool):
+        raise ValueError(f"{label}: the enabled VRAMPlus graph override must be a Bool.")
 
     output_directory = _safe_text(
         _override_value(overrides, "OutputDirectory", "")
@@ -814,6 +833,8 @@ def _build_job_package(
         "result": None,
         "test_job": False,
     }
+    if requires_vram_plus:
+        package[REQUIRES_VRAM_PLUS_FIELD] = True
     package["submission_fingerprint"] = _calculate_fingerprint(package)
     return package
 
@@ -1119,15 +1140,20 @@ def run(
 
         show_root = _load_show_file_server_root()
         farm_root = os.path.normpath(os.path.join(show_root, "renderFarm"))
-        dispatcher_api_url, dispatcher_submit_token = (
-            _load_dispatcher_submit_connection(use_v2=use_v2)
-        )
-        _verify_dispatcher_health(dispatcher_api_url)
         packages, batch_id, _ = _validate_and_build_packages(
             document,
             priority,
             show_root,
         )
+        requires_vram_plus = any(
+            package.get(REQUIRES_VRAM_PLUS_FIELD) is True for package in packages
+        )
+        if requires_vram_plus and use_v2 is not True:
+            raise ValueError("VRAM+ jobs require the V2 render farm. Select V2 and retry.")
+        dispatcher_api_url, dispatcher_submit_token = (
+            _load_dispatcher_submit_connection(use_v2=use_v2)
+        )
+        _verify_dispatcher_health(dispatcher_api_url, requires_vram_plus=requires_vram_plus)
 
         for package in packages:
             _log(

@@ -19,6 +19,7 @@ from portable_pipe_tools.render_farm.engine_discovery import (
     path_engine_matches_versions,
 )
 from portable_pipe_tools.render_farm.git_sync import GIT_PULL_LOG_FILENAME
+from portable_pipe_tools.render_farm.gpu_inventory import DxgiRenderAdapter, vram_plus_adapter_is_current
 from portable_pipe_tools.render_farm.local_paths import (
     prepare_worker_output_mapping,
     exr_output_folder,
@@ -231,6 +232,7 @@ def build_unreal_command(
     unreal_editor_cmd: str | Path | None = None,
     validate_only: bool = False,
     local_uproject: str | Path | None = None,
+    render_adapter: DxgiRenderAdapter | None = None,
 ) -> list[str]:
     uproject = validate_real_render_job(job, local_uproject)
     folder = _as_path(claimed_folder)
@@ -268,6 +270,10 @@ def build_unreal_command(
         command.append("-RenderFarmValidateOnly=true")
     if job.get("worker_runtime_version") == 2:
         command.append("-EnablePlugins=RenderWorkerRuntime")
+    if job.get("requires_vram_plus") is True:
+        if render_adapter is None or job.get("worker_runtime_version") != 2:
+            raise ValueError("VRAM+ requires a verified adapter and the V2 worker runtime.")
+        command.extend(("-dx12", "-gpupreference=0", f"-graphicsadapter={render_adapter.index}", "-FORCELOGFLUSH"))
     return command
 
 
@@ -533,12 +539,32 @@ def execute_unreal_job(
     startup_timeout_seconds: float = DEFAULT_STARTUP_TIMEOUT_SECONDS,
     finalization_timeout_seconds: float = DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    render_adapter: DxgiRenderAdapter | None = None,
 ) -> UnrealExecutionResult:
     if timeout_seconds is not None and (not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
         raise ValueError("timeout_seconds must be greater than zero")
 
     folder = _as_path(claimed_folder)
-    uproject = validate_real_render_job(job, local_uproject)
+    job.pop("worker_render_adapter", None)
+    requires_vram_plus = job.get("requires_vram_plus") is True
+    if requires_vram_plus and (render_adapter is None or not vram_plus_adapter_is_current(render_adapter)):
+        raise ValueError("VRAM+ render adapter is missing, changed, or no longer qualifies on this worker.")
+    command = build_unreal_command(
+        folder,
+        job,
+        unreal_editor_cmd,
+        local_uproject=local_uproject,
+        render_adapter=render_adapter,
+    )
+    unreal_log_path = folder / UNREAL_LOG_FILENAME
+    if requires_vram_plus and path_exists_with_retry(unreal_log_path):
+        stale_log_path = folder / f"unreal.before_attempt_{job.get('attempt', 0)}.log"
+        if path_exists_with_retry(stale_log_path):
+            raise FileExistsError(f"Cannot preserve stale Unreal log because destination exists: {stale_log_path}")
+        retry_transient_windows_lock(
+            lambda: unreal_log_path.rename(stale_log_path),
+            description=f"Archive stale Unreal adapter evidence {unreal_log_path} -> {stale_log_path}",
+        )
     output_mapping = prepare_worker_output_mapping(
         job,
         render_farm_root if render_farm_root is not None else folder.parent.parent,
@@ -557,12 +583,6 @@ def execute_unreal_job(
         output_mapping.output_relative_directory,
     )
 
-    command = build_unreal_command(
-        folder,
-        job,
-        unreal_editor_cmd,
-        local_uproject=local_uproject,
-    )
     uproject = _as_path(command[1])
     job_path = folder / JOB_FILENAME
     command_path = folder / RENDER_COMMAND_FILENAME
@@ -608,7 +628,12 @@ def execute_unreal_job(
     job["worker_uproject"] = str(uproject)
     job["rendered_git_commit"] = rendered_commit
     job["worker_sync_policy"] = worker_sync_policy
-    write_json_atomic(job_path, job)
+    local_job = dict(job)
+    if requires_vram_plus and render_adapter is not None:
+        local_job["worker_render_adapter"] = {
+            **render_adapter.telemetry(), "index": render_adapter.index, "dxgi_name": render_adapter.dxgi_name,
+        }
+    write_json_atomic(job_path, local_job)
     if rendered_commit:
         LOGGER.info("Render checkout Git commit: %s", rendered_commit)
     LOGGER.info("Worker-local Unreal project: %s", uproject)

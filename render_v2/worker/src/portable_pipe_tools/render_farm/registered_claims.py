@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from portable_pipe_tools.render_farm.gpu_inventory import detect_gpus
+from portable_pipe_tools.render_farm.gpu_inventory import detect_gpus, select_vram_plus_adapter
 from portable_pipe_tools.render_farm.project_render import install_runtime
 from portable_pipe_tools.render_farm.project_workspace import project_lock, PreparationError, PreparationCancelled
 from portable_pipe_tools.render_farm.registered_sync import sync_registered_project, SYNC_POLICY, OVERRIDE_SYNC_POLICY
@@ -37,6 +37,7 @@ class RegisteredQueueWorker:
         if not self.projects:
             raise ValueError("Register at least one available local project before starting the worker.")
         self._gpus = None
+        self._render_adapter = None
 
     def ready_projects(self):
         engine = read_json_object(self.settings_path).get("unreal_editor_cmd", "")
@@ -62,6 +63,12 @@ class RegisteredQueueWorker:
                 startup_timeout_seconds=DEFAULT_STARTUP_TIMEOUT_SECONDS,
                 finalization_timeout_seconds=DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
                 progress_callback=None, **_):
+        job.pop("worker_render_adapter", None)
+        render_options = {}
+        if job.get("requires_vram_plus") is True:
+            if self._render_adapter is None:
+                return UnrealExecutionResult(False, "VRAM+ requires a qualifying local D3D12 adapter.", None)
+            render_options["render_adapter"] = self._render_adapter
         identity = str(job.get("project_id") or job.get("project") or "")
         project, uproject, engine, _ = prepare_registered_job(self.settings_path, identity, Path(claimed_folder) / "job.json")
         job["worker_sync_policy"] = self.sync_policy
@@ -83,7 +90,7 @@ class RegisteredQueueWorker:
                                      no_progress_timeout_seconds=no_progress_timeout_seconds,
                                      startup_timeout_seconds=startup_timeout_seconds,
                                      finalization_timeout_seconds=finalization_timeout_seconds,
-                                     progress_callback=progress_callback)
+                                     progress_callback=progress_callback, **render_options)
         except PreparationError as error:
             return UnrealExecutionResult(False, str(error), None, cancelled=isinstance(error, PreparationCancelled))
 
@@ -98,10 +105,17 @@ class RegisteredQueueWorker:
         # The GUI runs its first poll in the background, outside the Start Worker handler.
         if self._gpus is None:
             self._gpus = detect_gpus()
-            if stopped():
-                return None
+        render_adapter = select_vram_plus_adapter()
+        if stopped():
+            return None
+        if render_adapter is not None and render_adapter != self._render_adapter:
+            self.progress(f"Selected VRAM+ render adapter {render_adapter.model} "
+                          f"({render_adapter.vram_mib} MiB, DXGI index {render_adapter.index}).")
+        self._render_adapter = render_adapter
         eligible_project_ids = [project.project_id for project in projects]
         capabilities = {"registered_projects": eligible_project_ids, "gpus": self._gpus}
+        if self._render_adapter is not None:
+            capabilities["render_adapter"] = self._render_adapter.telemetry()
         if not projects:
             self.progress("No registered local projects are currently available; no jobs claimed.")
             return run_once(farm_root=self.projects[0].render_farm_root, worker_name=self.worker_name,

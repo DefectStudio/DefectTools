@@ -1,5 +1,6 @@
 import subprocess
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from portable_pipe_tools.render_farm import gpu_inventory
@@ -40,10 +41,9 @@ class GpuInventoryTests(unittest.TestCase):
         nvidia = [{"model": "RTX 5090", "vram_mib": 32607}]
         amd = {"model": "AMD Radeon(TM) Graphics", "vram_mib": 2021}
         dxgi = [
-            (0x10DE, "NVIDIA GeForce RTX 5090", 32187),
-            (0x1002, "AMD Radeon(TM) Graphics", 2021),
-            (0x10DE, "NVIDIA GeForce RTX 5090", 32187),
-            (0x8086, "Intel Integrated Graphics", 0),
+            gpu_inventory.DxgiRenderAdapter(0, 0x10DE, "RTX 5090", "NVIDIA GeForce RTX 5090", 32187, (1, 0)),
+            gpu_inventory.DxgiRenderAdapter(1, 0x1002, amd["model"], amd["model"], 2021, (2, 0)),
+            gpu_inventory.DxgiRenderAdapter(4, 0x10DE, "RTX 5090", "NVIDIA GeForce RTX 5090", 32187, (5, 0)),
         ]
         with patch.object(gpu_inventory.sys, "platform", "win32"), patch.object(
             gpu_inventory, "_dxgi_adapters", return_value=dxgi
@@ -62,3 +62,26 @@ class GpuInventoryTests(unittest.TestCase):
                 gpu_inventory, "_nvidia_adapters", return_value=nvidia
             ):
                 self.assertEqual(nvidia, gpu_inventory.detect_gpus())
+
+    def test_selects_highest_eligible_d3d12_adapter_then_lowest_raw_ordinal(self):
+        at_threshold = gpu_inventory.DxgiRenderAdapter(0, 0x1002, "Radeon", "AMD Radeon", 20480, (2, 0))
+        preferred = gpu_inventory.DxgiRenderAdapter(3, 0x10DE, "RTX 5090", "NVIDIA GeForce RTX 5090", 32187, (1, 0))
+        duplicate = replace(preferred, index=5, luid=(4, 0))
+        with patch.object(gpu_inventory.sys, "platform", "win32"), patch.object(
+            gpu_inventory, "_dxgi_adapters", return_value=[at_threshold, duplicate, preferred]
+        ) as scan:
+            self.assertEqual(preferred, gpu_inventory.select_vram_plus_adapter())
+            scan.assert_called_once_with(require_d3d12=True)
+            scan.return_value = [at_threshold]
+            self.assertEqual(at_threshold, gpu_inventory.select_vram_plus_adapter())
+
+    def test_revalidation_requires_same_dxgi_identity_and_capacity(self):
+        selected = gpu_inventory.DxgiRenderAdapter(3, 0x10DE, "RTX 5090", "NVIDIA GeForce RTX 5090", 32187, (1, 0))
+        with patch.object(gpu_inventory.sys, "platform", "win32"), patch.object(
+            gpu_inventory, "_dxgi_adapters", return_value=[selected]
+        ) as scan:
+            self.assertTrue(gpu_inventory.vram_plus_adapter_is_current(selected))
+            for changed in (replace(selected, index=5), replace(selected, luid=(2, 0)), replace(selected, vram_mib=32000)):
+                with self.subTest(changed=changed):
+                    scan.return_value = [changed]
+                    self.assertFalse(gpu_inventory.vram_plus_adapter_is_current(selected))

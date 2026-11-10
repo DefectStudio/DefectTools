@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+from portable_pipe_tools.render_farm.gpu_inventory import DxgiRenderAdapter
 from portable_pipe_tools.render_farm.queue import JOB_FILENAME
 from portable_pipe_tools.render_farm.unreal_runner import (
     COMMAND_LINE_PIPELINE_CLASS,
@@ -134,6 +135,54 @@ class UnrealRunnerTests(unittest.TestCase):
         self.assertIn(f"-ExecutorPythonClass={PROJECT_EXECUTOR_CLASS}", command)
         self.assertIn("-EnablePlugins=RenderWorkerRuntime", command)
         self.assertNotIn(f"-ExecutorPythonClass={PYTHON_EXECUTOR_CLASS}", command)
+
+    def test_vram_plus_pins_the_local_dxgi_ordinal_and_only_for_restricted_jobs(self) -> None:
+        selected = DxgiRenderAdapter(3, 0x10DE, "RTX 5090", "NVIDIA GeForce RTX 5090", 32187, (1, 0))
+        flags = {"-dx12", "-gpupreference=0", "-graphicsadapter=3", "-FORCELOGFLUSH"}
+        self.job.update(worker_runtime_version=2, worker_render_adapter={"index": 9})
+        standard = build_unreal_command(self.claimed_folder, self.job, self.executable, render_adapter=selected)
+        self.assertTrue(flags.isdisjoint(standard))
+        self.job["requires_vram_plus"] = True
+        restricted = build_unreal_command(self.claimed_folder, self.job, self.executable, render_adapter=selected)
+        self.assertTrue(flags.issubset(restricted))
+        self.assertNotIn("-graphicsadapter=9", restricted)
+
+    def test_missing_or_changed_vram_plus_selection_fails_before_output_prep(self) -> None:
+        module = "portable_pipe_tools.render_farm.unreal_runner"
+        selected = DxgiRenderAdapter(3, 0x10DE, "RTX 5090", "NVIDIA GeForce RTX 5090", 32187, (1, 0))
+        for adapter in (None, selected):
+            job = dict(self.job, requires_vram_plus=True, worker_runtime_version=2, worker_render_adapter={"index": 9})
+            with self.subTest(adapter=adapter), patch(module + ".vram_plus_adapter_is_current", return_value=False), \
+                 patch(module + ".prepare_worker_output_mapping") as prepare, patch(module + ".subprocess.Popen") as launch:
+                with self.assertRaisesRegex(ValueError, "missing, changed, or no longer qualifies"):
+                    execute_unreal_job(self.claimed_folder, job, self.executable, render_adapter=adapter)
+                prepare.assert_not_called()
+                launch.assert_not_called()
+
+    def test_vram_plus_writes_only_local_binding_and_archives_stale_log(self) -> None:
+        module = "portable_pipe_tools.render_farm.unreal_runner"
+        selected = DxgiRenderAdapter(3, 0x10DE, "RTX 5090", "NVIDIA GeForce RTX 5090", 32187, (1, 0))
+        self.job.update(requires_vram_plus=True, worker_runtime_version=2, worker_render_adapter={"index": 9})
+        log = self.claimed_folder / "unreal.log"
+        log.write_text("stale adapter evidence", encoding="utf-8")
+        mapping = SimpleNamespace(
+            local_show_file_server_path=self.root,
+            submitted_output_directory=self.root / "output",
+            worker_output_directory=self.root / "output",
+            output_relative_directory="output",
+        )
+        with patch(module + ".vram_plus_adapter_is_current", return_value=True), \
+             patch(module + ".prepare_worker_output_mapping", return_value=mapping), \
+             patch(module + "._query_git_commit", return_value=None), \
+             patch(module + ".subprocess.Popen", side_effect=OSError("test stops before Unreal starts")):
+            with self.assertRaisesRegex(OSError, "test stops before Unreal starts"):
+                execute_unreal_job(self.claimed_folder, self.job, self.executable, render_adapter=selected)
+        local_job = json.loads((self.claimed_folder / JOB_FILENAME).read_text())
+        self.assertEqual({"index": 3, "model": "RTX 5090", "dxgi_name": "NVIDIA GeForce RTX 5090", "vram_mib": 32187},
+                         local_job["worker_render_adapter"])
+        self.assertNotIn("worker_render_adapter", self.job)
+        self.assertFalse(log.exists())
+        self.assertEqual("stale adapter evidence", (self.claimed_folder / "unreal.before_attempt_0.log").read_text())
 
     def test_niagara_finalization_workaround_applies_to_every_project_and_executor(self) -> None:
         for project_name in ("spectrum", "s3bishop", "christmasfuneral"):

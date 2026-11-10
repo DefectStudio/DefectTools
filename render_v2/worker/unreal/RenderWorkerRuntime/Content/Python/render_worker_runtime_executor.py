@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import os
+import re
 import time
 import traceback
 from typing import Any, Callable, TypeVar
@@ -33,6 +34,13 @@ UNREAL_RESULT_FILENAME = "unreal_result.json"
 UNREAL_PROGRESS_FILENAME = "unreal_progress.json"
 UNREAL_PROGRESS_SCHEMA_VERSION = 1
 PROGRESS_WRITE_INTERVAL_SECONDS = 1.0
+UNREAL_LOG_FILENAME = "unreal.log"
+VRAM_PLUS_MIN_MIB = 20 * 1024
+VRAM_LOG_MARKER_WAIT_SECONDS = 2.0
+
+_FOUND_D3D12_ADAPTER = re.compile(r"Found D3D12 adapter (\d+): (.+?) \(VendorId:")
+_DEDICATED_VIDEO_MEMORY = re.compile(r"Adapter has (\d+)MB of dedicated video memory,")
+_CHOSEN_D3D12_ADAPTER = re.compile(r"Chosen D3D12 Adapter Id = (\d+)$")
 
 # Work around UE-392456: slow image-sequence output can let Niagara GPU ticks
 # accumulate while Movie Graph finalizes. Keep these outside the graph so its
@@ -220,6 +228,109 @@ def _validate_job(job: dict[str, Any], job_path: str) -> None:
             raise ValueError(f"Missing or invalid '{key}' in {job_path}.")
     if not isinstance(job.get("graph_variable_overrides"), dict):
         raise ValueError("graph_variable_overrides must be a JSON object.")
+
+
+def _read_current_d3d12_adapter(log_path: str, marker: str) -> tuple[int, str, int] | None:
+    adapters: dict[int, tuple[str, int]] = {}
+    adapter_index = None
+    adapter_name = ""
+    chosen_index = None
+    created_d3d12 = False
+
+    with open(log_path, "r", encoding="utf-8-sig", errors="replace") as handle:
+        for line in handle:
+            if line.startswith("Log file open,"):
+                adapters.clear()
+                adapter_index = None
+                chosen_index = None
+                created_d3d12 = False
+            if marker in line:
+                if not created_d3d12 or chosen_index is None or chosen_index not in adapters:
+                    raise RuntimeError("VRAM+ could not verify the chosen D3D12 adapter in the current Unreal log.")
+                model, vram_mib = adapters[chosen_index]
+                return chosen_index, model, vram_mib
+
+            _, category, message = line.partition("LogD3D12RHI:")
+            if not category:
+                continue
+            message = message.strip().removeprefix("Display: ")
+            if found := _FOUND_D3D12_ADAPTER.match(message):
+                adapter_index = int(found[1])
+                adapter_name = found[2]
+                adapters.pop(adapter_index, None)
+            elif memory := _DEDICATED_VIDEO_MEMORY.match(message):
+                if adapter_index is not None:
+                    adapters[adapter_index] = (adapter_name, int(memory[1]))
+                    adapter_index = None
+            elif chosen := _CHOSEN_D3D12_ADAPTER.fullmatch(message):
+                chosen_index = int(chosen[1])
+                created_d3d12 = False
+            elif message.startswith("Creating D3D12 RHI with Max Feature Level "):
+                created_d3d12 = True
+    return None
+
+
+def _verify_worker_render_adapter(
+    job: dict[str, Any], job_path: str, parameters: dict[str, str],
+) -> None:
+    if job.get("requires_vram_plus") is not True:
+        return
+
+    adapter = job.get("worker_render_adapter")
+    if not isinstance(adapter, dict):
+        raise ValueError("VRAM+ requires a worker-selected render adapter.")
+    index = adapter.get("index")
+    name = adapter.get("dxgi_name")
+    vram_mib = adapter.get("vram_mib")
+    if (
+        type(index) is not int or index < 0
+        or not isinstance(name, str) or not name.strip()
+        or type(vram_mib) is not int or vram_mib < VRAM_PLUS_MIN_MIB
+    ):
+        raise ValueError("VRAM+ worker adapter metadata is invalid or below the dedicated VRAM minimum.")
+
+    log_path = os.path.join(os.path.dirname(job_path), UNREAL_LOG_FILENAME)
+    command_log = _parameter(parameters, "abslog")
+    if (
+        not os.path.isabs(command_log)
+        or os.path.normcase(os.path.normpath(command_log)) != os.path.normcase(log_path)
+        or _parameter(parameters, "graphicsadapter") != str(index)
+        or _parameter(parameters, "gpupreference") != "0"
+    ):
+        raise RuntimeError("VRAM+ Unreal launch arguments do not match the worker adapter binding.")
+
+    # The nonce proves that the expected log belongs to this Unreal process.
+    # Unreal is launched with -FORCELOGFLUSH, but the file writer is asynchronous.
+    marker = f"VRAM+ adapter verification {uuid4().hex}"
+    _log(marker)
+    deadline = time.monotonic() + VRAM_LOG_MARKER_WAIT_SECONDS
+    while True:
+        try:
+            evidence = _retry_transient_windows_lock(
+                lambda: _read_current_d3d12_adapter(log_path, marker),
+                "Read current Unreal adapter log",
+            )
+        except OSError as error:
+            raise RuntimeError(f"VRAM+ could not read the current Unreal log: {error}") from error
+        if evidence is not None:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("VRAM+ could not confirm the Unreal log belongs to this process.")
+        time.sleep(min(0.05, remaining))
+
+    actual_index, actual_name, actual_vram_mib = evidence
+    if (
+        actual_index != index
+        or actual_name.casefold().split() != name.casefold().split()
+        or actual_vram_mib != vram_mib
+    ):
+        raise RuntimeError(
+            f"VRAM+ Unreal selected DXGI adapter {actual_index} {actual_name!r} "
+            f"with {actual_vram_mib} MiB, expected adapter {index} {name!r} "
+            f"with {vram_mib} MiB."
+        )
+    _log(f"VRAM+ verified DXGI adapter {actual_index}: {actual_name}, {actual_vram_mib} MiB.")
 
 
 def _load_unreal_object(object_path: str, label: str) -> Any:
@@ -734,6 +845,7 @@ class RenderWorkerV2Executor(unreal.MoviePipelinePythonHostExecutor):
             job = _read_json_object(self.job_json_path)
             self.job_identifier = str(job.get("job_id") or "")
             _validate_job(job, self.job_json_path)
+            _verify_worker_render_adapter(job, self.job_json_path, parameters)
             self._configure_progress(job)
             _log(f"Loaded farm job: {self.job_identifier}")
 
