@@ -14,6 +14,8 @@ import type {
   JobSummary,
   JsonRecord,
   LeaseRequest,
+  WorkerCapabilities,
+  WorkerGpu,
   WorkerRequest,
 } from "./types";
 
@@ -22,6 +24,23 @@ const MAX_LIST_LIMIT = 100;
 const MAX_WORKER_GPUS = 32;
 const MAX_GPU_MODEL_LENGTH = 200;
 const MAX_GPU_VRAM_MIB = 1024 * 1024;
+const VRAM_PLUS_MIN_MIB = 20 * 1024;
+
+function requiresVramPlus(payload: JsonRecord | null): boolean {
+  if (payload?.requires_vram_plus === true) {
+    return true;
+  }
+  const overrides = payload?.graph_variable_overrides;
+  if (overrides === null || typeof overrides !== "object" || Array.isArray(overrides)) {
+    return false;
+  }
+  return Object.entries(overrides as JsonRecord).some(([name, value]) =>
+    name.toLowerCase() === "vramplus" &&
+    value !== null && typeof value === "object" && !Array.isArray(value) &&
+    "enabled" in value && value.enabled === true &&
+    "value" in value && value.value === true
+  );
+}
 
 type JobSummaryRow = Pick<
   JobRow,
@@ -123,7 +142,13 @@ function normalizeJobPayload(input: JsonRecord): NormalizedJob {
     renderVersion = rawRenderVersion as number;
   }
 
+  if (input.requires_vram_plus !== undefined && typeof input.requires_vram_plus !== "boolean") {
+    throw new HttpError(400, "invalid_field", "requires_vram_plus must be a Boolean.");
+  }
   const payload: JsonRecord = { ...input };
+  if (requiresVramPlus(payload)) {
+    payload.requires_vram_plus = true;
+  }
   payload.status = "queued";
   payload.attempt = 0;
   payload.worker = null;
@@ -161,12 +186,28 @@ function normalizeJobPayload(input: JsonRecord): NormalizedJob {
   };
 }
 
+function checkReplayVramPlus(required: boolean, row: JobRow): void {
+  if (required !== requiresVramPlus(parseStoredRecord(row.payload_json))) {
+    throw new HttpError(
+      409,
+      "vram_plus_replay_conflict",
+      `Job ${row.id} already exists with a different VRAM+ requirement.`,
+      { conflicting_job_id: row.id },
+    );
+  }
+}
+
 async function insertNormalizedJob(env: Env, job: NormalizedJob): Promise<CreatedJob> {
+  function replay(row: JobRow): CreatedJob {
+    checkReplayVramPlus(job.payload.requires_vram_plus === true, row);
+    return { created: false, row };
+  }
+
   const existingId = await env.DB.prepare("SELECT * FROM jobs WHERE id = ?1")
     .bind(job.id)
     .first<JobRow>();
   if (existingId) {
-    return { created: false, row: existingId };
+    return replay(existingId);
   }
 
   const fingerprint =
@@ -187,7 +228,7 @@ async function insertNormalizedJob(env: Env, job: NormalizedJob): Promise<Create
       // A retry may generate a new job_id after Unreal restarted. Treat the
       // identical active render payload as an idempotent replay so the editor
       // can safely remove its already-submitted MRQ row.
-      return { created: false, row: duplicate };
+      return replay(duplicate);
     }
   }
 
@@ -300,7 +341,7 @@ async function insertNormalizedJob(env: Env, job: NormalizedJob): Promise<Create
         .bind(fingerprint)
         .first<JobRow>();
       if (duplicate) {
-        return { created: false, row: duplicate };
+        return replay(duplicate);
       }
     }
     if (outputConflictEnabled) {
@@ -331,16 +372,17 @@ async function insertNormalizedJob(env: Env, job: NormalizedJob): Promise<Create
     throw new Error(`Job ${job.id} was not readable after submission`);
   }
 
-  if (insert.meta.changes > 0) {
-    await env.DB.prepare(
-      `INSERT INTO job_events (
-         job_id, event_type, created_at, details_json
-       ) VALUES (?1, 'submitted', ${NOW_SQL}, ?2)`,
-    )
-      .bind(job.id, JSON.stringify({ submitted_by: job.submittedBy }))
-      .run();
+  if (insert.meta.changes === 0) {
+    return replay(row);
   }
-  return { created: insert.meta.changes > 0, row };
+  await env.DB.prepare(
+    `INSERT INTO job_events (
+       job_id, event_type, created_at, details_json
+     ) VALUES (?1, 'submitted', ${NOW_SQL}, ?2)`,
+  )
+    .bind(job.id, JSON.stringify({ submitted_by: job.submittedBy }))
+    .run();
+  return { created: true, row };
 }
 
 export async function submitJob(
@@ -366,6 +408,9 @@ function runtimePayload(
   const storedPayload = parseStoredRecord(row.payload_json);
   if (!storedPayload) {
     throw new Error(`Job ${row.id} has no stored payload`);
+  }
+  if (requiresVramPlus(storedPayload)) {
+    storedPayload.requires_vram_plus = true;
   }
   return {
     ...storedPayload,
@@ -458,33 +503,38 @@ async function upsertWorker(
   return row?.stop_requested === 1;
 }
 
-function parseWorkerCapabilities(value: unknown): JsonRecord | null {
+function parseWorkerGpu(value: unknown, field: string): WorkerGpu {
+  const gpu = requireRecord(value, field);
+  const model = requiredString(gpu, "model", MAX_GPU_MODEL_LENGTH);
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(model)) {
+    throw new HttpError(400, "invalid_field", "GPU model must not contain control characters.");
+  }
+  return { model, vram_mib: requiredInteger(gpu, "vram_mib", 1, MAX_GPU_VRAM_MIB) };
+}
+
+function parseWorkerCapabilities(value: unknown): WorkerCapabilities | null {
   if (value === undefined || value === null) {
     return null;
   }
   const capabilities = requireRecord(value, "capabilities");
-  const gpus = capabilities.gpus;
-  if (gpus === undefined) {
-    return capabilities;
+  const result: WorkerCapabilities = { ...capabilities };
+  const { gpus, render_adapter: renderAdapter } = capabilities;
+  if (gpus !== undefined) {
+    if (!Array.isArray(gpus) || gpus.length > MAX_WORKER_GPUS) {
+      throw new HttpError(
+        400,
+        "invalid_field",
+        `capabilities.gpus must be an array of at most ${MAX_WORKER_GPUS} GPUs.`,
+      );
+    }
+    result.gpus = gpus.map((gpu, index) => parseWorkerGpu(gpu, `capabilities.gpus[${index}]`));
   }
-  if (!Array.isArray(gpus) || gpus.length > MAX_WORKER_GPUS) {
-    throw new HttpError(
-      400,
-      "invalid_field",
-      `capabilities.gpus must be an array of at most ${MAX_WORKER_GPUS} GPUs.`,
-    );
+  if (renderAdapter !== undefined) {
+    result.render_adapter = renderAdapter === null
+      ? null
+      : parseWorkerGpu(renderAdapter, "capabilities.render_adapter");
   }
-  return {
-    ...capabilities,
-    gpus: gpus.map((value, index) => {
-      const gpu = requireRecord(value, `capabilities.gpus[${index}]`);
-      const model = requiredString(gpu, "model", MAX_GPU_MODEL_LENGTH);
-      if (/[\u0000-\u001f\u007f-\u009f]/.test(model)) {
-        throw new HttpError(400, "invalid_field", "GPU model must not contain control characters.");
-      }
-      return { model, vram_mib: requiredInteger(gpu, "vram_mib", 1, MAX_GPU_VRAM_MIB) };
-    }),
-  };
+  return result;
 }
 
 export function parseWorkerRequest(data: JsonRecord): WorkerRequest {
@@ -605,11 +655,19 @@ export async function claimJob(
   }
   const eligibleProjects = requestedProjects === undefined ? null : (requestedProjects as string[]).map(value => value.toLowerCase());
   const eligibleJson = eligibleProjects === null ? null : JSON.stringify(eligibleProjects);
-  function checkExistingProject(row: JobRow): void {
+  const adapterVramMib = worker.capabilities?.render_adapter?.vram_mib ?? 0;
+  function checkExistingClaim(row: JobRow): void {
     const payload = parseStoredRecord(row.payload_json);
     const project = String(payload?.project_id || row.project).toLowerCase();
     if (eligibleProjects !== null && !eligibleProjects.includes(project)) {
       throw new HttpError(409, "active_project_unavailable", "Release the existing lease or restore its project registration before claiming another job");
+    }
+    if (adapterVramMib < VRAM_PLUS_MIN_MIB && requiresVramPlus(payload)) {
+      throw new HttpError(
+        409,
+        "active_vram_plus_unavailable",
+        `Release the existing lease or report a render adapter with at least ${VRAM_PLUS_MIN_MIB} MiB of VRAM.`,
+      );
     }
   }
   const claimRequestId = safeIdentifier(
@@ -627,7 +685,7 @@ export async function claimJob(
     .bind(claimRequestId, worker.workerId)
     .first<JobRow>();
   if (priorClaim) {
-    checkExistingProject(priorClaim);
+    checkExistingClaim(priorClaim);
     return {
       claimed: {
         row: priorClaim,
@@ -649,7 +707,7 @@ export async function claimJob(
     .bind(worker.workerId)
     .first<JobRow>();
   if (activeWorkerClaim) {
-    checkExistingProject(activeWorkerClaim);
+    checkExistingClaim(activeWorkerClaim);
     return {
       claimed: {
         row: activeWorkerClaim,
@@ -682,6 +740,20 @@ export async function claimJob(
          AND (?4 IS NULL OR lower(coalesce(nullif(json_extract(candidate.payload_json, '$.project_id'), ''), candidate.project)) IN (
            SELECT value FROM json_each(?4)
          ))
+         AND CASE
+           WHEN ?5 >= ${VRAM_PLUS_MIN_MIB} THEN 1
+           WHEN json_type(candidate.payload_json, '$.requires_vram_plus') = 'true' THEN 0
+           WHEN json_type(candidate.payload_json, '$.graph_variable_overrides') = 'object' THEN NOT EXISTS (
+             SELECT 1
+             FROM json_each(candidate.payload_json, '$.graph_variable_overrides') AS graph_override
+             WHERE lower(graph_override.key) = 'vramplus'
+               AND CASE WHEN graph_override.type = 'object' THEN
+                 json_type(graph_override.value, '$.enabled') = 'true'
+                 AND json_type(graph_override.value, '$.value') = 'true'
+               ELSE 0 END
+           )
+           ELSE 1
+         END
          AND NOT EXISTS (
            SELECT 1 FROM job_blacklist AS blocked
            WHERE blocked.job_id = candidate.id
@@ -699,7 +771,7 @@ export async function claimJob(
        AND status = 'queued'
      RETURNING *`,
   )
-    .bind(worker.workerId, claimRequestId, leaseSeconds, eligibleJson)
+    .bind(worker.workerId, claimRequestId, leaseSeconds, eligibleJson, adapterVramMib)
     .first<JobRow>();
 
   if (!row) {
@@ -1488,7 +1560,7 @@ export async function replaceJob(
   row: JobRow;
   payload: JsonRecord;
 }> {
-  const normalized = normalizeJobPayload(replacementPayload);
+  let normalized = normalizeJobPayload(replacementPayload);
   if (normalized.id === sourceJobId) {
     throw new HttpError(
       400,
@@ -1513,6 +1585,10 @@ export async function replaceJob(
       "replacement_conflict",
       `Job ${normalized.id} already exists and is not a replacement for ${sourceJobId}.`,
     );
+  }
+  const replacementPolicy = normalized.payload.requires_vram_plus;
+  if (existing && typeof replacementPolicy === "boolean") {
+    checkReplayVramPlus(replacementPolicy, existing);
   }
 
   const source = await env.DB.prepare("SELECT * FROM jobs WHERE id = ?1")
@@ -1542,6 +1618,12 @@ export async function replaceJob(
       "job_rendering",
       "A rendering job cannot be replaced or deleted.",
     );
+  }
+  // An omitted flag inherits the source policy. Explicit false is only
+  // unrestricted when the replacement has no enabled VRAMPlus override.
+  if (normalized.payload.requires_vram_plus === undefined &&
+      requiresVramPlus(parseStoredRecord(source.payload_json))) {
+    normalized = normalizeJobPayload({ ...replacementPayload, requires_vram_plus: true });
   }
 
   if (existing) {

@@ -59,7 +59,7 @@ const job = {
 
 const health = await request("/health");
 assert.equal(health.ok, true);
-assert.equal(health.service_version, "0.7.1");
+assert.equal(health.service_version, "0.8.0");
 for (const role of ["submit", "worker", "manager", "viewer"]) {
   const auth = await request("/api/v1/auth/check", { role });
   assert.equal(auth.role, role);

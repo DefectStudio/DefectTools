@@ -51,6 +51,37 @@ lease heartbeat that leaves out or sends null for the capability object or
 app version preserves the corresponding value from the previous check-in.
 GPU telemetry is informational and uses the existing D1 schema.
 
+## VRAM+ job eligibility
+
+Submit `requires_vram_plus: true` to require a render adapter with at least
+20 GiB (20,480 MiB) of dedicated VRAM. An enabled Boolean `VRAMPlus` graph
+override with `value: true` also sets the requirement. False or absent values
+leave the job unrestricted when there is no enabled true override.
+
+A worker reports the adapter it will use in the current claim request:
+
+```json
+{
+  "capabilities": {
+    "render_adapter": { "model": "RTX 4090", "vram_mib": 24564 }
+  }
+}
+```
+
+The Dispatcher applies the requirement in the atomic job selection along with
+project eligibility, blacklist and priority. Workers that omit the render
+adapter or report it as null remain eligible for ordinary jobs. The
+`capabilities.gpus` list continues to be informational.
+
+Resubmission retains the policy. Replacement inherits it when the flag is
+omitted. To remove the requirement in a replacement, send an explicit false
+and clear any enabled true graph override. Submission replay requires the same
+effective policy.
+
+`GET /health` advertises support as `features.vram_plus_claims: true`. This
+feature uses the existing D1 schema. Run `npm run test:vram-plus` against an
+isolated local Dispatcher.
+
 ## Production deployment
 
 For Render Worker V2 progress receipts, apply `0004_render_progress.sql` to

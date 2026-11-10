@@ -28,7 +28,7 @@ import type { JsonRecord } from "./types";
 import { createProject, listProjects, updateProject } from "./projects";
 
 const SERVICE_NAME = "defect-farm-api-v2";
-const SERVICE_VERSION = "0.7.1";
+const SERVICE_VERSION = "0.8.0";
 const API_ROOT = "/api/v1";
 
 function requestId(request: Request): string {
@@ -61,6 +61,7 @@ async function handleRequest(
         api_version: env.API_VERSION,
         environment: env.ENVIRONMENT,
         database: "connected",
+        features: { vram_plus_claims: true },
       },
       200,
       id,

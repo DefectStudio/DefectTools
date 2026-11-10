@@ -37,10 +37,19 @@ export interface JobRow {
   revision: number;
 }
 
+export interface WorkerGpu {
+  model: string;
+  vram_mib: number;
+}
+
+export interface WorkerCapabilities extends JsonRecord {
+  render_adapter?: WorkerGpu | null;
+}
+
 export interface WorkerRequest {
   workerId: string;
   appVersion: string | null;
-  capabilities: JsonRecord | null;
+  capabilities: WorkerCapabilities | null;
 }
 
 export interface LeaseRequest extends WorkerRequest {
