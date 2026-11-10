@@ -6,9 +6,11 @@ from pathlib import Path
 import json
 import re
 
+from portable_pipe_tools.render_farm.queue import QUEUE_FOLDER_NAMES
+
 
 SCHEMA_VERSION = "0.1.0"
-FOLDER_TEMPLATE_VERSION = "0.1.1"
+FOLDER_TEMPLATE_VERSION = "0.1.2"
 PIPELINE_TOOL = "PortablePipeTools"
 PIPELINE_TOOL_VERSION = "0.1.0"
 
@@ -31,6 +33,9 @@ BASE_RELATIVE_FOLDERS: tuple[str, ...] = (
     "edit/edit_assets",
 
     "reference/20260101_ExampleFolder",
+
+    "renderFarm",
+    *(f"renderFarm/{folder_name}" for folder_name in QUEUE_FOLDER_NAMES),
 
     "sequences/XXX/_output",
 
