@@ -89,10 +89,13 @@ def get_render_job_details(job: RenderJob) -> tuple[JobDetailSection, ...]:
             JobDetail("Unreal Engine", _display(data.get("engine_version"))),
         ),
     )
+    worker = job.worker
+    if not worker and job.status.casefold() == "complete":
+        worker = result.get("worker")
     worker_and_timing = JobDetailSection(
         "Worker & Timing",
         (
-            JobDetail("Worker", _display(job.worker)),
+            JobDetail("Worker", _display(worker)),
             JobDetail("Claimed", _format_timestamp(data.get("claimed_utc"))),
             JobDetail("Render Started", _format_timestamp(job.render_started_utc)),
             JobDetail("Render Finished", _format_timestamp(job.render_finished_utc)),

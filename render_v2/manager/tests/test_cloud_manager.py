@@ -157,6 +157,7 @@ class D1ListingDispatcher(FakeManagerDispatcher):
                 "rendered_git_commit": None,
                 "result": {
                     "status": "complete",
+                    "worker": "RENDER-01",
                     "reason": "Render completed",
                     "render_log_tail": "Cloud log tail survived Dropbox lag.",
                     "job_snapshot": {
@@ -351,6 +352,14 @@ class CloudManagerTests(unittest.TestCase):
         self.assertEqual("abc123", hydrated.job_data["rendered_git_commit"])
         self.assertEqual("I:/show/renders/SHOT_020/v003", hydrated.output_directory)
         self.assertIn("Cloud log tail", get_render_log(hydrated))
+        self.assertEqual("", hydrated.worker)
+        worker_details = {
+            detail.property_name: detail.value
+            for section in get_render_job_details(hydrated)
+            if section.name == "Worker & Timing"
+            for detail in section.details
+        }
+        self.assertEqual("RENDER-01", worker_details["Worker"])
 
         workers = get_cloud_render_workers(dispatcher, self.repository, jobs)
         self.assertEqual(1, len(workers))
