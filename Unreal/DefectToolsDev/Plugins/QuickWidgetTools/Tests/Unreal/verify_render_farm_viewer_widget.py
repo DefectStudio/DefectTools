@@ -1,4 +1,4 @@
-"""Unreal commandlet smoke test for the Render Farm Viewer Editor Utility Widget."""
+"""Unreal commandlet smoke test for the native Render Farm Viewer tab."""
 
 import unreal
 
@@ -189,8 +189,8 @@ def verify() -> None:
                 if rich_text.get_editor_property("text_style_set") != style_table:
                     raise AssertionError(f"{widget_name} does not use the worker style table")
 
-    subsystem = unreal.get_editor_subsystem(unreal.EditorUtilitySubsystem)
-    widget = subsystem.spawn_and_register_tab(asset)
+    native_tab = unreal.QuickWidgetToolsRenderFarmViewerLibrary
+    widget = native_tab.get_active_viewer() if native_tab.open_viewer() else None
     if widget is None:
         if RUNTIME_TEST:
             raise AssertionError("Unreal could not spawn the viewer tab")
@@ -313,7 +313,7 @@ def verify() -> None:
         if str(label.get_text()) != expected_heading:
             raise AssertionError(f"{button_name} starts with an unexpected marker")
 
-    controller._job_sort_callbacks[0]()
+    controller._job_sort_callbacks[0][1]()
     jobs_table = controller.list_scroll.get_child_at(0)
     if str(jobs_table.get_editor_property("JobName")) != "Alpha\nBeta\nGamma":
         raise AssertionError("The first Job Name click must sort ascending")
@@ -321,7 +321,7 @@ def verify() -> None:
     if str(job_name_button.get_child_at(0).get_text()) != "Job Name ▲":
         raise AssertionError("Ascending Job Name sort marker is missing")
 
-    controller._job_sort_callbacks[0]()
+    controller._job_sort_callbacks[0][1]()
     jobs_table = controller.list_scroll.get_child_at(0)
     if str(jobs_table.get_editor_property("JobName")) != "Gamma\nBeta\nAlpha":
         raise AssertionError("The second Job Name click must sort descending")
@@ -382,9 +382,7 @@ def verify() -> None:
         )
 
     controller.dispose()
-    tab_id = subsystem.get_tab_id_from_blueprint(asset)
-    if tab_id:
-        subsystem.close_tab_by_id(tab_id)
+    native_tab.close_viewer()
 
 
 try:

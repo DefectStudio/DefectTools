@@ -1,4 +1,5 @@
 #include "QuickWidgetTools.h"
+#include "QuickWidgetToolsRenderFarmViewerLibrary.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Blueprint/WidgetTree.h"
@@ -16,7 +17,9 @@
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
 #include "EditorUtilitySubsystem.h"
+#include "EditorUtilityWidget.h"
 #include "EditorUtilityWidgetBlueprint.h"
+#include "Framework/Docking/TabManager.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "ToolMenus.h"
@@ -31,6 +34,8 @@
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/SavePackage.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "FQuickWidgetToolsModule"
 
@@ -510,6 +515,13 @@ bool ApplyWorkerLayout(const TCHAR* ObjectPath)
 
 void FQuickWidgetToolsModule::StartupModule()
 {
+    FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
+        UQuickWidgetToolsRenderFarmViewerLibrary::GetTabId(),
+        FOnSpawnTab::CreateRaw(this, &FQuickWidgetToolsModule::SpawnRenderFarmViewerTab)
+    )
+    .SetDisplayName(LOCTEXT("RenderFarmViewerTab", "Render Farm Viewer"))
+    .SetMenuType(ETabSpawnerMenuType::Hidden);
+
     if (FParse::Param(
             FCommandLine::Get(),
             QuickWidgetToolsRenderFarmLayout::ApplyLayoutParameter
@@ -558,6 +570,13 @@ void FQuickWidgetToolsModule::ApplyRequestedRenderFarmLayoutUpdate()
 
 void FQuickWidgetToolsModule::ShutdownModule()
 {
+    UQuickWidgetToolsRenderFarmViewerLibrary::SetActiveViewer(nullptr);
+    UQuickWidgetToolsRenderFarmViewerLibrary::SetActiveTab(nullptr);
+    RenderFarmViewerWidget.Reset();
+    FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(
+        UQuickWidgetToolsRenderFarmViewerLibrary::GetTabId()
+    );
+
     if (RenderFarmLayoutUpdateHandle.IsValid())
     {
         FCoreDelegates::OnFEngineLoopInitComplete.Remove(RenderFarmLayoutUpdateHandle);
@@ -569,6 +588,53 @@ void FQuickWidgetToolsModule::ShutdownModule()
         UToolMenus::UnRegisterStartupCallback(this);
         UToolMenus::UnregisterOwner(this);
     }
+}
+
+TSharedRef<SDockTab> FQuickWidgetToolsModule::SpawnRenderFarmViewerTab(const FSpawnTabArgs& SpawnTabArgs)
+{
+    TSharedRef<SDockTab> Tab = SNew(SDockTab)
+        .TabRole(ETabRole::NomadTab)
+        .Label(LOCTEXT("RenderFarmViewerTabLabel", "Render Farm Viewer"));
+
+    UEditorUtilityWidgetBlueprint* Blueprint = LoadObject<UEditorUtilityWidgetBlueprint>(
+        nullptr, QuickWidgetToolsRenderFarmLayout::ViewerAssetPath
+    );
+    if (!Blueprint || !Blueprint->GeneratedClass ||
+        !Blueprint->GeneratedClass->IsChildOf(UEditorUtilityWidget::StaticClass()))
+    {
+        UE_LOG(LogTemp, Error, TEXT("QuickWidgetTools: Render Farm Viewer widget asset is missing or invalid"));
+        Tab->SetContent(SNew(STextBlock).Text(LOCTEXT("RenderFarmViewerMissing", "Render Farm Viewer could not load.")));
+        return Tab;
+    }
+
+    // EditorUtilitySubsystem creates EUWs under the editor world and clears them
+    // on map changes. A transient outer keeps this tab and its designer UI out of
+    // the level's reference graph while preserving the existing UMG appearance.
+    UEditorUtilityWidget* Widget = NewObject<UEditorUtilityWidget>(
+        GetTransientPackage(), Blueprint->GeneratedClass, NAME_None, RF_Transient
+    );
+    if (!Widget || !Widget->Initialize())
+    {
+        UE_LOG(LogTemp, Error, TEXT("QuickWidgetTools: Render Farm Viewer failed to initialize"));
+        Tab->SetContent(SNew(STextBlock).Text(LOCTEXT("RenderFarmViewerInitFailed", "Render Farm Viewer could not initialize.")));
+        return Tab;
+    }
+    UEditorUtilityWidgetBlueprint::MarkTransientRecursive(Widget);
+    RenderFarmViewerWidget.Reset(Widget);
+    UQuickWidgetToolsRenderFarmViewerLibrary::SetActiveViewer(Widget);
+    UQuickWidgetToolsRenderFarmViewerLibrary::SetActiveTab(Tab);
+    Tab->SetContent(Widget->TakeWidget());
+    Tab->SetOnTabClosed(SDockTab::FOnTabClosedCallback::CreateRaw(
+        this, &FQuickWidgetToolsModule::OnRenderFarmViewerTabClosed
+    ));
+    return Tab;
+}
+
+void FQuickWidgetToolsModule::OnRenderFarmViewerTabClosed(TSharedRef<SDockTab> TabBeingClosed)
+{
+    UQuickWidgetToolsRenderFarmViewerLibrary::SetActiveViewer(nullptr);
+    UQuickWidgetToolsRenderFarmViewerLibrary::SetActiveTab(nullptr);
+    RenderFarmViewerWidget.Reset();
 }
 
 void FQuickWidgetToolsModule::RegisterMenus()
@@ -712,6 +778,15 @@ void FQuickWidgetToolsModule::LaunchEditorUtilityWidget(FSoftObjectPath WidgetPa
     if (!WidgetPath.IsValid())
     {
         UE_LOG(LogTemp, Warning, TEXT("QuickWidgetTools: Invalid widget path"));
+        return;
+    }
+
+    if (WidgetPath == FSoftObjectPath(QuickWidgetToolsRenderFarmLayout::ViewerAssetPath))
+    {
+        if (!UQuickWidgetToolsRenderFarmViewerLibrary::OpenViewer())
+        {
+            UE_LOG(LogTemp, Error, TEXT("QuickWidgetTools: Could not open the Render Farm Viewer tab"));
+        }
         return;
     }
 

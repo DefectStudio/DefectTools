@@ -126,12 +126,14 @@ VIEWER_API_URL = "https://defect-farm-api-v2.twilight-tooth-7b7c.workers.dev"
 VIEWER_TOKEN = "defect_v2_viewer_a03K2bPEMKFt0DTRZ_numXWyJVue8uD7QwDbpyf4AjIk5eN29gJOpt4n4VBOktoj"
 REQUEST_TIMEOUT_SECONDS = 15.0
 AUTO_REFRESH_SECONDS = 60.0
+DEFERRED_ATTACH_TIMEOUT_SECONDS = 5.0
 WORKER_STALE_AFTER_SECONDS = 180.0
 MAX_JOBS = 1_000
 
 _MISSING = "--"
 _ACTIVE_CONTROLLERS: dict[str, "RenderFarmViewerController"] = {}
 _DEFERRED_ATTACH_HANDLE: Any = None
+_DEFERRED_ATTACH_STARTED_AT = 0.0
 
 
 class FarmViewerError(RuntimeError):
@@ -653,9 +655,13 @@ class RenderFarmViewerController:
         self._pending_lock = threading.Lock()
         self._loading = False
         self._last_refresh = 0.0
+        self._last_widget_check = 0.0
+        self._missing_widget_checks = 0
+        self._disposed = False
         self._tick_handle: Any = None
-        self._callbacks: list[Callable[..., Any]] = []
-        self._job_sort_callbacks: list[Callable[..., Any]] = []
+        self._callbacks: list[tuple[Any, Callable[..., Any]]] = []
+        self._job_sort_callbacks: list[tuple[Any, Callable[..., Any]]] = []
+        self._widget_path = widget.get_path_name()
         self.root = widget.get_editor_property(WIDGET_ROOT_NAME)
         self.status_text = widget.get_editor_property("FarmViewerStatus")
         self.summary_text = widget.get_editor_property("FarmViewerSummary")
@@ -677,12 +683,12 @@ class RenderFarmViewerController:
         # its WidgetTree and named designer children uninitialized. The normal
         # CreateWidget function is hidden from Unreal's generated Python API,
         # but remains callable through UFunction reflection.
+        # The viewer must be the context: using the editor world makes the table
+        # world-owned, so the persistent tab prevents that world from being GC'd
+        # on a level switch (EditorServer's fatal "World Memory Leaks" check).
         library_class = unreal.load_class(None, "/Script/UMG.WidgetBlueprintLibrary")
         library = unreal.get_default_object(library_class)
-        return library.call_method(
-            "Create",
-            (unreal.EditorLevelLibrary.get_editor_world(), widget_class, None),
-        )
+        return library.call_method("Create", (self.widget, widget_class, None))
 
     def _load_designer_class(self, asset_path: str) -> Any:
         asset = unreal.load_asset(asset_path)
@@ -697,25 +703,53 @@ class RenderFarmViewerController:
 
     @staticmethod
     def _set_widget_data(instance: Any, values: dict[str, str]) -> None:
+        native_tab = getattr(unreal, "QuickWidgetToolsRenderFarmViewerLibrary", None)
         for property_name, value in values.items():
-            instance.set_editor_property(property_name, str(value))
+            if native_tab is not None:
+                if not native_tab.set_viewer_text_property(
+                    instance, property_name, str(value)
+                ):
+                    raise RuntimeError(f"Designer widget is missing {property_name}")
+            else:
+                instance.set_editor_property(property_name, str(value))
 
     def _bind_toolbar_button(self, property_name: str, callback: Callable[[], None]) -> None:
         button = self.widget.get_editor_property(property_name)
         button.on_clicked.add_callable(callback)
-        self._callbacks.append(callback)
+        self._callbacks.append((button, callback))
 
     def start(self) -> None:
         self._tick_handle = unreal.register_slate_post_tick_callback(self._tick)
         self.refresh()
 
     def dispose(self) -> None:
+        if self._disposed:
+            return
+        self._disposed = True
         if self._tick_handle is not None:
             unreal.unregister_slate_post_tick_callback(self._tick_handle)
             self._tick_handle = None
+        self._remove_callbacks(self._job_sort_callbacks)
+        self._remove_callbacks(self._callbacks)
+        with self._pending_lock:
+            self._pending = None
+        self.jobs = []
+        self.workers = []
+        if _ACTIVE_CONTROLLERS.get(self._widget_path) is self:
+            del _ACTIVE_CONTROLLERS[self._widget_path]
+
+    @staticmethod
+    def _remove_callbacks(bindings: list[tuple[Any, Callable[..., Any]]]) -> None:
+        for button, callback in bindings:
+            try:
+                button.on_clicked.remove_callable(callback)
+            except RuntimeError:
+                # The widget may already have been destroyed by the editor.
+                pass
+        bindings.clear()
 
     def refresh(self) -> None:
-        if self._loading:
+        if self._disposed or self._loading:
             return
         self._loading = True
         self.status_text.set_text("Refreshing read-only farm data…")
@@ -729,9 +763,34 @@ class RenderFarmViewerController:
         except Exception as error:
             result = ([], [], str(error))
         with self._pending_lock:
-            self._pending = result
+            if not self._disposed:
+                self._pending = result
+
+    def _widget_is_open(self) -> bool:
+        try:
+            current = _find_open_widget()
+        except RuntimeError:
+            self._missing_widget_checks += 1
+            if self._missing_widget_checks < 3:
+                return False
+            self.dispose()
+            return False
+        if current != self.widget:
+            self.dispose()
+            return False
+        self._missing_widget_checks = 0
+        return True
 
     def _tick(self, _delta_seconds: float) -> None:
+        if self._disposed:
+            return
+        now = time.monotonic()
+        if now - self._last_widget_check >= 1.0:
+            self._last_widget_check = now
+            if not self._widget_is_open():
+                return
+        elif self._missing_widget_checks:
+            return
         with self._pending_lock:
             pending = self._pending
             self._pending = None
@@ -744,12 +803,12 @@ class RenderFarmViewerController:
             else:
                 self.jobs = jobs
                 self.workers = workers
-                self._last_refresh = time.monotonic()
+                self._last_refresh = now
                 self.status_text.set_text(
                     f"Live • {len(jobs)} jobs • {len(workers)} workers • refreshed {_format_timestamp(datetime.now(timezone.utc).isoformat())}"
                 )
                 self._render()
-        if not self._loading and time.monotonic() - self._last_refresh >= AUTO_REFRESH_SECONDS:
+        if not self._loading and now - self._last_refresh >= AUTO_REFRESH_SECONDS:
             self.refresh()
 
     def _set_mode(self, mode: str) -> None:
@@ -757,6 +816,9 @@ class RenderFarmViewerController:
         self._render()
 
     def _render(self) -> None:
+        if self._disposed:
+            return
+        self._remove_callbacks(self._job_sort_callbacks)
         self.list_scroll.clear_children()
         if self.mode == "workers":
             self._render_workers()
@@ -802,14 +864,14 @@ class RenderFarmViewerController:
         self.list_scroll.add_child(job_table)
 
     def _bind_job_sort_buttons(self, job_table: Any) -> None:
-        self._job_sort_callbacks = []
+        self._remove_callbacks(self._job_sort_callbacks)
         for field, button_name in JOB_SORT_BUTTONS.items():
             button = job_table.get_editor_property(button_name)
             if button is None or button.get_class().get_name() != "Button":
                 raise RuntimeError(f"Job table is missing {button_name}")
             callback = self._make_job_sort_callback(field)
             button.on_clicked.add_callable(callback)
-            self._job_sort_callbacks.append(callback)
+            self._job_sort_callbacks.append((button, callback))
 
             marker = ""
             if field == self.job_sort_field:
@@ -865,6 +927,11 @@ class RenderFarmViewerController:
 def _find_open_widget() -> Any:
     if unreal is None:
         raise RuntimeError("render_farm_viewer.run() must execute inside Unreal Editor")
+    native_tab = getattr(unreal, "QuickWidgetToolsRenderFarmViewerLibrary", None)
+    if native_tab is not None:
+        widget = native_tab.get_active_viewer()
+        if widget is not None:
+            return widget
     asset = unreal.load_asset(WIDGET_ASSET_PATH)
     if asset is None:
         raise RuntimeError(f"Viewer widget asset was not found: {WIDGET_ASSET_PATH}")
@@ -878,8 +945,10 @@ def _find_open_widget() -> Any:
 def _attach_open_widget() -> None:
     widget = _find_open_widget()
     key = widget.get_path_name()
-    previous = _ACTIVE_CONTROLLERS.pop(key, None)
-    if previous is not None:
+    existing = _ACTIVE_CONTROLLERS.get(key)
+    if existing is not None and not existing._disposed and existing.widget == widget:
+        return
+    for previous in list(_ACTIVE_CONTROLLERS.values()):
         previous.dispose()
     controller = RenderFarmViewerController(widget)
     _ACTIVE_CONTROLLERS[key] = controller
@@ -888,24 +957,28 @@ def _attach_open_widget() -> None:
 
 
 def _deferred_attach(_delta_seconds: float) -> None:
-    global _DEFERRED_ATTACH_HANDLE
+    global _DEFERRED_ATTACH_HANDLE, _DEFERRED_ATTACH_STARTED_AT
     try:
         _attach_open_widget()
-    except RuntimeError:
-        return
+    except RuntimeError as error:
+        if time.monotonic() - _DEFERRED_ATTACH_STARTED_AT < DEFERRED_ATTACH_TIMEOUT_SECONDS:
+            return
+        _log_error(f"Viewer attach timed out: {error}")
     if _DEFERRED_ATTACH_HANDLE is not None:
         unreal.unregister_slate_post_tick_callback(_DEFERRED_ATTACH_HANDLE)
         _DEFERRED_ATTACH_HANDLE = None
+    _DEFERRED_ATTACH_STARTED_AT = 0.0
 
 
 def run() -> str:
     """Attach the read-only controller to the currently open widget."""
-    global _DEFERRED_ATTACH_HANDLE
+    global _DEFERRED_ATTACH_HANDLE, _DEFERRED_ATTACH_STARTED_AT
     try:
         _attach_open_widget()
     except RuntimeError:
         # Construct can fire a fraction before the subsystem records its tab.
         if _DEFERRED_ATTACH_HANDLE is None:
+            _DEFERRED_ATTACH_STARTED_AT = time.monotonic()
             _DEFERRED_ATTACH_HANDLE = unreal.register_slate_post_tick_callback(
                 _deferred_attach
             )
@@ -913,4 +986,5 @@ def run() -> str:
         if _DEFERRED_ATTACH_HANDLE is not None:
             unreal.unregister_slate_post_tick_callback(_DEFERRED_ATTACH_HANDLE)
             _DEFERRED_ATTACH_HANDLE = None
+            _DEFERRED_ATTACH_STARTED_AT = 0.0
     return "true"

@@ -10,6 +10,12 @@ Python owns API reads, data normalization, and refresh timing.
 UMG owns every visual decision: hierarchy, anchors, sizing, spacing, fonts,
 colors, brushes, wrapping, and visibility.
 
+The Quick Widget Tools menu opens the viewer in a native dock tab. The tab owns
+the existing UMG designer widget under Unreal's transient package, so switching
+levels does not reconstruct the viewer or restart its refresh cycle. The asset
+below remains the visual layout; opening the asset directly through the Editor
+Utility subsystem uses Unreal's level-bound tab behavior instead.
+
 ## Main widget
 
 `WBP_09_Render_Farm_Viewer` may be redesigned freely, but keep these widgets

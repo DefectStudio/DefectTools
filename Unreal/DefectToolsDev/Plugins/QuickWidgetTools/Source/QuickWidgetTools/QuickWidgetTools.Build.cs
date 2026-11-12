@@ -25,6 +25,7 @@ public class QuickWidgetTools : ModuleRules
                 "Blutility",
                 "UMG",
                 "UMGEditor",
+                "LevelEditor",
                 "UnrealEd",
                 "RenderCore",
                 "RHI",

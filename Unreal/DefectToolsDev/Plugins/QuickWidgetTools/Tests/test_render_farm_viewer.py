@@ -5,8 +5,10 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import threading
 from types import ModuleType
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 
@@ -76,6 +78,30 @@ class FakeDesignerWidget:
 
     def set_editor_property(self, name, value) -> None:
         self.properties[name] = value
+
+
+class FakeClickEvent:
+    def __init__(self) -> None:
+        self.callbacks = []
+
+    def add_callable(self, callback) -> None:
+        self.callbacks.append(callback)
+
+    def remove_callable(self, callback) -> None:
+        self.callbacks.remove(callback)
+
+
+class FakeButton:
+    def __init__(self) -> None:
+        self.on_clicked = FakeClickEvent()
+
+
+class FakeList:
+    def __init__(self) -> None:
+        self.clear_count = 0
+
+    def clear_children(self) -> None:
+        self.clear_count += 1
 
 
 class ReadOnlyClientTests(unittest.TestCase):
@@ -394,6 +420,40 @@ class FarmFormattingTests(unittest.TestCase):
         )
 
 class DesignerWidgetBoundaryTests(unittest.TestCase):
+    def test_construct_again_keeps_same_controller(self) -> None:
+        viewer = load_viewer()
+
+        class FakeWidget:
+            def get_path_name(self):
+                return "/Engine/Transient.RenderFarmViewer"
+
+        widget = FakeWidget()
+        controller = viewer.RenderFarmViewerController.__new__(
+            viewer.RenderFarmViewerController
+        )
+        controller.widget = widget
+        controller._disposed = False
+        viewer._ACTIVE_CONTROLLERS[widget.get_path_name()] = controller
+        viewer._find_open_widget = lambda: widget
+
+        viewer._attach_open_widget()
+
+        self.assertIs(
+            controller, viewer._ACTIVE_CONTROLLERS[widget.get_path_name()]
+        )
+
+    def test_native_tab_widget_is_used_when_open(self) -> None:
+        viewer = load_viewer()
+        widget = object()
+
+        class FakeNativeTab:
+            @staticmethod
+            def get_active_viewer():
+                return widget
+
+        viewer.unreal.QuickWidgetToolsRenderFarmViewerLibrary = FakeNativeTab
+        self.assertIs(widget, viewer._find_open_widget())
+
     def test_designer_widget_contracts_are_separate_assets(self) -> None:
         viewer = load_viewer()
         self.assertEqual(
@@ -428,6 +488,107 @@ class DesignerWidgetBoundaryTests(unittest.TestCase):
             "set_visibility",
         ):
             self.assertNotIn(forbidden, source)
+
+    def test_child_widget_uses_viewer_as_world_context(self) -> None:
+        viewer = load_viewer()
+        controller = viewer.RenderFarmViewerController.__new__(
+            viewer.RenderFarmViewerController
+        )
+        controller.widget = object()
+        calls = []
+
+        class FakeLibrary:
+            def call_method(self, name, args):
+                calls.append((name, args))
+                return "child"
+
+        viewer.unreal.load_class = lambda *_args: "library_class"
+        viewer.unreal.get_default_object = lambda _class: FakeLibrary()
+
+        self.assertEqual("child", controller._new("table_class"))
+        self.assertEqual(
+            [("Create", (controller.widget, "table_class", None))], calls
+        )
+
+    def test_rerender_removes_sort_delegates_from_old_table(self) -> None:
+        viewer = load_viewer()
+        controller = viewer.RenderFarmViewerController.__new__(
+            viewer.RenderFarmViewerController
+        )
+        controller._disposed = False
+        controller._job_sort_callbacks = []
+        controller.list_scroll = FakeList()
+        controller.mode = "jobs"
+        old_button = FakeButton()
+        old_callback = lambda: None
+        old_button.on_clicked.add_callable(old_callback)
+        controller._job_sort_callbacks.append((old_button, old_callback))
+        controller._render_jobs = lambda: None
+
+        controller._render()
+
+        self.assertEqual([], old_button.on_clicked.callbacks)
+        self.assertEqual([], controller._job_sort_callbacks)
+        self.assertEqual(1, controller.list_scroll.clear_count)
+
+    def test_closed_viewer_disposes_tick_and_delegates(self) -> None:
+        viewer = load_viewer()
+        controller = viewer.RenderFarmViewerController.__new__(
+            viewer.RenderFarmViewerController
+        )
+        controller.widget = object()
+        controller._widget_path = "viewer-1"
+        controller._tick_handle = "tick-1"
+        controller._pending_lock = threading.Lock()
+        controller._pending = ([{"job_id": "old"}], [], None)
+        controller.jobs = [{"job_id": "old"}]
+        controller.workers = [{"worker_id": "old"}]
+        controller._disposed = False
+        controller._missing_widget_checks = 0
+        button = FakeButton()
+        callback = lambda: None
+        button.on_clicked.add_callable(callback)
+        controller._callbacks = [(button, callback)]
+        controller._job_sort_callbacks = []
+        viewer._ACTIVE_CONTROLLERS["viewer-1"] = controller
+        unregistered = []
+        viewer.unreal.unregister_slate_post_tick_callback = unregistered.append
+
+        def no_open_widget():
+            raise RuntimeError("closed")
+
+        viewer._find_open_widget = no_open_widget
+        self.assertFalse(controller._widget_is_open())
+        self.assertFalse(controller._widget_is_open())
+        self.assertFalse(controller._widget_is_open())
+
+        self.assertTrue(controller._disposed)
+        self.assertEqual(["tick-1"], unregistered)
+        self.assertEqual([], button.on_clicked.callbacks)
+        self.assertEqual({}, viewer._ACTIVE_CONTROLLERS)
+        self.assertIsNone(controller._pending)
+        self.assertEqual([], controller.jobs)
+        self.assertEqual([], controller.workers)
+
+    def test_deferred_attach_stops_when_tab_never_appears(self) -> None:
+        viewer = load_viewer()
+        unregistered = []
+        viewer.unreal.unregister_slate_post_tick_callback = unregistered.append
+        viewer._DEFERRED_ATTACH_HANDLE = "deferred-tick"
+        viewer._DEFERRED_ATTACH_STARTED_AT = 10.0
+        errors = []
+        viewer._log_error = errors.append
+
+        def no_open_widget():
+            raise RuntimeError("not open")
+
+        viewer._attach_open_widget = no_open_widget
+        with patch.object(viewer.time, "monotonic", return_value=16.0):
+            viewer._deferred_attach(0.0)
+
+        self.assertEqual(["deferred-tick"], unregistered)
+        self.assertIsNone(viewer._DEFERRED_ATTACH_HANDLE)
+        self.assertEqual(["Viewer attach timed out: not open"], errors)
 
 
 if __name__ == "__main__":
