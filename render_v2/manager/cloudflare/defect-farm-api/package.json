@@ -13,6 +13,7 @@
     "test:smoke": "node scripts/smoke-test.mjs",
     "test:projects": "node scripts/test-projects.mjs",
     "test:vram-plus": "node scripts/test-vram-plus.mjs",
+    "test:job-controls": "node scripts/test-job-controls.mjs",
     "types": "wrangler types",
     "types:check": "wrangler types --check"
   },

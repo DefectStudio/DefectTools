@@ -483,6 +483,42 @@ class DispatcherClient:
             body={},
         )
 
+    def stop_job(
+        self,
+        job_id: str,
+        *,
+        expected_attempt: int,
+        expected_status: str,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/api/v1/jobs/{quote(job_id, safe='')}/stop",
+            body={
+                "request_id": request_id or str(uuid4()),
+                "expected_attempt": expected_attempt,
+                "expected_status": expected_status,
+            },
+        )
+
+    def requeue_job(
+        self,
+        job_id: str,
+        *,
+        expected_attempt: int,
+        expected_status: str,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/api/v1/jobs/{quote(job_id, safe='')}/requeue",
+            body={
+                "request_id": request_id or str(uuid4()),
+                "expected_attempt": expected_attempt,
+                "expected_status": expected_status,
+            },
+        )
+
     def resubmit_job(
         self,
         job_id: str,

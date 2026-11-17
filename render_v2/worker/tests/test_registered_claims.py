@@ -154,6 +154,7 @@ class RegisteredClaimTests(unittest.TestCase):
         self.assertEqual(Path(self.projects[1].render_farm_root), farm)
         self.assertEqual(Path(self.projects[1].local_uproject), uproject)
         self.assertIsNone(kwargs["git_sync"])
+        self.assertEqual(5, kwargs["dispatcher_heartbeat_interval_seconds"])
 
     def test_cloud_claim_renders_nonfirst_show_renews_lease_and_reports_completion(self):
         folder = self.job(self.projects[1], "Spectrum", "cloud_spectrum")
@@ -256,7 +257,7 @@ class RegisteredClaimTests(unittest.TestCase):
         self.assertEqual(420, run.call_args.kwargs["no_progress_timeout_seconds"])
         self.assertEqual(2400, run.call_args.kwargs["startup_timeout_seconds"])
         self.assertEqual(2700, run.call_args.kwargs["finalization_timeout_seconds"])
-        self.assertEqual(60, run.call_args.kwargs["dispatcher_heartbeat_interval_seconds"])
+        self.assertEqual(5, run.call_args.kwargs["dispatcher_heartbeat_interval_seconds"])
 
     def test_registered_queue_has_no_default_total_duration_limit(self):
         with patch("portable_pipe_tools.render_farm.registered_claims.run_once") as run:

@@ -139,6 +139,21 @@ key. Ctrl-click, Shift-click, and Ctrl+A support bulk selection; Edit also
 contains Select All and Clear Selection. Every delete route uses the same
 default-No confirmation prompt.
 
+With a manager connection, the Jobs context menu also provides **Stop Job** and
+**Requeue Job** for D1 jobs, including multiple selected jobs. Stop Job holds a
+queued or rendering job as `canceled` in Render Failed. Requeue Job stops an
+active attempt and returns that same queued, rendering, failed, or canceled job
+to Needs Rendering. Completed jobs are excluded. Stop Job adds every active
+farm worker (seen within three minutes and still listening), plus the current
+job owner, to that job's black list. Requeue Job clears the job's entire black
+list, making every eligible worker available to claim it after the previous
+render has stopped. Workers stop only the selected render and continue
+listening for jobs. Job IDs, versions, history, and
+existing render outputs are retained; the normal output overwrite settings
+still apply when the job renders again. Updated V2 workers check job control
+every five seconds; workers already running older code use their existing
+heartbeat interval. Restart the manager to load the new menu actions.
+
 The toolbar **Workers** button switches the Jobs panel to a live worker list;
 the same button becomes **Jobs** to switch back. Worker rows show their project,
 state, current job, last heartbeat, and PortablePipeTools commit. Selecting a

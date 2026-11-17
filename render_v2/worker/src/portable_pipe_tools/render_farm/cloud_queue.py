@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 from typing import Any
+from uuid import uuid4
 
 from portable_pipe_tools.render_farm.cloud_dispatch import (
     CloudJobLease,
@@ -35,6 +36,7 @@ from portable_pipe_tools.render_farm.preparation_errors import (
 
 PENDING_DISPATCHER_UPDATE_FILENAME = "dispatcher_update_pending.json"
 STALE_DISPATCHER_UPDATE_PREFIX = "dispatcher_update_stale"
+INTERRUPTED_JOB_FILENAME = "worker_job_interrupted.json"
 PENDING_UPDATE_RECONCILIATION_GRACE_SECONDS = 60.0
 LOGGER = logging.getLogger("render_worker.cloud_queue")
 DEFAULT_LOCAL_SPOOL_FOLDER_NAME = "CloudJobSpool"
@@ -353,6 +355,31 @@ def _send_pending_update(
     raise ValueError(f"Unsupported pending Dispatcher action: {action!r}")
 
 
+def is_revoked_cloud_lease(error: DispatcherError) -> bool:
+    return error.status == 409 and error.code in {"job_control_requested", "lease_lost"}
+
+
+def finish_interrupted_cloud_claim(
+    *, paths: QueuePaths, claimed_folder: Path, job: dict[str, Any],
+    worker_name: str, reason: str, result_details: dict[str, Any] | None = None,
+) -> Path:
+    """Archive this local attempt without writing through a revoked D1 lease."""
+    receipt = {
+        "schema_version": 1, "job_id": job.get("job_id"),
+        "worker": worker_name, "status": "interrupted", "reason": reason,
+        "finished_utc": utc_now(), "result": result_details or {},
+    }
+    write_json_atomic(claimed_folder / INTERRUPTED_JOB_FILENAME, receipt)
+    if (claimed_folder / PENDING_DISPATCHER_UPDATE_FILENAME).exists():
+        _quarantine_stale_update(claimed_folder / PENDING_DISPATCHER_UPDATE_FILENAME)
+    # D1 remains authoritative. This directory is local attempt history, never a
+    # package to claim or a new failure that should requeue the cloud job.
+    destination = paths.render_failed / f"{claimed_folder.name}__interrupted_{uuid4().hex[:12]}"
+    rename_path_with_retry(claimed_folder, destination)
+    LOGGER.info("Archived interrupted local job attempt: %s", destination)
+    return destination
+
+
 def finish_cloud_claimed_job(
     *,
     dispatcher: DispatcherClient,
@@ -447,7 +474,15 @@ def finish_cloud_claimed_job(
                 LOGGER.exception("Could not report terminal result after local disk filled; worker will stop")
         raise
     final_pending_path = _pending_path(final_folder)
-    _send_pending_update(dispatcher, pending)
+    try:
+        _send_pending_update(dispatcher, pending)
+    except DispatcherError as error:
+        if not is_revoked_cloud_lease(error):
+            raise
+        return finish_interrupted_cloud_claim(
+            paths=paths, claimed_folder=final_folder, job=job,
+            worker_name=worker_name, reason=str(error), result_details=cloud_result,
+        )
     _remove_pending_update(final_pending_path)
     return final_folder
 
@@ -481,7 +516,15 @@ def finish_invalid_cloud_claim(
         reason=reason,
     )
     final_pending_path = _pending_path(final_folder)
-    _send_pending_update(dispatcher, pending)
+    try:
+        _send_pending_update(dispatcher, pending)
+    except DispatcherError as error:
+        if not is_revoked_cloud_lease(error):
+            raise
+        return finish_interrupted_cloud_claim(
+            paths=paths, claimed_folder=final_folder, job=lease.job,
+            worker_name=worker_name, reason=str(error),
+        )
     _remove_pending_update(final_pending_path)
     return final_folder
 
@@ -555,7 +598,7 @@ def reconcile_pending_cloud_updates(
             try:
                 _send_pending_update(dispatcher, pending)
             except DispatcherError as error:
-                if error.status != 409 or error.code != "lease_lost":
+                if not is_revoked_cloud_lease(error):
                     raise
                 quarantined_path = _quarantine_stale_update(
                     _pending_path(final_folder)

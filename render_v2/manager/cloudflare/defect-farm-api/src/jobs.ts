@@ -760,6 +760,16 @@ export async function claimJob(
              AND blocked.worker_id = ?1 COLLATE NOCASE
          )
          AND NOT EXISTS (
+           SELECT 1 FROM job_attempts AS interrupted
+           WHERE interrupted.job_id = candidate.id
+             AND json_extract(interrupted.result_json, '$.cleanup_pending') = 1
+             AND (
+               json_type(interrupted.result_json, '$.claim_after_unix') IS NOT 'integer'
+               OR json_extract(interrupted.result_json, '$.claim_after_unix') <= 0
+               OR json_extract(interrupted.result_json, '$.claim_after_unix') > unixepoch()
+             )
+         )
+         AND NOT EXISTS (
            SELECT 1 FROM jobs AS existing
            WHERE existing.lease_token = ?2
          )
@@ -877,6 +887,7 @@ export async function heartbeatJob(
     .bind(leaseSeconds, progress, jobId, lease.workerId, lease.leaseToken, progressDetails)
     .first<JobRow>();
   if (!row) {
+    await throwIfJobControlled(env, jobId, lease);
     throw new HttpError(
       409,
       "lease_lost",
@@ -895,6 +906,7 @@ export async function releaseJob(
   const lease = parseLeaseRequest(data);
   const active = await findActiveLease(env, jobId, lease);
   if (!active) {
+    await throwIfJobControlled(env, jobId, lease, data);
     const replay = await completedAttemptReplay(
       env,
       jobId,
@@ -958,6 +970,7 @@ export async function releaseJob(
     ).bind(jobId, lease.workerId, lease.leaseToken),
   ]);
   if ((results[results.length - 1]?.meta.changes ?? 0) === 0) {
+    await throwIfJobControlled(env, jobId, lease, data);
     throw new HttpError(409, "lease_lost", "The worker lease changed during release.");
   }
   const row = await getJobRow(env, jobId);
@@ -1003,6 +1016,50 @@ async function findActiveLease(
     .first<JobRow>();
 }
 
+// A manager interruption belongs to one exact lease, even if the same job has
+// since been claimed again. Never tell a worker to stop its whole listener.
+async function throwIfJobControlled(
+  env: Env,
+  jobId: string,
+  lease: LeaseRequest,
+  terminalReport?: JsonRecord,
+): Promise<void> {
+  const interrupted = await env.DB.prepare(
+    `SELECT result_json FROM job_attempts
+     WHERE job_id = ?1 AND worker_id = ?2 COLLATE NOCASE
+       AND lease_token = ?3 AND status = 'released'
+       AND json_extract(result_json, '$.status') = 'interrupted'
+     LIMIT 1`,
+  ).bind(jobId, lease.workerId, lease.leaseToken).first<{ result_json: string }>();
+  if (interrupted) {
+    const result = parseStoredRecord(interrupted.result_json);
+    // A heartbeat only discovers interruption. A terminal/release report is
+    // sent after cleanup, except the explicit unsafe-process failure branch.
+    // Acknowledge only this exact old token; never mutate a newer job attempt.
+    if (terminalReport !== undefined) {
+      const suppliedResult = terminalReport.result === undefined || terminalReport.result === null
+        ? {} : requireRecord(terminalReport.result, "result");
+      const processFlag = suppliedResult.process_still_running ?? terminalReport.process_still_running;
+      if (processFlag === undefined || processFlag === false) {
+        await env.DB.prepare(
+          `UPDATE job_attempts
+           SET result_json = json_set(result_json,
+             '$.cleanup_pending', json('false'), '$.cleanup_confirmed_utc', ${NOW_SQL})
+           WHERE job_id = ?1 AND worker_id = ?2 COLLATE NOCASE AND lease_token = ?3
+             AND status = 'released'
+             AND json_extract(result_json, '$.status') = 'interrupted'`,
+        ).bind(jobId, lease.workerId, lease.leaseToken).run();
+      }
+    }
+    throw new HttpError(
+      409,
+      "lease_lost",
+      "The manager interrupted this job. Stop this render and continue listening.",
+      { action: result?.action, request_id: result?.request_id, job_control_requested: true },
+    );
+  }
+}
+
 async function completedAttemptReplay(
   env: Env,
   jobId: string,
@@ -1039,6 +1096,7 @@ export async function completeJob(
   const lease = parseLeaseRequest(data);
   const active = await findActiveLease(env, jobId, lease);
   if (!active) {
+    await throwIfJobControlled(env, jobId, lease, data);
     const replay = await completedAttemptReplay(
       env,
       jobId,
@@ -1094,6 +1152,7 @@ export async function completeJob(
     ).bind(resultJson, jobId, lease.workerId, lease.leaseToken),
   ]);
   if ((batchResults[batchResults.length - 1]?.meta.changes ?? 0) === 0) {
+    await throwIfJobControlled(env, jobId, lease, data);
     throw new HttpError(409, "lease_lost", "The worker lease changed during completion.");
   }
   const row = await getJobRow(env, jobId);
@@ -1116,6 +1175,7 @@ export async function failJob(
   const retryable = retryableValue !== false;
   const active = await findActiveLease(env, jobId, lease);
   if (!active) {
+    await throwIfJobControlled(env, jobId, lease, data);
     const replay = await completedAttemptReplay(
       env,
       jobId,
@@ -1207,6 +1267,7 @@ export async function failJob(
 
   const batchResults = await env.DB.batch(statements);
   if ((batchResults[batchResults.length - 1]?.meta.changes ?? 0) === 0) {
+    await throwIfJobControlled(env, jobId, lease, data);
     throw new HttpError(409, "lease_lost", "The worker lease changed during failure handling.");
   }
   const row = await getJobRow(env, jobId);
@@ -1723,6 +1784,163 @@ export async function replaceJob(
     row,
     payload: runtimePayload(row, []),
   };
+}
+
+type JobControlAction = "stop" | "requeue";
+
+export async function controlJob(
+  env: Env,
+  jobId: string,
+  action: JobControlAction,
+  data: JsonRecord,
+): Promise<JsonRecord> {
+  const requestId = safeIdentifier(requiredString(data, "request_id", 128), "request_id");
+  const expectedAttempt = requiredInteger(data, "expected_attempt", 0, 2147483647);
+  const expectedStatus = requiredString(data, "expected_status", 20);
+  const allowedStatuses = action === "stop"
+    ? new Set(["queued", "rendering"])
+    : new Set(["queued", "rendering", "failed", "canceled"]);
+  if (!allowedStatuses.has(expectedStatus)) {
+    throw new HttpError(409, "job_not_controllable", `Cannot ${action} a ${expectedStatus} job.`);
+  }
+
+  async function replay(): Promise<JsonRecord | null> {
+    const prior = await env.DB.prepare(
+      `SELECT details_json FROM job_events
+       WHERE job_id = ?1 AND event_type IN ('manager_stopped', 'manager_requeued')
+         AND json_extract(details_json, '$.request_id') = ?2
+       ORDER BY id DESC LIMIT 1`,
+    ).bind(jobId, requestId).first<{ details_json: string }>();
+    if (!prior) return null;
+    const details = parseStoredRecord(prior.details_json);
+    if (details?.action !== action || details?.expected_attempt !== expectedAttempt ||
+        details?.expected_status !== expectedStatus) {
+      throw new HttpError(409, "request_id_conflict", "This request_id was already used for a different job action.");
+    }
+    const detail = await getJob(env, jobId);
+    return { ...detail, idempotent_replay: true };
+  }
+
+  const prior = await replay();
+  if (prior) return prior;
+  // Requeue is a new active owner of its existing output target. Preserve the
+  // same duplicate-output protection used when a render is first submitted.
+  function duplicateCondition(source: string): string {
+    return `output_owner.id <> ${source}.id
+      AND output_owner.status IN ('queued', 'rendering')
+      AND (
+        (COALESCE(json_extract(${source}.payload_json, '$.submission_fingerprint'), '') <> ''
+          AND json_extract(output_owner.payload_json, '$.submission_fingerprint') =
+              json_extract(${source}.payload_json, '$.submission_fingerprint'))
+        OR (
+          COALESCE(json_extract(${source}.payload_json, '$.publisher_schema_version'), 0) >= 4
+          AND (COALESCE(json_extract(${source}.payload_json, '$.output_relative_directory'), '') <> ''
+            OR COALESCE(json_extract(${source}.payload_json, '$.output_file_name_format'), '') <> '')
+          AND output_owner.project = ${source}.project COLLATE NOCASE
+          AND COALESCE(json_extract(output_owner.payload_json, '$.output_relative_directory'), '') =
+              COALESCE(json_extract(${source}.payload_json, '$.output_relative_directory'), '') COLLATE NOCASE
+          AND COALESCE(json_extract(output_owner.payload_json, '$.output_file_name_format'), '') =
+              COALESCE(json_extract(${source}.payload_json, '$.output_file_name_format'), '') COLLATE NOCASE
+        )
+      )`;
+  }
+  const queueGuard = (source: string): string => action === "requeue"
+    ? ` AND NOT EXISTS (SELECT 1 FROM jobs AS output_owner WHERE ${duplicateCondition(source)})`
+    : "";
+  // Heartbeats change revision without changing the attempt. Retry those races,
+  // but refuse to operate on a different claim or terminal state than selected.
+  for (let retry = 0; retry < 3; retry++) {
+    const source = await getJobRow(env, jobId);
+    if (source.attempt_count !== expectedAttempt || source.status !== expectedStatus) {
+      const racedReplay = await replay();
+      if (racedReplay) return racedReplay;
+      throw new HttpError(409, "job_state_changed", "The job changed since it was selected. Refresh and try again.");
+    }
+    if (action === "requeue") {
+      const conflict = await env.DB.prepare(
+        `SELECT output_owner.id FROM jobs AS source, jobs AS output_owner
+         WHERE source.id = ?1 AND ${duplicateCondition("source")} LIMIT 1`,
+      ).bind(jobId).first<{ id: string }>();
+      if (conflict) {
+        throw new HttpError(409, "active_output_conflict",
+          `Active job ${conflict.id} already owns this render output target.`,
+          { conflicting_job_id: conflict.id });
+      }
+    }
+    const reason = action === "stop" ? "Job stopped by manager" : "Job requeued by manager";
+    const detailsJson = JSON.stringify({
+      schema_version: 1, status: "interrupted", action, request_id: requestId,
+      expected_attempt: expectedAttempt, expected_status: expectedStatus, reason,
+      blacklist_cleared: action === "requeue",
+      cleanup_pending: source.status === "rendering",
+      claim_after_unix: source.lease_expires_at,
+    });
+    const nextStatus = action === "stop" ? "canceled" : "queued";
+    const matches = `id = ?1 AND revision = ?2 AND attempt_count = ?3 AND status = ?4${queueGuard("jobs")}`;
+    const results = await env.DB.batch([
+      // Requeue makes every worker eligible again. Gate this deletion with the
+      // same snapshot/output checks as the state transition, and replay receipts
+      // before entering the batch so a retry cannot clear a newer blacklist.
+      action === "requeue" ? env.DB.prepare(
+        `DELETE FROM job_blacklist
+         WHERE job_id = ?1 AND EXISTS (SELECT 1 FROM jobs WHERE ${matches})`,
+      ).bind(jobId, source.revision, expectedAttempt, expectedStatus) : env.DB.prepare(
+        // Stop snapshots the active farm, including a stale current lease owner.
+        `INSERT INTO job_blacklist (job_id, worker_id, reason, created_at, attempt_number)
+         SELECT source.id, active.worker_id, ?5, ${NOW_SQL}, source.attempt_count
+         FROM jobs AS source
+         CROSS JOIN (
+           SELECT id AS worker_id FROM workers
+           WHERE status IN ('waiting', 'rendering')
+             AND unixepoch(last_seen_at) >= unixepoch() - 180
+           UNION
+           SELECT worker_id FROM jobs WHERE id = ?1 AND worker_id IS NOT NULL
+         ) AS active
+         WHERE source.id = ?1 AND source.revision = ?2
+           AND source.attempt_count = ?3 AND source.status = ?4
+           ${queueGuard("source")}
+         ON CONFLICT(job_id, worker_id) DO UPDATE SET
+           reason = excluded.reason, created_at = excluded.created_at,
+           attempt_number = excluded.attempt_number`,
+      ).bind(jobId, source.revision, expectedAttempt, expectedStatus, reason),
+      env.DB.prepare(
+        // Claim creates its audit attempt after the atomic lease UPDATE. Upsert
+        // here also protects the gap before that later INSERT has completed.
+        `INSERT INTO job_attempts
+           (job_id, attempt_number, worker_id, lease_token, status, claimed_at, finished_at, result_json)
+         SELECT id, attempt_count, worker_id, lease_token, 'released',
+                COALESCE(claimed_at, ${NOW_SQL}), ${NOW_SQL}, ?5
+         FROM jobs WHERE ${matches} AND status = 'rendering'
+           AND worker_id IS NOT NULL AND lease_token IS NOT NULL
+         ON CONFLICT(lease_token) DO UPDATE SET
+           status = 'released', finished_at = excluded.finished_at, result_json = excluded.result_json
+         WHERE job_attempts.status = 'rendering'`,
+      ).bind(jobId, source.revision, expectedAttempt, expectedStatus, detailsJson),
+      env.DB.prepare(
+        `INSERT INTO job_events
+           (job_id, event_type, created_at, worker_id, attempt_number, details_json)
+         SELECT id, ?5, ${NOW_SQL}, worker_id, attempt_count, ?6
+         FROM jobs WHERE ${matches}`,
+      ).bind(jobId, source.revision, expectedAttempt, expectedStatus,
+        action === "stop" ? "manager_stopped" : "manager_requeued", detailsJson),
+      env.DB.prepare(
+        `UPDATE jobs
+         SET status = ?5, worker_id = NULL, lease_token = NULL, lease_expires_at = NULL,
+             claimed_at = CASE WHEN ?5 = 'queued' THEN NULL ELSE claimed_at END,
+             render_started_at = CASE WHEN ?5 = 'queued' THEN NULL ELSE render_started_at END,
+             render_finished_at = CASE WHEN ?5 = 'canceled' THEN ${NOW_SQL} ELSE NULL END,
+             progress = 0, progress_details_json = NULL, result_json = NULL,
+             updated_at = ${NOW_SQL}, revision = revision + 1
+         WHERE ${matches}`,
+      ).bind(jobId, source.revision, expectedAttempt, expectedStatus, nextStatus),
+    ]);
+    if ((results[results.length - 1]?.meta.changes ?? 0) > 0) {
+      return { ...(await getJob(env, jobId)), idempotent_replay: false };
+    }
+    const racedReplay = await replay();
+    if (racedReplay) return racedReplay;
+  }
+  throw new HttpError(409, "job_state_changed", "The job changed while applying the action. Refresh and try again.");
 }
 
 export async function workerStopRequested(

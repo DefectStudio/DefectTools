@@ -82,6 +82,43 @@ effective policy.
 feature uses the existing D1 schema. Run `npm run test:vram-plus` against an
 isolated local Dispatcher.
 
+## Stop Job and Requeue Job
+
+Manager-only `POST /api/v1/jobs/{job_id}/stop` and `/requeue` accept
+`request_id` (a new UUID), `expected_attempt` and `expected_status` from the
+selected job summary. Stop changes queued/rendering jobs to `canceled`.
+Requeue accepts queued/rendering/failed/canceled jobs and returns the same job
+ID and version to `queued`, clearing its entire worker blacklist and preserving
+attempts, events and output files. Stop adds every currently active farm worker
+to that job's blacklist: waiting/rendering workers seen within 180 seconds,
+plus the current lease owner even if its check-in is stale. Other jobs are
+untouched. Clearing the blacklist is atomic with the requeue state transition;
+rejected or replayed requests cannot clear a later attempt's blacklist.
+
+Both actions revoke the current job lease. The next heartbeat or final report
+from that exact old lease gets `409 lease_lost` with
+`error.details.job_control_requested: true`, `action` and `request_id`.
+Workers stop the current render and continue listening; no worker stop flag
+is set. Requeued jobs remain unavailable until every interrupted render has
+confirmed cleanup with an exact old-token release/terminal report, or its saved
+original lease deadline expires. Heartbeats and unsafe terminal reports with
+`result.process_still_running: true` never acknowledge cleanup. This barrier
+also applies when Stop is followed by Requeue; a missing/invalid deadline holds
+until an exact cleanup acknowledgement arrives. Once cleanup is confirmed,
+every worker is eligible again, including the original worker. A repeated
+request ID replays its receipt without interrupting a newer attempt.
+A changed attempt/status is rejected, while ordinary heartbeat
+revision changes remain safe. No new database migration is required.
+`GET /health` advertises `features.job_controls: true` and
+`features.requeue_clears_blacklist: true`.
+
+Run `npm run test:job-controls` for isolated Miniflare/D1 integration tests.
+Set `DEFECT_FARM_TEST_CACHE` to a directory under `D:\AICache`; optionally set
+`DEFECT_FARM_TEST_RUNTIME` to a separate dependency installation directory.
+The suite bundles the current source, applies migrations to a private local
+database, and never accesses production. If the locked Windows workerd binary
+fails on startup, `MINIFLARE_WORKERD_PATH` can select a working compatible binary.
+
 ## Production deployment
 
 For Render Worker V2 progress receipts, apply `0004_render_progress.sql` to

@@ -13,6 +13,7 @@ from portable_pipe_tools.render_farm.cloud_dispatch import (
     DispatcherError,
 )
 from portable_pipe_tools.render_farm.cloud_queue import (
+    INTERRUPTED_JOB_FILENAME,
     PENDING_DISPATCHER_UPDATE_FILENAME,
     STALE_DISPATCHER_UPDATE_PREFIX,
     reconcile_pending_cloud_updates,
@@ -567,7 +568,7 @@ class CloudWorkerTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(result)
-        self.assertEqual(1, dispatcher.heartbeat_count)
+        self.assertEqual(3, dispatcher.heartbeat_count)
 
     def test_render_progress_is_batched_into_one_minute_heartbeats(self) -> None:
         lease = self._lease_for_queued_job()
@@ -590,8 +591,9 @@ class CloudWorkerTests(unittest.TestCase):
                           cloud_spool_root=self.cloud_spool_root, render_timeout_seconds=None,
                           monotonic=lambda: now[0])
         self.assertEqual("complete", result.status)
-        self.assertEqual(2, dispatcher.heartbeat_count)
-        self.assertEqual([20.0, 40.0], [p["progress"] for p in dispatcher.heartbeat_payloads])
+        self.assertEqual(4, dispatcher.heartbeat_count)
+        self.assertEqual([20.0, 40.0, 40.0], [p["progress"] for p in dispatcher.heartbeat_payloads
+                                               if "progress" in p])
         self.assertEqual(40, dispatcher.heartbeat_payloads[-1]["progress_details"]["current_frame"])
 
     def test_unstoppable_unreal_blocks_job_instead_of_reassigning_it(self) -> None:
@@ -662,6 +664,125 @@ class CloudWorkerTests(unittest.TestCase):
         self.assertEqual("requeued", result.status)
         self.assertEqual(1, dispatcher.heartbeat_count)
         self.assertEqual([(lease.job_id, "CLOUD-WORKER", True)], dispatcher.failed)
+
+    def test_job_stop_before_preparation_skips_unreal_and_keeps_listener_eligible(self) -> None:
+        lease = self._lease_for_queued_job()
+        dispatcher = FakeDispatcher(lease)
+        def revoked(*_args, **_kwargs):
+            raise DispatcherError("Manager stopped this job", status=409, code="job_control_requested")
+        dispatcher.heartbeat_job = revoked
+        with patch("portable_pipe_tools.render_farm.worker.execute_unreal_job") as runner:
+            result = run_once(self.farm_root, "CLOUD-WORKER", False, minimum_stage_seconds=0,
+                              render_with_unreal=True, unreal_runner=runner, dispatcher_client=dispatcher,
+                              cloud_spool_root=self.cloud_spool_root)
+        runner.assert_not_called()
+        self.assertEqual("job_stopped", result.status)
+        self.assertTrue((result.final_folder / INTERRUPTED_JOB_FILENAME).is_file())
+        self.assertFalse((result.final_folder / PENDING_DISPATCHER_UPDATE_FILENAME).exists())
+        self.assertEqual([], dispatcher.failed)
+        self.assertEqual([], dispatcher.completed)
+        self.assertEqual([(lease.job_id, "CLOUD-WORKER", "Interrupted job process cleanup completed")],
+                         dispatcher.released)
+        self.assertEqual([], dispatcher.stop_acknowledged)
+
+    def test_requeue_cancels_active_preparation_and_cancel_stays_set(self) -> None:
+        lease = self._lease_for_queued_job()
+        dispatcher = FakeDispatcher(lease)
+        now = [0.0]
+        record_release = dispatcher.release_job
+        def acknowledge_revoked_lease(*args, **kwargs):
+            record_release(*args, **kwargs)
+            raise DispatcherError("Cleanup acknowledged for revoked lease", status=409, code="lease_lost")
+        dispatcher.release_job = acknowledge_revoked_lease
+        def render(**kwargs):
+            (Path(kwargs["claimed_folder"]) / "unreal.log").write_text("attempt log", encoding="utf-8")
+            def revoked(*_args, **_kwargs):
+                raise DispatcherError("Manager requeued this job", status=409, code="lease_lost",
+                                      response={"error": {"details": {"action": "requeue",
+                                                                       "job_control_requested": True}}})
+            dispatcher.heartbeat_job = revoked
+            now[0] = 5.0
+            self.assertTrue(kwargs["should_cancel"]())
+            now[0] = 5.1
+            self.assertTrue(kwargs["should_cancel"]())
+            return UnrealExecutionResult(False, "Preparation canceled", None, cancelled=True)
+        result = run_once(self.farm_root, "CLOUD-WORKER", False, minimum_stage_seconds=0,
+                          render_with_unreal=True, unreal_runner=render, dispatcher_client=dispatcher,
+                          cloud_spool_root=self.cloud_spool_root, monotonic=lambda: now[0],
+                          dispatcher_heartbeat_interval_seconds=5)
+        self.assertEqual("job_stopped", result.status)
+        self.assertIn("Manager requested requeue", result.reason)
+        self.assertEqual("attempt log", (result.final_folder / "unreal.log").read_text(encoding="utf-8"))
+        self.assertEqual([], dispatcher.failed)
+        self.assertEqual([], dispatcher.completed)
+        self.assertEqual([(lease.job_id, "CLOUD-WORKER", "Interrupted job process cleanup completed")],
+                         dispatcher.released)
+        # A job-only cancellation does not consume the worker STOP command and
+        # does not leave a stale local outbox that blocks the next queue check.
+        self.assertEqual([], dispatcher.stop_acknowledged)
+        self.assertEqual([], reconcile_pending_cloud_updates(self.cloud_paths, dispatcher, minimum_age_seconds=0))
+        self.assertIsNone(run_once(self.farm_root, "CLOUD-WORKER", False, minimum_stage_seconds=0,
+                                   dispatcher_client=dispatcher, cloud_spool_root=self.cloud_spool_root))
+
+    def test_stop_racing_with_successful_finalization_quarantines_receipt(self) -> None:
+        lease = self._lease_for_queued_job()
+        dispatcher = FakeDispatcher(lease)
+        def interrupted(*_args, **_kwargs):
+            raise DispatcherError("Manager stopped this job", status=409, code="job_control_requested")
+        dispatcher.complete_job = interrupted
+        result = run_once(self.farm_root, "CLOUD-WORKER", True, minimum_stage_seconds=0,
+                          dispatcher_client=dispatcher, cloud_spool_root=self.cloud_spool_root)
+        self.assertEqual("job_stopped", result.status)
+        self.assertTrue((result.final_folder / INTERRUPTED_JOB_FILENAME).exists())
+        self.assertFalse((result.final_folder / PENDING_DISPATCHER_UPDATE_FILENAME).exists())
+        self.assertEqual(1, len(list(result.final_folder.glob(f"{STALE_DISPATCHER_UPDATE_PREFIX}_*.json"))))
+        self.assertEqual([], dispatcher.failed)
+
+    def test_interrupted_job_with_live_unreal_still_blocks_worker(self) -> None:
+        lease = self._lease_for_queued_job()
+        dispatcher = FakeDispatcher(lease)
+        now = [0.0]
+        def render(**kwargs):
+            def interrupted(*_args, **_kwargs):
+                raise DispatcherError("Manager stopped this job", status=409, code="job_control_requested")
+            dispatcher.heartbeat_job = interrupted
+            dispatcher.fail_job = interrupted
+            now[0] = 5.0
+            self.assertTrue(kwargs["should_cancel"]())
+            return UnrealExecutionResult(False, "Unreal is still running", None, process_still_running=True)
+        result = run_once(self.farm_root, "CLOUD-WORKER", False, minimum_stage_seconds=0,
+                          render_with_unreal=True, unreal_runner=render, dispatcher_client=dispatcher,
+                          cloud_spool_root=self.cloud_spool_root, monotonic=lambda: now[0],
+                          dispatcher_heartbeat_interval_seconds=5)
+        self.assertEqual("blocked", result.status)
+        self.assertTrue((result.final_folder / "worker_blocked.json").is_file())
+        self.assertEqual([], dispatcher.released)
+
+    def test_cleanup_ack_outage_keeps_worker_available_for_a_different_job(self) -> None:
+        lease = self._lease_for_queued_job()
+        dispatcher = FakeDispatcher(lease)
+        def interrupted(*_args, **_kwargs):
+            raise DispatcherError("Manager requeued this job", status=409, code="lease_lost")
+        def offline(*_args, **_kwargs):
+            raise DispatcherConnectionError("offline during cleanup acknowledgement")
+        dispatcher.heartbeat_job = interrupted
+        dispatcher.release_job = offline
+        with self.assertLogs("render_worker", level="WARNING") as logs:
+            result = run_once(self.farm_root, "CLOUD-WORKER", False, minimum_stage_seconds=0,
+                              render_with_unreal=True, unreal_runner=lambda **_: self.fail("Unreal started"),
+                              dispatcher_client=dispatcher, cloud_spool_root=self.cloud_spool_root)
+        self.assertEqual("job_stopped", result.status)
+        self.assertTrue((result.final_folder / INTERRUPTED_JOB_FILENAME).is_file())
+        self.assertTrue(any("old lease expires" in line for line in logs.output))
+        # The interrupted job stays behind D1's cleanup barrier. This worker
+        # remains eligible for other jobs even when the acknowledgement is offline.
+        next_job = dict(lease.job, job_id=f"{lease.job_id}_next")
+        dispatcher.lease = CloudJobLease(next_job, "next-lease", int(time.time()) + 300, False)
+        next_result = run_once(self.farm_root, "CLOUD-WORKER", True, minimum_stage_seconds=0,
+                               dispatcher_client=dispatcher, cloud_spool_root=self.cloud_spool_root)
+        self.assertEqual("complete", next_result.status)
+        self.assertEqual([(next_job["job_id"], "CLOUD-WORKER")], dispatcher.completed)
+        self.assertEqual([], dispatcher.stop_acknowledged)
 
 
 if __name__ == "__main__":

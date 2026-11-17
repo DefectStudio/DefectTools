@@ -226,3 +226,30 @@ class RegisteredRenderGuiTests(unittest.TestCase):
         next_job.assert_not_called()
         wait.assert_not_called()
         heartbeat.stop.assert_called_once_with(remove_files=True)
+
+    def test_job_only_stop_checks_immediately_for_another_job(self):
+        self.app._listener_state.start()
+        self.app._listener_state.begin_job_check()
+        heartbeat = Mock()
+        self.app._worker_heartbeat = heartbeat
+        result = SimpleNamespace(status="job_stopped", reason="Manager stopped the selected job",
+                                 final_folder=self.path)
+        with patch.object(self.app, "_schedule_listener_check_now") as next_job, \
+             patch.object(self.app, "_schedule_listener_wait") as wait:
+            self.app._listener_job_check_finished(result)
+        self.assertTrue(self.app._listener_state.active)
+        self.assertFalse(self.app._listener_state.stop_requested)
+        next_job.assert_called_once_with()
+        wait.assert_not_called()
+        heartbeat.stop.assert_not_called()
+
+    def test_manual_worker_stop_takes_precedence_over_job_only_stop(self):
+        self.app._listener_state.start()
+        self.app._listener_state.begin_job_check()
+        self.app._listener_state.request_stop()
+        result = SimpleNamespace(status="job_stopped", reason="Manager stopped the selected job",
+                                 final_folder=self.path)
+        with patch.object(self.app, "_schedule_listener_check_now") as next_job:
+            self.app._listener_job_check_finished(result)
+        self.assertFalse(self.app._listener_state.active)
+        next_job.assert_not_called()

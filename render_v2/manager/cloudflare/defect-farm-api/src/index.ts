@@ -11,6 +11,7 @@ import {
   claimJob,
   clearBlacklist,
   completeJob,
+  controlJob,
   deleteJob,
   failJob,
   getJob,
@@ -61,7 +62,7 @@ async function handleRequest(
         api_version: env.API_VERSION,
         environment: env.ENVIRONMENT,
         database: "connected",
-        features: { vram_plus_claims: true },
+        features: { vram_plus_claims: true, job_controls: true, requeue_clears_blacklist: true },
       },
       200,
       id,
@@ -183,7 +184,7 @@ async function handleRequest(
   }
 
   const jobAction = new RegExp(
-    `^${API_ROOT}/jobs/([^/]+)/(heartbeat|release|complete|fail|clear-blacklist|resubmit|replace)$`,
+    `^${API_ROOT}/jobs/([^/]+)/(heartbeat|release|complete|fail|stop|requeue|clear-blacklist|resubmit|replace)$`,
   ).exec(path);
   if (request.method === "POST" && jobAction) {
     const jobId = safeIdentifier(
@@ -191,6 +192,11 @@ async function handleRequest(
       "job_id",
     );
     const action = jobAction[2];
+    if (action === "stop" || action === "requeue") {
+      requireRole(request, env, ["manager"]);
+      const result = await controlJob(env, jobId, action, await readJsonObject(request));
+      return jsonResponse({ ok: true, ...result }, 200, id);
+    }
     if (action === "clear-blacklist") {
       requireRole(request, env, ["manager"]);
       const result = await clearBlacklist(env, jobId);

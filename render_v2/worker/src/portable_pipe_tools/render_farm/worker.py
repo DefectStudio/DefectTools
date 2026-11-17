@@ -18,11 +18,14 @@ from portable_pipe_tools.render_farm.cloud_dispatch import (
     DispatcherError,
 )
 from portable_pipe_tools.render_farm.cloud_queue import (
+    INTERRUPTED_JOB_FILENAME,
     finish_cloud_claimed_job,
+    finish_interrupted_cloud_claim,
     finish_invalid_cloud_claim,
     get_default_cloud_spool_root,
     materialize_cloud_job_package,
     reconcile_pending_cloud_updates,
+    is_revoked_cloud_lease,
 )
 from portable_pipe_tools.render_farm.git_sync import (
     GIT_PULL_LOG_FILENAME,
@@ -224,17 +227,23 @@ def run_once(
     paths = create_queue_folders(package_root)
     cloud_lease: CloudJobLease | None = None
     cloud_dispatcher_stop_requested = False
+    cloud_revoked_reason: str | None = None
 
     def release_cloud_lease(reason: str) -> None:
         nonlocal cloud_lease
         if dispatcher_client is None or cloud_lease is None:
             return
-        dispatcher_client.release_job(
-            cloud_lease.job_id,
-            worker,
-            cloud_lease.lease_token,
-            reason=reason,
-        )
+        try:
+            dispatcher_client.release_job(
+                cloud_lease.job_id,
+                worker,
+                cloud_lease.lease_token,
+                reason=reason,
+            )
+        except DispatcherError as error:
+            if not is_revoked_cloud_lease(error):
+                raise
+            LOGGER.info("Cloud lease already revoked while releasing job: %s", error)
         LOGGER.info("Released Cloud Dispatcher lease for %s: %s", cloud_lease.job_id, reason)
         cloud_lease = None
 
@@ -476,7 +485,8 @@ def run_once(
                     reason=failure_reason,
                 )
             LOGGER.info("Job failed: %s", final_folder)
-            return WorkerResult("failed", final_folder, failure_reason)
+            status = "job_stopped" if (final_folder / INTERRUPTED_JOB_FILENAME).exists() else "failed"
+            return WorkerResult(status, final_folder, failure_reason)
 
         return _run_stage(
             stage=WorkerStage.FINISHING,
@@ -488,6 +498,7 @@ def run_once(
         )
 
     def render_job() -> tuple[bool, str, dict | None]:
+        nonlocal cloud_revoked_reason
         if not render_with_unreal:
             success = simulate_success
             reason = (
@@ -513,12 +524,15 @@ def run_once(
             else None
         )
 
-        def should_cancel() -> bool:
+        def should_cancel(*, force: bool = False) -> bool:
             nonlocal last_heartbeat_success
             nonlocal last_heartbeat_attempt
             nonlocal cloud_cancel_reason
             nonlocal cloud_lease_deadline
+            nonlocal cloud_revoked_reason
             if should_cancel_render is not None and should_cancel_render():
+                return True
+            if cloud_cancel_reason is not None:
                 return True
             if dispatcher_client is None or claimed_job.cloud_lease is None:
                 return False
@@ -531,7 +545,7 @@ def run_once(
                     max(1.0, dispatcher_heartbeat_interval_seconds / 6.0),
                 )
             )
-            if current_time - last_heartbeat_attempt < retry_interval:
+            if not force and current_time - last_heartbeat_attempt < retry_interval:
                 return False
             last_heartbeat_attempt = current_time
             try:
@@ -560,11 +574,17 @@ def run_once(
                     return True
                 return False
             except DispatcherError as error:
+                error_info = (error.response or {}).get("error")
+                details = error_info.get("details") if isinstance(error_info, dict) else None
+                action = details.get("action") if isinstance(details, dict) else None
                 cloud_cancel_reason = (
-                    "Cloud Dispatcher lease was lost: "
-                    f"{error.code}: {error}"
+                    f"Manager requested {action} for this job: {error}"
+                    if action in {"stop", "requeue"}
+                    else f"Cloud Dispatcher lease was lost: {error.code}: {error}"
                 )
                 LOGGER.error(cloud_cancel_reason)
+                if is_revoked_cloud_lease(error):
+                    cloud_revoked_reason = cloud_cancel_reason
                 return True
             last_heartbeat_success = current_time
             last_heartbeat_attempt = current_time
@@ -577,7 +597,7 @@ def run_once(
                     0.0,
                     float(lease_expires_at) - time.time(),
                 )
-            if heartbeat.get("stop_requested"):
+            if heartbeat.get("stop_requested") is True:
                 cloud_cancel_reason = "Cloud Dispatcher requested that this worker stop"
                 LOGGER.warning(cloud_cancel_reason)
                 return True
@@ -601,7 +621,17 @@ def run_once(
         elif should_cancel_render is not None:
             runner_arguments["should_cancel"] = should_cancel_render
         try:
-            execution_result = runner(**runner_arguments)
+            # Validate the lease before project preparation/Unreal startup, and
+            # once more before publishing a successful terminal result.
+            if should_cancel(force=True):
+                execution_result = UnrealExecutionResult(
+                    False, cloud_cancel_reason or "Stopped before Unreal launch", None,
+                    cancelled=True,
+                )
+            else:
+                execution_result = runner(**runner_arguments)
+                if execution_result.success:
+                    should_cancel(force=True)
         except Exception as error:
             reason = (
                 "Real Unreal render could not run: "
@@ -641,7 +671,8 @@ def run_once(
             write_json_atomic(claimed_job.folder / "worker_blocked.json", blocked_receipt)
         except Exception:
             LOGGER.exception("Could not save blocked-process receipt; worker will remain stopped")
-        if dispatcher_client is not None and claimed_job.cloud_lease is not None:
+        if (dispatcher_client is not None and claimed_job.cloud_lease is not None
+                and cloud_revoked_reason is None):
             try:
                 dispatcher_client.fail_job(
                     claimed_job.cloud_lease.job_id, worker, claimed_job.cloud_lease.lease_token,
@@ -653,6 +684,28 @@ def run_once(
                                  "Block it in Render Manager before retrying; owned Unreal may still be running.")
         LOGGER.error("Worker blocked; keeping logs at %s. %s", claimed_job.folder, reason)
         return WorkerResult("blocked", claimed_job.folder, reason)
+
+    if cloud_revoked_reason is not None:
+        final_folder = finish_interrupted_cloud_claim(
+            paths=paths, claimed_folder=claimed_job.folder, job=claimed_job.job,
+            worker_name=worker, reason=cloud_revoked_reason, result_details=result_details,
+        )
+        # Requeue makes the job eligible for every worker again. Tell D1 that
+        # this exact old lease has finished process cleanup before another
+        # worker may render the same outputs. A stale-lease response is the
+        # expected acknowledgement; it never restores this attempt's ownership.
+        try:
+            dispatcher_client.release_job(
+                claimed_job.cloud_lease.job_id, worker, claimed_job.cloud_lease.lease_token,
+                reason="Interrupted job process cleanup completed",
+            )
+        except DispatcherError as error:
+            if not is_revoked_cloud_lease(error):
+                LOGGER.warning(
+                    "Could not acknowledge interrupted job cleanup; the dispatcher "
+                    "will retain its retry delay until the old lease expires: %s", error,
+                )
+        return WorkerResult("job_stopped", final_folder, cloud_revoked_reason)
 
     def finish_job() -> WorkerResult:
         if dispatcher_client is not None and claimed_job.cloud_lease is not None:
@@ -678,7 +731,10 @@ def run_once(
                 reason=reason,
                 result_details=result_details,
             )
-        status = "complete" if success else "requeued"
+        status = (
+            "job_stopped" if (final_folder / INTERRUPTED_JOB_FILENAME).exists()
+            else "complete" if success else "requeued"
+        )
         LOGGER.info("Job %s: %s", status, final_folder)
         return WorkerResult(status, final_folder, reason)
 

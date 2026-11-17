@@ -79,10 +79,14 @@ class RegisteredQueueWorker:
                 commit = sync_registered_project(uproject, Path(claimed_folder) / "project-sync",
                                                  progress=self.progress, cancelled=should_cancel,
                                                  override_local_changes=self.override_local_changes)
+                if should_cancel():
+                    return UnrealExecutionResult(False, "Stopped during project preparation", None, cancelled=True)
                 install_runtime(uproject.parent, project_directory=uproject.parent)
                 job.update(uproject=str(uproject), project=project.project_id, project_id=project.project_id,
                            worker_runtime_version=2, disable_project_scripts=False,
                            worker_sync_policy=self.sync_policy, prepared_git_commit=commit, git_commit_after_pull=commit)
+                if should_cancel():
+                    return UnrealExecutionResult(False, "Stopped before Unreal launch", None, cancelled=True)
                 self.progress(f"Rendering claimed job {job['job_id']} using updated {uproject}")
                 return self.executor(claimed_folder=claimed_folder, job=job, unreal_editor_cmd=engine,
                                      local_uproject=uproject, render_farm_root=Path(project.render_farm_root),
@@ -95,7 +99,7 @@ class RegisteredQueueWorker:
             return UnrealExecutionResult(False, str(error), None, cancelled=isinstance(error, PreparationCancelled))
 
     def run_next(self, *, stopped=lambda: False, stage_callback=None, job_callback=None,
-                 render_timeout_seconds=None, heartbeat_interval_seconds=60,
+                 render_timeout_seconds=None, heartbeat_interval_seconds=5,
                  no_progress_timeout_seconds=DEFAULT_NO_PROGRESS_TIMEOUT_SECONDS,
                  startup_timeout_seconds=DEFAULT_STARTUP_TIMEOUT_SECONDS,
                  finalization_timeout_seconds=DEFAULT_FINALIZATION_TIMEOUT_SECONDS):

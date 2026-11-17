@@ -51,6 +51,7 @@ from portable_pipe_tools.render_farm.manager_settings import (
 )
 from portable_pipe_tools.render_farm.manage_render_jobs import (
     clear_render_job_blacklist,
+    control_cloud_render_job,
     recover_stalled_render_job,
     resubmit_failed_render_job,
 )
@@ -752,6 +753,17 @@ class FarmRenderManagerApp:
             activeforeground="#ffffff",
             borderwidth=0,
         )
+        self.job_context_menu.add_command(
+            label="Stop Job",
+            command=self._stop_selected_jobs,
+        )
+        self._stop_job_menu_index = int(self.job_context_menu.index("end"))
+        self.job_context_menu.add_command(
+            label="Requeue Job",
+            command=self._requeue_selected_jobs,
+        )
+        self._requeue_job_menu_index = int(self.job_context_menu.index("end"))
+        self.job_context_menu.add_separator()
         self.job_context_menu.add_command(
             label="Recover Stalled Job",
             command=self._recover_selected_stalled_jobs,
@@ -1717,6 +1729,24 @@ class FarmRenderManagerApp:
             self.job_tree.selection_set(row_id)
         self.job_tree.focus(row_id)
         selected_jobs = self._selected_jobs()
+        can_control = (
+            bool(selected_jobs)
+            and getattr(self, "dispatcher_client", None) is not None
+            and all(job.control_source == "cloud" for job in selected_jobs)
+        )
+        self.job_context_menu.entryconfigure(
+            self._stop_job_menu_index,
+            state="normal" if can_control and all(
+                job.status in {"queued", "rendering"} for job in selected_jobs
+            ) else "disabled",
+        )
+        self.job_context_menu.entryconfigure(
+            self._requeue_job_menu_index,
+            state="normal" if can_control and all(
+                job.status in {"queued", "rendering", "failed", "canceled"}
+                for job in selected_jobs
+            ) else "disabled",
+        )
         can_recover_stalled = (
             bool(selected_jobs)
             and getattr(self, "dispatcher_client", None) is not None
@@ -2011,6 +2041,96 @@ class FarmRenderManagerApp:
             for item_id in self.job_tree.selection()
             if (job := self._jobs_by_item.get(item_id)) is not None
         ]
+
+    def _stop_selected_jobs(self) -> None:
+        self._control_selected_jobs(action="stop")
+
+    def _requeue_selected_jobs(self) -> None:
+        self._control_selected_jobs(action="requeue")
+
+    def _control_selected_jobs(self, *, action: str) -> None:
+        selected_jobs = self._selected_jobs()
+        if not selected_jobs:
+            return
+        title = "Stop Job" if action == "stop" else "Requeue Job"
+        allowed = (
+            {"queued", "rendering"} if action == "stop"
+            else {"queued", "rendering", "failed", "canceled"}
+        )
+        if (
+            getattr(self, "dispatcher_client", None) is None
+            or any(
+                job.control_source != "cloud" or job.status not in allowed
+                for job in selected_jobs
+            )
+        ):
+            messagebox.showerror(
+                title,
+                "Select eligible D1 jobs and configure the Manager Cloud "
+                "Dispatcher key, then try again.",
+                parent=self.root,
+            )
+            return
+        subject = (
+            f'"{selected_jobs[0].job_name}"' if len(selected_jobs) == 1
+            else f"{len(selected_jobs)} selected jobs"
+        )
+        prompt = f"{title.replace(' Job', '')} {subject}?"
+        prompt += (
+            "\n\nEvery currently active farm worker will be added to each "
+            "selected job's black list."
+            if action == "stop" else
+            "\n\nEach selected job's entire black list will be cleared. "
+            "Any eligible worker can claim the requeued job once the previous "
+            "render has stopped."
+        )
+        prompt += (
+            "\n\nWorkers running a selected job will stop that job at their "
+            "next control check and continue listening for jobs."
+            "\n\nJob IDs, render versions, history, and existing outputs are preserved."
+        )
+        prompt += (
+            "\n\nStopped jobs appear as canceled in Render Failed and stay held "
+            "until you requeue or resubmit them."
+            if action == "stop" else
+            "\n\nJobs return to Needs Rendering with an empty black list."
+        )
+        if not messagebox.askyesno(
+            title, prompt, icon="warning", default="no", parent=self.root
+        ):
+            return
+        auto_refresh_was_running = self.auto_refresh_worker.running
+        if auto_refresh_was_running:
+            self.auto_refresh_worker.stop()
+        self.status_var.set(f"{title}: updating selected jobs...")
+        self.root.update_idletasks()
+        changed = 0
+        errors: list[str] = []
+        try:
+            for job in selected_jobs:
+                try:
+                    control_cloud_render_job(
+                        job, self.dispatcher_client, action=action
+                    )
+                    changed += 1
+                except Exception as error:
+                    errors.append(f"{job.job_name}: {error}")
+            self._refresh_jobs()
+        finally:
+            if auto_refresh_was_running and self.auto_refresh_var.get():
+                self.auto_refresh_worker.start()
+        verb = "Stopped" if action == "stop" else "Requeued"
+        self.status_var.set(
+            f"{verb} {changed} render job(s)"
+            + (
+                ("; all active farm workers blacklisted for those jobs"
+                 if action == "stop" else "; black lists cleared")
+                if changed else ""
+            )
+            + (f"; {len(errors)} error(s)" if errors else "")
+        )
+        if errors:
+            messagebox.showerror(title, "\n".join(errors), parent=self.root)
 
     def _clear_selected_job_blacklists(self) -> None:
         selected_jobs = [

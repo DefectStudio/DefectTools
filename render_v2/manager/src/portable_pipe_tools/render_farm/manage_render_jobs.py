@@ -50,6 +50,45 @@ _WORKER_RUNTIME_FIELDS = frozenset(
 DISPATCHER_SUBMISSION_RECEIPT_FILENAME = "dispatcher_submission.json"
 
 
+def control_cloud_render_job(
+    job: RenderJob,
+    dispatcher_client: DispatcherClient | None,
+    *,
+    action: str,
+) -> dict[str, Any]:
+    """Stop or requeue the selected D1 attempt without stopping its listener."""
+    allowed_statuses = {
+        "stop": {"queued", "rendering"},
+        "requeue": {"queued", "rendering", "failed", "canceled"},
+    }
+    if action not in allowed_statuses:
+        raise ValueError(f"Unknown render job action: {action}")
+    if job.control_source != "cloud":
+        raise ValueError("Stop Job and Requeue Job require a D1-controlled job.")
+    if dispatcher_client is None:
+        raise DispatcherError(
+            "Stop Job and Requeue Job require the Manager Cloud Dispatcher key.",
+            code="dispatcher_not_configured",
+        )
+    if job.status not in allowed_statuses[action]:
+        raise ValueError(
+            f'Cannot {action} "{job.job_name}" with status {job.status!r}. '
+            "Refresh the Manager and select an eligible job."
+        )
+    attempt = job.job_data.get("attempt")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 0:
+        raise ValueError("The job attempt is missing; refresh the Manager first.")
+    operation = (
+        dispatcher_client.stop_job if action == "stop"
+        else dispatcher_client.requeue_job
+    )
+    return operation(
+        job.job_id,
+        expected_attempt=attempt,
+        expected_status=job.status,
+    )
+
+
 def clear_render_job_blacklist(
     job: RenderJob,
     dispatcher_client: DispatcherClient | None = None,
